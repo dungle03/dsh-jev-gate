@@ -1,0 +1,86 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  offline:
+    name: Offline (không cần secret)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Cài dependency
+        run: npm install --no-audit --no-fund
+
+      - name: Syntax check
+        run: |
+          for f in lib/*.mjs tests/*.mjs; do
+            node --check "$f"
+          done
+
+      - name: Offline test (fail-open, bất biến model, hợp đồng export)
+        run: node tests/offline.mjs
+
+      - name: Không có secret hardcode trong source
+        run: |
+          # Loại .github/ vì chính file này chứa các pattern dưới dạng literal.
+          if grep -rniE 'apikey_[a-f0-9]{16}|sk-[a-z0-9]{16}|github_pat_|ghp_[A-Za-z0-9]{20}' \
+               --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.github \
+               --include='*.mjs' --include='*.js' --include='*.json' --include='*.yml' --include='*.md' .; then
+            echo "::error::Phát hiện chuỗi giống secret trong source"
+            exit 1
+          fi
+          echo "Sạch — không có secret hardcode"
+
+      - name: Không có path tuyệt đối cá nhân
+        run: |
+          if grep -rn '/home/' --include='*.mjs' --include='*.sh' lib tests verify.sh; then
+            echo "::error::Có path tuyệt đối /home/... — phải dùng \$HOME hoặc homedir()"
+            exit 1
+          fi
+          echo "Sạch — không có path tuyệt đối"
+
+  live:
+    name: Live (cần TYPESAFE_API_KEY)
+    runs-on: ubuntu-latest
+    needs: offline
+    # Chỉ chạy khi secret có mặt; fork PR không có secret nên job tự bỏ qua.
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cài dependency
+        run: npm install --no-audit --no-fund
+
+      - name: Kiểm secret có mặt
+        id: has_key
+        run: |
+          if [ -n "${{ secrets.TYPESAFE_API_KEY }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TYPESAFE_API_KEY chưa cấu hình — bỏ qua live check"
+          fi
+
+      - name: Live check (gọi Jev API thật)
+        if: steps.has_key.outputs.present == 'true'
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: node tests/live-check.mjs

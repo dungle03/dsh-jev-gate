@@ -99,11 +99,19 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
 ## Kiểm chứng
 
 ```bash
-bash verify.sh
+bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
+node tests/offline.mjs      # không cần secret — fail-open, bất biến model, hợp đồng export
+node tests/live-check.mjs   # chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
-Script kiểm 6 mục: cấu trúc, syntax, resolve dependency, đăng ký profile, log
+`verify.sh` kiểm: cấu trúc, syntax, resolve dependency, đăng ký profile, log
 boot thật, và gọi Jev thật với các case đã biết đáp án. Exit 1 nếu có mục hỏng.
+
+CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, và
+`live-check.mjs` khi repo có secret `TYPESAFE_API_KEY`. Xem
+[`.github/workflows/verify.yml`](.github/workflows/verify.yml).
+
+Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 
 ## Số đo đã kiểm (2026-09-27, `jev-1.13.0`)
 

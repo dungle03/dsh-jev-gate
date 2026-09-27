@@ -101,12 +101,20 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
 ## Verify
 
 ```bash
-bash verify.sh
+bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
+node tests/offline.mjs      # no secret needed — fail-open, model invariance, export contract
+node tests/live-check.mjs   # needs TYPESAFE_API_KEY + network
 ```
 
-The script checks 6 items: structure, syntax, dependency resolution, profile
+`verify.sh` checks: structure, syntax, dependency resolution, profile
 registration, real boot log, and real Jev calls against known-answer cases.
 Exit 1 if any item fails.
+
+CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
+`live-check.mjs` when the repo has a `TYPESAFE_API_KEY` secret. See
+[`.github/workflows/verify.yml`](.github/workflows/verify.yml).
+
+Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Measured results (2026-09-27, `jev-1.13.0`)
 

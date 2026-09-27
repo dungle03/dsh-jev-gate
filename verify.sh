@@ -16,7 +16,7 @@ echo "0. Vị trí plugin"
 echo "   $PLUGIN"
 
 echo "1. Cấu trúc plugin"
-for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/policy.mjs; do
+for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/policy.mjs README.md CHANGELOG.md; do
   [ -f "$PLUGIN/$f" ] && pass "$f" || fail "thiếu $f"
 done
 
