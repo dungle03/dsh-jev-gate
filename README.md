@@ -21,7 +21,7 @@ phải làm bộ não thứ hai.
 | Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
 | Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? Giữ bao lâu? | `choice` ×2 | **bật** |
-| Gợi ý spawn | `agent/pre-step` | Task này có nhiều phần ĐỘC LẬP không? | `noul` | **bật** |
+| Chọn hướng | `agent/pre-step` | Hướng nào tối ưu nhất cho task này? | `choice` | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
@@ -51,10 +51,13 @@ dsh-jev-gate
 │   └── hỏi Jev (choice ×2): "bước tới cần nghĩ nhiều không? giữ bao lâu?"
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
 │
-├── LỚP 4 · gợi ý spawn subagent      hook: agent/pre-step (chỉ step 1)
-│   └── hỏi Jev (noul): "task này có nhiều phần ĐỘC LẬP không?"
-│       ├── p < 0.6  ──► im lặng
-│       └── p ≥ 0.6  ──► chèn 1 gợi ý nhẹ (model tự quyết, plugin không spawn được)
+├── LỚP 4 · chọn hướng tiếp cận       hook: agent/pre-step (chỉ step 1)
+│   └── hỏi Jev (choice): "hướng nào tối ưu nhất cho task này?"
+│       ├── one-command-scan   ──► "chạy 1 lệnh duy nhất, đừng chia việc"
+│       ├── scripted-analysis  ──► "viết 1 script ngắn rồi đọc kết quả"
+│       ├── parallel-workers   ──► "chia cho subagent chạy song song"
+│       └── guided-interview   ──► "hỏi lại user cho rõ trước"
+│           (conf < 0.3 thì im lặng; model tự quyết, plugin không tự làm)
 │
 └── mọi quyết định ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -68,8 +71,8 @@ như chưa từng có Jev.
 User gõ prompt
       │
       ▼
-LỚP 4 · agent/pre-step     chỉ step 1: task có nhiều phần độc lập không?
-      │                    → p ≥ 0.6 thì chèn gợi ý dùng subagent
+LỚP 4 · agent/pre-step     chỉ step 1: hướng nào tối ưu cho task này?
+      │                    → chèn gợi ý (1 lệnh / script / subagent / hỏi lại)
       ▼
 LỚP 3 · agent/request      mỗi lần gọi model: bước tới cần nghĩ nhiều không?
       │                    → ghi reasoningEffort, provider và model GIỮ NGUYÊN
@@ -193,7 +196,7 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Kiểm hoàn thành: có bằng chứng vs nói suông | 3/3 nhánh đúng |
 | Fail-open (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
-| Gợi ý spawn: task độc lập vs tuần tự | 9/9 đúng (độc lập 0.74–0.94; tuần tự 0.02–0.17) |
+| Chọn hướng tiếp cận | 9/10 đúng (scan ổ đĩa → 1 lệnh; 5 chủ đề → song song; mơ hồ → hỏi lại) |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms |
 
@@ -202,8 +205,9 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 - **Không route model.** Không đổi model, chỉ (tuỳ chọn) đổi effort.
 - **Không lập kế hoạch hay sinh nội dung.** Jev chỉ trả xác suất cho một câu hỏi
   đóng; LLM vẫn là thứ hiểu và làm.
-- **Không tự spawn subagent.** Lớp 4 chỉ *gợi ý*; API `agent` của DSH không phơi
-  cách gọi tool trực tiếp, nên model tự quyết. Không đảm bảo 100% spawn.
+- **Không tự làm theo hướng đã chọn.** Lớp 4 chỉ *gợi ý* hướng; API `agent` của
+  DSH không phơi cách gọi tool trực tiếp, nên model tự quyết. Không đảm bảo model
+  nghe theo — và Jev chọn hướng sai khoảng 1/10 lần trong phép đo.
 - **Không thay thế phán đoán của agent.** Một khuyến nghị không phải uỷ quyền.
 
 ## Gỡ

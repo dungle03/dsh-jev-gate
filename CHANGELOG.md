@@ -5,6 +5,24 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Đổi
+
+- **LỚP 4: từ `noul` "có nên spawn không?" → `choice` "hướng nào tối ưu?".**
+  Lý do là một lỗ hổng đo được: với câu hỏi nhị phân, khi đáp án là "không" thì
+  plugin IM LẶNG — model không nhận gì, kể cả thông tin hữu ích. Task scan ổ đĩa
+  của user nhận p=0.21 → im lặng, trong khi đúng ra nên nói "dùng một lệnh duy
+  nhất" (đo thật: 1 lệnh `du` mất 357ms; 4 subagent tốn 8–20s overhead).
+
+  Bốn hướng: `one-command-scan`, `scripted-analysis`, `parallel-workers`,
+  `guided-interview`. Đo 10 case đã biết đáp án: 9/10 chọn đúng.
+
+  Config: `spawnThreshold` (0.6) → `approachConfidenceThreshold` (0.3).
+  Ngưỡng chỉ là lưới an toàn: đo được conf KHÔNG tương quan với đúng/sai
+  (case đúng có conf từ 0.24; case sai có conf 0.44), nên ngưỡng 0.3 thay vì
+  0.5 vốn chặn oan case scan ổ đĩa đúng (conf 0.42–0.48, sd=0.021).
+
+  Log: `type: approach_hint`, `decision: hinted | silent_low_confidence | fail_open`.
+
 ### Sửa
 
 - README: sửa "ba lớp/ba chốt chặn" thành **bốn** ở cả hai bản; thêm LỚP 4 vào

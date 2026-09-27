@@ -1,8 +1,8 @@
 {
   "name": "dsh-jev-gate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Đưa Jev (TypeSafe System One) vào 4 khoảnh khắc đắt giá của DSH: gate tool nguy hiểm, kiểm hoàn thành, chọn reasoning effort, gợi ý spawn subagent.",
+  "description": "Đưa Jev (TypeSafe System One) vào 4 khoảnh khắc đắt giá của DSH: gate tool nguy hiểm, kiểm hoàn thành, chọn reasoning effort, chọn hướng tiếp cận.",
   "license": "MIT",
   "author": "dungle03",
   "repository": {

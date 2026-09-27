@@ -22,7 +22,7 @@ checkpoints**, not as a second brain.
 | Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
 | Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | Effort routing | `agent/request` | Does the next step need deep thinking? For how long? | `choice` ×2 | **on** |
-| Spawn hint | `agent/pre-step` | Does this task have genuinely INDEPENDENT parts? | `noul` | **on** |
+| Approach choice | `agent/pre-step` | Which approach is optimal for this task? | `choice` | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
@@ -53,10 +53,13 @@ dsh-jev-gate
 │   └── asks Jev (choice ×2): "does the next step need deep thinking? for how long?"
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
 │
-├── LAYER 4 · spawn hint              hook: agent/pre-step (step 1 only)
-│   └── asks Jev (noul): "does this task have genuinely INDEPENDENT parts?"
-│       ├── p < 0.6  ──► silent
-│       └── p ≥ 0.6  ──► inject one soft hint (the model decides; the plugin cannot spawn)
+├── LAYER 4 · approach choice         hook: agent/pre-step (step 1 only)
+│   └── asks Jev (choice): "which approach is optimal for this task?"
+│       ├── one-command-scan   ──► "run the single command, do not split it"
+│       ├── scripted-analysis  ──► "write one short script and read its result"
+│       ├── parallel-workers   ──► "delegate to subagents in parallel"
+│       └── guided-interview   ──► "clarify with the user first"
+│           (silent below conf 0.3; the model decides, the plugin does not act)
 │
 └── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -71,8 +74,8 @@ different moments:
 User types a prompt
       │
       ▼
-LAYER 4 · agent/pre-step    step 1 only: does the task have independent parts?
-      │                     → p ≥ 0.6 injects a hint to consider subagent
+LAYER 4 · agent/pre-step    step 1 only: which approach is optimal?
+      │                     → injects a hint (one command / script / subagents / clarify)
       ▼
 LAYER 3 · agent/request     on every model call: does the next step need deep thinking?
       │                     → writes reasoningEffort, provider and model UNCHANGED
@@ -199,7 +202,7 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Completion check: evidence vs bare claim | 3/3 branches correct |
 | Fail-open (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
-| Spawn hint: independent vs sequential tasks | 9/9 correct (independent 0.74–0.94; sequential 0.02–0.17) |
+| Approach choice | 9/10 correct (disk scan → one command; 5 topics → parallel; vague → clarify) |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms |
 
@@ -208,8 +211,10 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 - **Does not route models.** It never changes the model, only (optionally) the effort.
 - **Does not plan or generate content.** Jev only returns a probability for a
   closed question; the LLM is still what understands and does the work.
-- **Does not spawn subagents by itself.** Layer 4 only *hints*; DSH's `agent` API
-  exposes no way to call a tool directly, so the model decides. Not a 100% guarantee.
+- **Does not act on the chosen approach by itself.** Layer 4 only *hints*; DSH's
+  `agent` API exposes no way to call a tool directly, so the model decides. The
+  model may ignore it — and Jev picks the wrong approach about 1 in 10 times in
+  the measured set.
 - **Does not replace the agent's judgement.** A recommendation is not an authorisation.
 
 ## Uninstall
