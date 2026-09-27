@@ -5,6 +5,21 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Thêm
+
+- **Lớp 4 — Gợi ý spawn subagent** (`agent/pre-step`, chỉ step 1): hỏi Jev
+  "task này có nhiều phần ĐỘC LẬP không?". Nếu có (p ≥ 0.6), chèn một gợi ý
+  nhẹ để model cân nhắc dùng tool `subagent`. Mặc định bật; tắt bằng
+  `enableSpawnHint: false`.
+
+  Giới hạn cứng: API `agent` của DSH chỉ phơi `steer()`/`followup()`/`send()`,
+  không có cách gọi tool trực tiếp. Nên plugin **chỉ gợi ý**, model tự quyết —
+  không đảm bảo 100% spawn.
+
+  Đo trên 9 case: task tuần tự 0.02–0.17, task độc lập 0.74–0.94 (9/9 đúng).
+  Test LỚP 4: 7/7 pass (chèn đúng, im lặng đúng, guard step 1, không chèn lặp,
+  tắt được bằng config, fail-open khi Jev lỗi).
+
 ## [0.1.0] — 2026-09-27
 
 Bản đầu tiên. Ba lớp gate, mỗi lớp fail-open tuyệt đối.

@@ -19,6 +19,7 @@ phải làm bộ não thứ hai.
 | Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
 | Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? Giữ bao lâu? | `choice` ×2 | **bật** |
+| Gợi ý spawn | `agent/pre-step` | Task này có nhiều phần ĐỘC LẬP không? | `noul` | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
@@ -47,6 +48,11 @@ dsh-jev-gate
 ├── LỚP 3 · chọn mức suy nghĩ         hook: agent/request
 │   └── hỏi Jev (choice ×2): "bước tới cần nghĩ nhiều không? giữ bao lâu?"
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
+│
+├── LỚP 4 · gợi ý spawn subagent      hook: agent/pre-step (chỉ step 1)
+│   └── hỏi Jev (noul): "task này có nhiều phần ĐỘC LẬP không?"
+│       ├── p < 0.6  ──► im lặng
+│       └── p ≥ 0.6  ──► chèn 1 gợi ý nhẹ (model tự quyết, plugin không spawn được)
 │
 └── mọi quyết định ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -147,6 +153,9 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     enableDestructiveGate: true
     enableCompletionCheck: true
     enableEffortRouting: true   # mặc định bật
+    spawnThreshold: 0.6         # p >= ngưỡng này thì gợi ý dùng subagent
+    spawnTimeoutMs: 4000
+    enableSpawnHint: true       # mặc định bật
 ```
 
 ## Kiểm chứng

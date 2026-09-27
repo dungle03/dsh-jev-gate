@@ -164,7 +164,33 @@ console.log('\n4. Kiểm hoàn thành — chỉ chạy khi có goal, và không 
   check('cùng turn không kiểm lại', agent.steered.length === before, `steer=${agent.steered.length}`);
 }
 
-console.log('\n5. Đóng gói — export đúng hợp đồng plugin');
+console.log('\n5. Lớp 4 — spawn hint chỉ chạy ở step 1, tắt được, fail-open');
+
+{
+  // step 2 → phải im lặng, không gọi Jev (không có credential vẫn không lỗi)
+  const { handlers } = await loadPlugin({
+    credentials: { resolve: async () => { throw new Error('no key'); } },
+    config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false, enableSpawnHint: true },
+  });
+  const p2 = { messages: [{ role: 'user', content: [{ type: 'text', text: 'nghiên cứu 5 chủ đề độc lập' }] }], turn: 1, step: 2, signal: new AbortController().signal };
+  const o2 = await handlers['agent/pre-step'][0](p2, async () => ({ kind: 'enter', messages: p2.messages }));
+  check('step 2 → không chèn, không lỗi', o2.messages.length === 1 && o2.kind === 'enter', `msg=${o2.messages.length}`);
+
+  // step 1 + không có credential → fail-open, vẫn enter, không chèn
+  const p1 = { messages: [{ role: 'user', content: [{ type: 'text', text: 'nghiên cứu 5 chủ đề độc lập' }] }], turn: 1, step: 1, signal: new AbortController().signal };
+  const o1 = await handlers['agent/pre-step'][0](p1, async () => ({ kind: 'enter', messages: p1.messages }));
+  check('step 1 + Jev lỗi → fail-open, không chèn', o1.messages.length === 1 && o1.kind === 'enter', `msg=${o1.messages.length}`);
+
+  // enableSpawnHint:false → tắt hẳn
+  const off = await loadPlugin({
+    credentials: { resolve: async () => { throw new Error('no key'); } },
+    config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false, enableSpawnHint: false },
+  });
+  const o3 = await off.handlers['agent/pre-step'][0](p1, async () => ({ kind: 'enter', messages: p1.messages }));
+  check('enableSpawnHint:false → im lặng', o3.messages.length === 1, `msg=${o3.messages.length}`);
+}
+
+console.log('\n6. Đóng gói — export đúng hợp đồng plugin');
 
 {
   const mod = await import(`${pathToFileURL(PLUGIN).href}?e=1`);

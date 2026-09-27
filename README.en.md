@@ -20,6 +20,7 @@ checkpoints**, not as a second brain.
 | Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
 | Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | Effort routing | `agent/request` | Does the next step need deep thinking? For how long? | `choice` ×2 | **on** |
+| Spawn hint | `agent/pre-step` | Does this task have genuinely INDEPENDENT parts? | `noul` | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
@@ -49,6 +50,11 @@ dsh-jev-gate
 ├── LAYER 3 · effort routing          hook: agent/request
 │   └── asks Jev (choice ×2): "does the next step need deep thinking? for how long?"
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
+│
+├── LAYER 4 · spawn hint              hook: agent/pre-step (step 1 only)
+│   └── asks Jev (noul): "does this task have genuinely INDEPENDENT parts?"
+│       ├── p < 0.6  ──► silent
+│       └── p ≥ 0.6  ──► inject one soft hint (the model decides; the plugin cannot spawn)
 │
 └── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -150,6 +156,9 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     enableDestructiveGate: true
     enableCompletionCheck: true
     enableEffortRouting: true   # on by default
+    spawnThreshold: 0.6         # p >= this hints at using subagent
+    spawnTimeoutMs: 4000
+    enableSpawnHint: true       # on by default
 ```
 
 ## Verify
