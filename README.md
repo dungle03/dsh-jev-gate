@@ -25,6 +25,85 @@ của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi ph
 nhất là lần đầu chạm một effort mới thì cold — đo được tốn đúng bằng cold của
 một prefix mới.
 
+## Kiến trúc
+
+Plugin là một lớp mỏng nằm giữa **DSH engine** và **Jev API**. Nó chỉ đăng ký
+hook, hỏi Jev một câu đóng, rồi trả quyết định về cho engine. Nó không thay
+model, không sinh nội dung, không giữ transcript.
+
+```mermaid
+flowchart LR
+    subgraph ENGINE["DSH engine"]
+        direction TB
+        PS["agent/pre-step"]
+        REQ["agent/request"]
+        PRE["tools/pre-execute"]
+        TS["agent/turn-stopping"]
+        LLM["LLM · model của bạn<br/>không bao giờ bị đổi"]
+    end
+
+    subgraph PLUGIN["dsh-jev-gate"]
+        direction TB
+        G3["LỚP 3<br/>chọn effort"]
+        G1["LỚP 1<br/>gate phá dữ liệu"]
+        G2["LỚP 2<br/>kiểm hoàn thành"]
+        LOG[("decisions.jsonl<br/>mode 0600")]
+    end
+
+    subgraph JEV["Jev API · jev-1.13.0"]
+        direction TB
+        QN["câu hỏi noul<br/>có / không"]
+        QC["câu hỏi choice<br/>chọn 1 trong n"]
+    end
+
+    REQ -. "waterfall" .-> G3
+    PRE -. "waterfall" .-> G1
+    TS -. "waterfall" .-> G2
+    PS -. "bắt task text" .-> G3
+
+    G3 --> QC
+    G1 --> QN
+    G2 --> QN
+
+    G3 -->|"chỉ ghi reasoningEffort"| LLM
+    G1 -->|"allow / deny"| PRE
+    G2 -->|"accept / steer"| TS
+
+    G1 --> LOG
+    G2 --> LOG
+    G3 --> LOG
+```
+
+**Vòng đời một lượt** — ba chốt chặn nằm ở ba thời điểm khác nhau, và mọi lần
+gọi Jev đều **fail-open** (Jev lỗi thì đi tiếp như chưa từng có Jev):
+
+```mermaid
+flowchart TD
+    U(["User gõ prompt"]) --> PS["agent/pre-step<br/>bắt task text"]
+    PS --> REQ{"agent/request<br/>LỚP 3 · effort"}
+    REQ -->|"Jev: bước tới có khó không?"| EFF["ghi reasoningEffort<br/>provider và model giữ nguyên"]
+    EFF --> LLM["LLM sinh phản hồi / tool call"]
+
+    LLM --> TC{"Có tool call?"}
+    TC -->|"bash / pwsh"| PRE{"tools/pre-execute<br/>LỚP 1 · phá dữ liệu"}
+    TC -->|"tool khác"| RUN["chạy tool"]
+    PRE -->|"Jev: có phá dữ liệu không thể khôi phục?"| TH{"p ≥ 0.7 ?"}
+    TH -->|"có"| DENY["deny<br/>lệnh KHÔNG được chạy"]
+    TH -->|"không"| RUN
+    RUN --> LLM
+
+    LLM -->|"không còn tool call"| TS{"agent/turn-stopping<br/>LỚP 2 · hoàn thành"}
+    TS -->|"Jev: xong chưa? có bằng chứng chưa? có cần thi hành không?"| DONE{"complete VÀ proven?"}
+    DONE -->|"chưa"| STEER["agent.steer<br/>làm tiếp"]
+    DONE -->|"rồi"| END(["lượt kết thúc"])
+    STEER --> LLM
+
+    LOG[("decisions.jsonl")]
+    REQ -.-> LOG
+    PRE -.-> LOG
+    TS -.-> LOG
+```
+
 ## Cài đặt
 
 Cần DSH `>= 0.1.0-rc.7` và một API key Jev ([typesafe.ai](https://typesafe.ai/)).

@@ -26,6 +26,87 @@ does **not** evict the prompt cache of other efforts. Cache is kept per
 `(prefix, effort)`, so the only cost is the first touch of a new effort being
 cold — measured to cost exactly the same as a cold new prefix.
 
+## Architecture
+
+The plugin is a thin layer sitting between the **DSH engine** and the **Jev
+API**. It only registers hooks, asks Jev one closed question, and hands the
+decision back to the engine. It does not swap the model, does not generate
+content, and does not keep the transcript.
+
+```mermaid
+flowchart LR
+    subgraph ENGINE["DSH engine"]
+        direction TB
+        PS["agent/pre-step"]
+        REQ["agent/request"]
+        PRE["tools/pre-execute"]
+        TS["agent/turn-stopping"]
+        LLM["LLM · your model<br/>never swapped"]
+    end
+
+    subgraph PLUGIN["dsh-jev-gate"]
+        direction TB
+        G3["LAYER 3<br/>effort routing"]
+        G1["LAYER 1<br/>destructive gate"]
+        G2["LAYER 2<br/>completion check"]
+        LOG[("decisions.jsonl<br/>mode 0600")]
+    end
+
+    subgraph JEV["Jev API · jev-1.13.0"]
+        direction TB
+        QN["noul question<br/>yes / no"]
+        QC["choice question<br/>pick 1 of n"]
+    end
+
+    REQ -. "waterfall" .-> G3
+    PRE -. "waterfall" .-> G1
+    TS -. "waterfall" .-> G2
+    PS -. "capture task text" .-> G3
+
+    G3 --> QC
+    G1 --> QN
+    G2 --> QN
+
+    G3 -->|"writes reasoningEffort only"| LLM
+    G1 -->|"allow / deny"| PRE
+    G2 -->|"accept / steer"| TS
+
+    G1 --> LOG
+    G2 --> LOG
+    G3 --> LOG
+```
+
+**Lifecycle of one turn** — the three checkpoints fire at three different
+moments, and every Jev call **fails open** (if Jev errors, work proceeds as if
+Jev never existed):
+
+```mermaid
+flowchart TD
+    U(["User types a prompt"]) --> PS["agent/pre-step<br/>capture task text"]
+    PS --> REQ{"agent/request<br/>LAYER 3 · effort"}
+    REQ -->|"Jev: is the next step hard?"| EFF["write reasoningEffort<br/>provider and model unchanged"]
+    EFF --> LLM["LLM generates reply / tool call"]
+
+    LLM --> TC{"Any tool call?"}
+    TC -->|"bash / pwsh"| PRE{"tools/pre-execute<br/>LAYER 1 · destructive"}
+    TC -->|"other tool"| RUN["run tool"]
+    PRE -->|"Jev: would this destroy data irrecoverably?"| TH{"p ≥ 0.7 ?"}
+    TH -->|"yes"| DENY["deny<br/>command does NOT run"]
+    TH -->|"no"| RUN
+    RUN --> LLM
+
+    LLM -->|"no more tool calls"| TS{"agent/turn-stopping<br/>LAYER 2 · completion"}
+    TS -->|"Jev: done? any evidence? needs execution?"| DONE{"complete AND proven?"}
+    DONE -->|"not yet"| STEER["agent.steer<br/>keep working"]
+    DONE -->|"yes"| END(["turn ends"])
+    STEER --> LLM
+
+    LOG[("decisions.jsonl")]
+    REQ -.-> LOG
+    PRE -.-> LOG
+    TS -.-> LOG
+```
+
 ## Install
 
 Requires DSH `>= 0.1.0-rc.7` and a Jev API key ([typesafe.ai](https://typesafe.ai/)).
