@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Log quyết định của plugin (dữ liệu runtime, không thuộc source)
+decisions.jsonl
