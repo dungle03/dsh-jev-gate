@@ -2,17 +2,19 @@
 
 [English](README.en.md) · **Tiếng Việt**
 
-Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào ba khoảnh khắc đắt giá
-của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
+![Kiến trúc dsh-jev-gate](assets/architecture.png)
+
+Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **bốn khoảnh khắc đắt
+giá** của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
 
 > **LLM hiểu và làm. Jev chỉ trả lời câu hỏi ĐÓNG ở khoảnh khắc mà một quyết
 > định sai gây tốn kém.**
 
-Jev không sinh văn bản, không lập kế hoạch, không chọn tool. Nó chỉ chấm một
-câu hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **ba chốt chặn**, không
+Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó chỉ chấm một câu
+hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **bốn chốt chặn**, không
 phải làm bộ não thứ hai.
 
-## Ba lớp
+## Bốn lớp
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
@@ -60,11 +62,14 @@ dsh-jev-gate
 Mọi lần gọi Jev đều **fail-open**: Jev lỗi, chậm, hay trả rác thì việc đi tiếp
 như chưa từng có Jev.
 
-**Một lượt chạy qua 3 lớp** — ba chốt chặn ở ba thời điểm khác nhau:
+**Một lượt chạy qua bốn lớp** — bốn chốt chặn ở bốn thời điểm khác nhau:
 
 ```
 User gõ prompt
       │
+      ▼
+LỚP 4 · agent/pre-step     chỉ step 1: task có nhiều phần độc lập không?
+      │                    → p ≥ 0.6 thì chèn gợi ý dùng subagent
       ▼
 LỚP 3 · agent/request      mỗi lần gọi model: bước tới cần nghĩ nhiều không?
       │                    → ghi reasoningEffort, provider và model GIỮ NGUYÊN
@@ -81,8 +86,8 @@ LỚP 2 · agent/turn-stopping khi model định dừng: xong chưa? có bằng 
 lượt kết thúc
 ```
 
-> LỚP 3 chạy ở **mỗi bước**, còn LLM và LỚP 1 **lặp lại** mỗi khi có tool call.
-> Sơ đồ trên vẽ một vòng để dễ đọc.
+> LỚP 4 chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở **mỗi bước**, còn LLM
+> và LỚP 1 **lặp lại** mỗi khi có tool call. Sơ đồ trên vẽ một vòng để dễ đọc.
 
 ## Cài đặt
 
@@ -121,14 +126,15 @@ bash ~/.dsh/profiles/web/node_modules/dsh-jev-gate/verify.sh
 
 - **Fail-open tuyệt đối.** Jev lỗi, chậm, hay trả rác → hành động đi tiếp như
   chưa từng có Jev. Jev không được biến sự cố của nó thành sự cố của workflow.
-- **Timeout ngắn.** Gate chạy trong đường tới hạn của mọi tool call: 2s. Chậm
-  hơn thì fail-open.
+- **Timeout ngắn.** Gate phá dữ liệu chạy trong đường tới hạn của mọi tool call:
+  2s. Chậm hơn thì fail-open.
 - **Pin model.** `jev-1.13.0` chứ không `jev-latest`, vì alias dịch chuyển khi
   có bản mới và câu trả lời có thể đổi mà không ai báo.
 - **Ngưỡng theo hậu quả.** Gate xoá dữ liệu (0.7) khác ngưỡng kiểm hoàn thành
-  (0.5). Không dùng một số chung.
-- **Bounded state.** Chỉ gửi: goal, 6 tool result gần nhất (700 ký tự/mục), câu
-  trả lời cuối. Không bao giờ gửi cả transcript.
+  (0.5) và gợi ý spawn (0.6). Không dùng một số chung.
+- **Bounded state.** Chỉ gửi: goal/task (tối đa 1.500 ký tự), 6 tool result gần
+  nhất (700 ký tự/mục), câu trả lời cuối (900 ký tự). Không bao giờ gửi cả
+  transcript.
 - **Không đổi model.** Plugin chỉ đọc `provider`/`model` và (tuỳ chọn) ghi
   `reasoningEffort`. Model của bạn không bao giờ bị đổi.
 - **Có log kiểm được.** Mọi quyết định ghi vào
@@ -146,28 +152,31 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     completionThreshold: 0.5    # p < ngưỡng này thì coi là chưa xong
     evidenceThreshold: 0.5      # p < ngưỡng này thì coi là thiếu bằng chứng
     executionThreshold: 0.5     # p >= ngưỡng này thì goal cần thi hành
+    spawnThreshold: 0.6         # p >= ngưỡng này thì gợi ý dùng subagent
     gateTimeoutMs: 2000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
+    spawnTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
     enableCompletionCheck: true
-    enableEffortRouting: true   # mặc định bật
-    spawnThreshold: 0.6         # p >= ngưỡng này thì gợi ý dùng subagent
-    spawnTimeoutMs: 4000
-    enableSpawnHint: true       # mặc định bật
+    enableEffortRouting: true
+    enableSpawnHint: true
 ```
 
 ## Kiểm chứng
 
 ```bash
 bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # không cần secret — fail-open, bất biến model, hợp đồng export
-node tests/live-check.mjs   # chỉ cần TYPESAFE_API_KEY + mạng
+node tests/offline.mjs      # 17 check, không cần secret
+node tests/live-check.mjs   # 5 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
-`verify.sh` kiểm: cấu trúc, syntax, resolve dependency, đăng ký profile, log
-boot thật, và gọi Jev thật với các case đã biết đáp án. Exit 1 nếu có mục hỏng.
+- `verify.sh` — 6 mục: cấu trúc, syntax, resolve dependency, đăng ký profile,
+  log boot thật, gọi Jev thật với case đã biết đáp án. Exit 1 nếu có mục hỏng.
+- `tests/offline.mjs` — kiểm không cần secret: fail-open, bất biến model, chỉ
+  gate tool shell, guard của lớp 4, hợp đồng export.
+- `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
 
 CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, và
 `live-check.mjs` khi repo có secret `TYPESAFE_API_KEY`. Xem
@@ -179,21 +188,23 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 
 | Phép đo | Kết quả |
 |---|---|
-| 5 test case end-to-end (handler thật + Jev thật) | 9/9 pass, tái lập 3 lần |
 | Gate phá dữ liệu trên 20 lệnh thực tế | 20/20 đúng (recall 100%, precision 100%) |
 | Deny có thật sự chặn thi hành? | có — canary còn nguyên sau `rm -rf` bị deny |
+| Kiểm hoàn thành: có bằng chứng vs nói suông | 3/3 nhánh đúng |
 | Fail-open (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
+| Gợi ý spawn: task độc lập vs tuần tự | 9/9 đúng (độc lập 0.74–0.94; tuần tự 0.02–0.17) |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms |
 
 ## Điều plugin này KHÔNG làm
 
-- Không route model. Không đổi model, chỉ (tuỳ chọn) đổi effort.
-- Không phân tích input của user. Việc đó cần LLM, không phải Jev.
-- Không chọn tool. `state` mà Jev thấy là catalog tĩnh, mà cái quyết định chọn
-  tool là tool result vừa trả về — thứ chỉ có sau khi tool đã chạy.
-- Không thay thế phán đoán của agent. Một khuyến nghị không phải uỷ quyền.
+- **Không route model.** Không đổi model, chỉ (tuỳ chọn) đổi effort.
+- **Không lập kế hoạch hay sinh nội dung.** Jev chỉ trả xác suất cho một câu hỏi
+  đóng; LLM vẫn là thứ hiểu và làm.
+- **Không tự spawn subagent.** Lớp 4 chỉ *gợi ý*; API `agent` của DSH không phơi
+  cách gọi tool trực tiếp, nên model tự quyết. Không đảm bảo 100% spawn.
+- **Không thay thế phán đoán của agent.** Một khuyến nghị không phải uỷ quyền.
 
 ## Gỡ
 

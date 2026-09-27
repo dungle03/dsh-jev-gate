@@ -2,18 +2,20 @@
 
 **English** · [Tiếng Việt](README.md)
 
-Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into three high-value
-moments of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following one
-principle:
+![dsh-jev-gate architecture](assets/architecture.png)
+
+Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **four high-value
+moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
+one principle:
 
 > **The LLM understands and does the work. Jev only answers CLOSED questions at
 > the moments where a wrong decision is expensive.**
 
-Jev does not generate text, does not plan, does not pick tools. It only scores a
-closed question and returns a probability. This plugin uses Jev as **three
+Jev does not generate text, does not plan, does not write code. It only scores a
+closed question and returns a probability. This plugin uses Jev as **four
 checkpoints**, not as a second brain.
 
-## Three layers
+## Four layers
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
@@ -62,14 +64,18 @@ dsh-jev-gate
 Every Jev call **fails open**: if Jev errors, times out, or returns garbage,
 work proceeds as if Jev never existed.
 
-**One turn passing through the 3 layers** — three checkpoints at three different moments:
+**One turn passing through the four layers** — four checkpoints at four
+different moments:
 
 ```
 User types a prompt
       │
       ▼
-LAYER 3 · agent/request      on every model call: does the next step need deep thinking?
-      │                      → writes reasoningEffort, provider and model UNCHANGED
+LAYER 4 · agent/pre-step    step 1 only: does the task have independent parts?
+      │                     → p ≥ 0.6 injects a hint to consider subagent
+      ▼
+LAYER 3 · agent/request     on every model call: does the next step need deep thinking?
+      │                     → writes reasoningEffort, provider and model UNCHANGED
       ▼
 LLM generates a reply or a tool call
       │
@@ -83,8 +89,9 @@ LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
 turn ends
 ```
 
-> LAYER 3 runs on **every step**, while the LLM and LAYER 1 **repeat** on every
-> tool call. The diagram above draws one pass for readability.
+> LAYER 4 runs once per turn (step 1). LAYER 3 runs on **every step**, while the
+> LLM and LAYER 1 **repeat** on every tool call. The diagram above draws one
+> pass for readability.
 
 ## Install
 
@@ -124,14 +131,15 @@ bash ~/.dsh/profiles/web/node_modules/dsh-jev-gate/verify.sh
 - **Absolute fail-open.** If Jev errors, times out, or returns garbage, the
   action proceeds as if Jev never existed. Jev must never turn its own outage
   into a workflow outage.
-- **Short timeouts.** The gate sits in the critical path of every tool call: 2s.
-  Slower than that, it fails open.
+- **Short timeouts.** The destructive gate sits in the critical path of every
+  tool call: 2s. Slower than that, it fails open.
 - **Pinned model.** `jev-1.13.0`, not `jev-latest`, because the alias shifts
   when a new version ships and answers can change without notice.
-- **Thresholds by consequence.** The destructive gate (0.7) uses a different
-  threshold than the completion check (0.5). No shared number.
-- **Bounded state.** Only the goal, the last 6 tool results (700 chars each),
-  and the final reply are sent. Never the whole transcript.
+- **Thresholds by consequence.** The destructive gate (0.7) differs from the
+  completion check (0.5) and the spawn hint (0.6). No shared number.
+- **Bounded state.** Only the goal/task (up to 1,500 chars), the last 6 tool
+  results (700 chars each), and the final reply (900 chars) are sent. Never the
+  whole transcript.
 - **Never changes the model.** The plugin only reads `provider`/`model` and
   optionally writes `reasoningEffort`. Your model is never swapped.
 - **Verifiable log.** Every decision is written to
@@ -149,29 +157,32 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     completionThreshold: 0.5    # p < this means "not done yet"
     evidenceThreshold: 0.5      # p < this means "evidence missing"
     executionThreshold: 0.5     # p >= this means the goal needs execution
+    spawnThreshold: 0.6         # p >= this hints at using subagent
     gateTimeoutMs: 2000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
+    spawnTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
     enableCompletionCheck: true
-    enableEffortRouting: true   # on by default
-    spawnThreshold: 0.6         # p >= this hints at using subagent
-    spawnTimeoutMs: 4000
-    enableSpawnHint: true       # on by default
+    enableEffortRouting: true
+    enableSpawnHint: true
 ```
 
 ## Verify
 
 ```bash
 bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # no secret needed — fail-open, model invariance, export contract
-node tests/live-check.mjs   # needs TYPESAFE_API_KEY + network
+node tests/offline.mjs      # 17 checks, no secret needed
+node tests/live-check.mjs   # 5 checks, needs TYPESAFE_API_KEY + network
 ```
 
-`verify.sh` checks: structure, syntax, dependency resolution, profile
-registration, real boot log, and real Jev calls against known-answer cases.
-Exit 1 if any item fails.
+- `verify.sh` — 6 items: structure, syntax, dependency resolution, profile
+  registration, real boot log, real Jev calls against known-answer cases.
+  Exit 1 if any item fails.
+- `tests/offline.mjs` — no secret needed: fail-open, model invariance, shell-tool
+  gating only, layer-4 guards, export contract.
+- `tests/live-check.mjs` — real Jev API calls against known-answer cases.
 
 CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
 `live-check.mjs` when the repo has a `TYPESAFE_API_KEY` secret. See
@@ -183,22 +194,23 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 | Measurement | Result |
 |---|---|
-| 5 end-to-end test cases (real handler + real Jev) | 9/9 pass, reproduced 3× |
 | Destructive gate on 20 real commands | 20/20 correct (recall 100%, precision 100%) |
 | Does deny actually prevent execution? | yes — canary intact after a denied `rm -rf` |
+| Completion check: evidence vs bare claim | 3/3 branches correct |
 | Fail-open (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
+| Spawn hint: independent vs sequential tasks | 9/9 correct (independent 0.74–0.94; sequential 0.02–0.17) |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms |
 
 ## What this plugin does NOT do
 
-- Does not route models. It never changes the model, only (optionally) the effort.
-- Does not analyse the user's input. That needs an LLM, not Jev.
-- Does not pick tools. The `state` Jev sees is a static catalog, while what
-  decides tool choice is the tool result just returned — which only exists after
-  the tool has run.
-- Does not replace the agent's judgement. A recommendation is not an authorisation.
+- **Does not route models.** It never changes the model, only (optionally) the effort.
+- **Does not plan or generate content.** Jev only returns a probability for a
+  closed question; the LLM is still what understands and does the work.
+- **Does not spawn subagents by itself.** Layer 4 only *hints*; DSH's `agent` API
+  exposes no way to call a tool directly, so the model decides. Not a 100% guarantee.
+- **Does not replace the agent's judgement.** A recommendation is not an authorisation.
 
 ## Uninstall
 

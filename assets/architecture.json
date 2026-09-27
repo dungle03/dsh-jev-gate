@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "dsh-jev-gate — Jev làm 4 chốt chặn cho DSH",
+    "output": "architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "gõ prompt",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "engine",
+      "type": "backend",
+      "label": "DSH engine",
+      "sublabel": "agent loop",
+      "pos": [
+        250,
+        300
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "l1",
+      "type": "backend",
+      "label": "LỚP 1 · destructive gate",
+      "sublabel": "tools/pre-execute",
+      "pos": [
+        520,
+        100
+      ],
+      "size": [
+        190,
+        62
+      ]
+    },
+    {
+      "id": "l2",
+      "type": "backend",
+      "label": "LỚP 2 · completion",
+      "sublabel": "agent/turn-stopping",
+      "pos": [
+        520,
+        205
+      ],
+      "size": [
+        190,
+        62
+      ]
+    },
+    {
+      "id": "l3",
+      "type": "backend",
+      "label": "LỚP 3 · effort",
+      "sublabel": "agent/request",
+      "pos": [
+        520,
+        310
+      ],
+      "size": [
+        190,
+        62
+      ]
+    },
+    {
+      "id": "l4",
+      "type": "backend",
+      "label": "LỚP 4 · spawn hint",
+      "sublabel": "agent/pre-step",
+      "pos": [
+        520,
+        415
+      ],
+      "size": [
+        190,
+        62
+      ]
+    },
+    {
+      "id": "jev",
+      "type": "security",
+      "label": "Jev API",
+      "sublabel": "jev-1.13.0",
+      "pos": [
+        830,
+        228
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "closed questions"
+    },
+    {
+      "id": "log",
+      "type": "database",
+      "label": "decisions.jsonl",
+      "sublabel": "mode 0600",
+      "pos": [
+        830,
+        405
+      ],
+      "size": [
+        150,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "dsh-jev-gate",
+      "wraps": [
+        "l1",
+        "l2",
+        "l3",
+        "l4"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-engine",
+      "from": "user",
+      "to": "engine",
+      "label": "prompt",
+      "variant": "emphasis"
+    },
+    {
+      "id": "engine-l1",
+      "from": "engine",
+      "to": "l1",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l2",
+      "from": "engine",
+      "to": "l2",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l3",
+      "from": "engine",
+      "to": "l3",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l4",
+      "from": "engine",
+      "to": "l4",
+      "variant": "dashed"
+    },
+    {
+      "id": "l1-jev",
+      "from": "l1",
+      "to": "jev"
+    },
+    {
+      "id": "l2-jev",
+      "from": "l2",
+      "to": "jev"
+    },
+    {
+      "id": "l3-jev",
+      "from": "l3",
+      "to": "jev"
+    },
+    {
+      "id": "l4-jev",
+      "from": "l4",
+      "to": "jev"
+    },
+    {
+      "id": "jev-log",
+      "from": "jev",
+      "to": "log",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Chốt chặn an toàn",
+      "items": [
+        "LỚP 1 · destructive gate (tools/pre-execute): lệnh có phá dữ liệu không thể khôi phục? p ≥ 0.7 → deny",
+        "LỚP 2 · completion check (agent/turn-stopping): xong chưa, có bằng chứng chưa, có cần thi hành không"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Tối ưu vận hành",
+      "items": [
+        "LỚP 3 · effort routing (agent/request): bước tới cần nghĩ nhiều không; chỉ ghi reasoningEffort",
+        "LỚP 4 · spawn hint (agent/pre-step): task có nhiều phần độc lập không; p ≥ 0.6 → chèn gợi ý"
+      ]
+    }
+  ]
+}

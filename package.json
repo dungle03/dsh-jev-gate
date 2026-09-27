@@ -35,7 +35,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "verify.sh",
-    "tests"
+    "tests",
+    "assets"
   ],
   "dsh": {
     "bundle": {

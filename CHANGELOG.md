@@ -5,6 +5,22 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa
+
+- README: sửa "ba lớp/ba chốt chặn" thành **bốn** ở cả hai bản; thêm LỚP 4 vào
+  cây kiến trúc và luồng một lượt; sửa `verify.sh` (6 mục, không phải 6/6), số
+  test thật (offline 17 check, live-check 5 check); sửa mục "Điều KHÔNG làm"
+  (trước ghi "không chọn tool" trong khi LỚP 4 gợi ý dùng tool `subagent`);
+  bổ sung `spawnThreshold`/`spawnTimeoutMs`/`enableSpawnHint` vào ví dụ config;
+  làm rõ số đo bounded state (1.500/700/900 ký tự, 6 tool result).
+
+### Thêm
+
+- `assets/architecture.png` + `assets/architecture.html` + `assets/architecture.json`
+  — sơ đồ kiến trúc tương tác, dựng bằng Archify, validate showcase 9/9 artifact
+  check, 0 lỗi 0 cảnh báo, containment pass ở 1440×900 / 1600×1000 / 1920×1080 /
+  2048×1320.
+
 ### Thêm
 
 - **Lớp 4 — Gợi ý spawn subagent** (`agent/pre-step`, chỉ step 1): hỏi Jev
