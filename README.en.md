@@ -114,24 +114,31 @@ Latency: `jev_review` takes ~100ms on a healthy API, ~0.7–2.5s when the API is
 slow. A missing tool, missing service, or a failed review all **fail open** — the
 turn ends normally.
 
-### How layer 7 and the `jev-review` skill work together
+### Why the `jev-review` skill is no longer needed
 
-These are two **complementary** mechanisms, not duplicates:
+Two things used to teach the agent to use `jev_review` in parallel: a **skill**
+named `jev-review`, and the **MCP server's own instructions** (1,242 characters,
+injected into the system prompt by `dsh-mcp-client` via `systemPrompt.section`).
 
-| | `jev-review` skill | Layer 7 (plugin) |
+Measured across 115 real sessions: the MCP instructions are present in **26
+sessions**. They reach the model **independently of the skill**. Comparing the
+content shows most of the skill duplicates them — the score→improve→rescore loop,
+the baseline, `previousEvaluation`, not repeating identical calls, not gaming
+scores.
+
+And the skill **never led to a single review call in real work**. Of the four times
+`jev_review` was ever called:
+
+| Session | Skill called first? | Who called it |
 |---|---|---|
-| Triggered by | the agent calling `skill` | the engine hook, automatically |
-| What it does | teaches the **loop**: score → improve → rescore | scores a **baseline** once per turn end |
-| Frequency | several times per turn | once per turn, only when the diff ≥ 20 lines |
+| `f5a2e8a7` | yes | the author testing (`Add a clamp helper`) |
+| `6865243e` | **no** | an MCP integration test (`Smoke-test the DSH MCP integration`) |
 
-So the skill is **not deleted**. It was edited so the two do not step on each
-other: it now states that a baseline may already have arrived from layer 7, and the
-agent must **check before calling again** — re-scoring unchanged code produces no
-new information, only cost and latency.
+All four were tests, not real work. So the skill was **deleted** — one instruction
+source remains, the MCP server, plus layer 7 calling it automatically at turn end.
 
-The skill's real prompt cost: the catalog carries only `name` + `description`
-(**319 characters**, ~80 tokens), not the full 6.6 KB body. The body loads only
-when the agent actually calls `skill`.
+The `jev_review` tool itself is unchanged: registered through `mcp-jev-review`, the
+agent can still call it, and its instructions still reach the prompt.
 
 ### Why the "User authorization" layer exists
 

@@ -95,31 +95,34 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
   tuỳ chọn (do `dsh-workspace-changes` cung cấp), không được đưa vào `inject` của
   plugin vì sẽ làm cả plugin không nạp khi service vắng.
 
-### Đổi (skill `jev-review`)
+### Xoá
 
-- **Skill `jev-review` được sửa để phối hợp với Lớp 7, KHÔNG bị xoá.** Ban đầu định
-  xoá skill khỏi catalog, nhưng kiểm chứng cho thấy tiền đề sai và hai thứ không
-  trùng chức năng:
+- **Xoá skill `jev-review` khỏi catalog.** Trước đây tồn tại song song hai nguồn
+  dạy agent dùng `jev_review`: skill này, và hướng dẫn của chính MCP server
+  (**1.242 ký tự**, do `dsh-mcp-client` chèn vào system prompt qua
+  `systemPrompt.section`).
 
-  | | Skill `jev-review` | Lớp 7 |
-  |---|---|---|
-  | Ai kích hoạt | agent chủ động gọi `skill` | hook engine tự chạy |
-  | Làm gì | dạy **vòng lặp** chấm→sửa→chấm lại | chấm **baseline** 1 lần cuối turn |
-  | Tần suất | nhiều lần trong turn | 1 lần/turn |
+  Bằng chứng quyết định:
 
-  Chi phí thật của skill trong prompt cũng nhỏ hơn nhiều so với tưởng ban đầu:
-  catalog chỉ chứa `name` + `description` (**319 ký tự**, ~80 token), không phải
-  toàn bộ body 6,6 KB. Body chỉ nạp khi agent thực sự gọi `skill`.
+  - Đo trên **115 session thật**: hướng dẫn MCP có mặt trong **26 session** →
+    tới model **độc lập với skill**.
+  - So nội dung: phần lớn skill trùng hướng dẫn MCP — vòng lặp
+    chấm→sửa→chấm lại, baseline, `previousEvaluation`, không lặp lời gọi, không
+    game điểm.
+  - Skill **chưa từng dẫn tới một lời gọi review nào trong công việc thật**.
+    Kiểm 4 lần `jev_review` từng được gọi: `f5a2e8a7` có gọi skill trước (tác giả
+    test), `6865243e` **không** gọi skill (test tích hợp MCP). Cả 4 đều là test.
 
-  Vấn đề thật tìm được là **trùng lặp lời gọi**: skill cũ dạy agent gọi
-  `jev_review` để lập baseline, trong khi Lớp 7 đã tự chấm baseline và báo về.
-  Đã thêm mục "A baseline may already be waiting for you" — agent kiểm tra xem đã
-  nhận message "Jev Review scored this turn's changes" chưa, và chỉ gọi lại sau
-  khi thực sự cải thiện code. Gọi lại trên cùng code không tạo thông tin mới, chỉ
-  tốn tiền và độ trễ.
+  Nên chỉ giữ **một** nguồn hướng dẫn: MCP server + Lớp 7 tự gọi khi turn xong.
+  Tool `jev_review` không đổi — vẫn đăng ký qua `mcp-jev-review`, agent vẫn gọi
+  được, hướng dẫn vẫn vào prompt.
 
-  Hai bản skill (`~/.dsh/skills/` và `~/.dsh/plugins/jev-review/skills/`) được
-  đồng bộ cùng nội dung.
+  Backup skill đã xoá: `~/.dsh/notes/backups/jev-review-skill-<timestamp>/`.
+
+  Lưu ý về một kết luận sai trước đó: bản 0.4.0 ban đầu **giữ** skill với lý do
+  "hai cơ chế bổ sung, không trùng". Kết luận đó dựa trên so sánh *chức năng* mà
+  bỏ qua việc MCP server đã tự mang hướng dẫn tương đương — và bỏ qua dữ liệu
+  cho thấy skill chưa từng được dùng trong việc thật.
 
 ### Sửa (vệ sinh test)
 

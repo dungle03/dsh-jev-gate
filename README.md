@@ -109,24 +109,30 @@ Bốn chốt chống lạm dụng, vì hook này chặn turn:
 Đo độ trễ: `jev_review` mất ~100ms khi API khoẻ, ~0,7–2,5s khi API chậm. Nếu tool
 vắng, service vắng, hay review lỗi → **fail-open**, turn vẫn kết thúc bình thường.
 
-### Lớp 7 phối hợp với skill `jev-review` như thế nào
+### Vì sao không cần skill `jev-review` nữa
 
-Đây là hai cơ chế **bổ sung**, không trùng nhau:
+Trước đây tồn tại song song hai thứ dạy agent dùng `jev_review`: một **skill**
+`jev-review`, và **hướng dẫn của chính MCP server** (1.242 ký tự, do
+`dsh-mcp-client` chèn vào system prompt qua `systemPrompt.section`).
 
-| | Skill `jev-review` | Lớp 7 (plugin) |
+Đo trên 115 session thật: hướng dẫn MCP có mặt trong **26 session**. Nghĩa là nó
+tới model **độc lập với skill**. So sánh nội dung cho thấy phần lớn skill trùng
+với hướng dẫn MCP — vòng lặp chấm→sửa→chấm lại, baseline, `previousEvaluation`,
+không lặp lời gọi, không game điểm.
+
+Và skill **chưa từng dẫn tới một lời gọi review nào trong công việc thật**. Kiểm
+4 lần `jev_review` từng được gọi:
+
+| Session | Skill gọi trước? | Ai gọi |
 |---|---|---|
-| Ai kích hoạt | agent chủ động gọi `skill` | hook engine tự chạy |
-| Làm gì | dạy **vòng lặp**: chấm → sửa → chấm lại | chấm **baseline** một lần khi turn xong |
-| Tần suất | nhiều lần trong turn | 1 lần/turn, chỉ khi diff ≥ 20 dòng |
+| `f5a2e8a7` | có | tác giả test (`Add a clamp helper`) |
+| `6865243e` | **không** | test tích hợp MCP (`Smoke-test the DSH MCP integration`) |
 
-Vì vậy skill **không bị xoá**. Nhưng nó đã được sửa để hai bên không giẫm chân:
-skill giờ nói rõ rằng một baseline có thể đã đến từ Lớp 7, và agent phải **kiểm
-tra trước khi gọi lại** — gọi lại trên cùng code không tạo thông tin mới, chỉ tốn
-tiền và độ trễ.
+Cả 4 lần đều là test, không phải công việc thật. Nên skill đã được **xoá** — chỉ
+giữ một nguồn hướng dẫn duy nhất là MCP server, cộng Lớp 7 tự gọi khi turn xong.
 
-Chi phí thật của skill trong prompt: catalog chỉ chứa `name` + `description`
-(**319 ký tự**, ~80 token), không phải toàn bộ body 6,6 KB. Body chỉ được nạp khi
-agent thực sự gọi `skill`.
+Tool `jev_review` vẫn nguyên: đăng ký qua `mcp-jev-review`, agent vẫn gọi được,
+hướng dẫn vẫn vào prompt.
 
 ### Vì sao có lớp "Quyền của user"
 
