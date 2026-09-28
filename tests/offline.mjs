@@ -162,6 +162,33 @@ console.log('\n4. Kiểm hoàn thành — chỉ chạy khi có goal, và không 
   await handlers['agent/turn-stopping'][0]({ agent, turn: 2, signal: AbortSignal.abort() });
   await handlers['agent/turn-stopping'][0]({ agent, turn: 2, signal: AbortSignal.abort() });
   check('cùng turn không kiểm lại', agent.steered.length === before, `steer=${agent.steered.length}`);
+
+  // Đường steer thật: goal chưa xong → phải steer, và message steer phải mang
+  // source đúng định dạng session v4. Đây là nhánh từng không có test dương nên
+  // `source: 'jev-gate'` (chuỗi trần) lọt ra tới log và làm corrupt session.
+  const steered = await withStubJev(
+    { complete: 0.1, evidence: 0.1, needs_execution: 0.9, '*': 0.5 },
+    async () => {
+      // Instance mới: `createJev` bắt `globalThis.fetch` tại thời điểm `apply`,
+      // nên stub phải được vá trước khi load, không dùng lại handlers ở trên.
+      const { handlers: fresh } = await loadPlugin({
+        config: { enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false },
+      });
+      const live = {
+        id: 'a3',
+        goal: { objective: 'Sửa bug và chạy test' },
+        session: { snapshotEvents: () => [] },
+        steered: [],
+        steer(m) { this.steered.push(m); },
+      };
+      await fresh['agent/turn-stopping'][0]({ agent: live, turn: 9, signal: new AbortController().signal });
+      return live.steered;
+    },
+  );
+  check('goal chưa xong → steer 1 message', steered.length === 1, `n=${steered.length}`);
+  check('message steer mang source v4 hợp lệ',
+    steered[0]?.source?.kind === 'plugin:jev-gate',
+    `source=${JSON.stringify(steered[0]?.source)}`);
 }
 
 console.log('\n5. Lớp 4 — spawn hint chỉ chạy ở step 1, tắt được, fail-open');
@@ -190,6 +217,291 @@ console.log('\n5. Lớp 4 — spawn hint chỉ chạy ở step 1, tắt được
   check('enableSpawnHint:false → im lặng', o3.messages.length === 1, `msg=${o3.messages.length}`);
 }
 
+console.log('\n9. Lớp 5 — context triage: gộp câu hỏi, ngưỡng, cắt trần, tắt được');
+
+/**
+ * Stub Jev ở tầng HTTP để kiểm được ĐƯỜNG ĐI CÓ CHẤM ĐIỂM, không chỉ fail-open.
+ * `loadPlugin` không có tham số cho fetch, nên ta vá `globalThis.fetch` trong
+ * lúc apply — createJev nhận `fetchImpl` mặc định là `globalThis.fetch` tại thời
+ * điểm gọi `apply`, nên vá trước khi import là đủ.
+ *
+ * `answers['*']` là giá trị mặc định cho mọi id không được nêu tên: Lớp 5 sinh
+ * số câu `file_N` theo nội dung thư mục thật, nên test không thể liệt kê hết.
+ */
+async function withStubJev(answers, run) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const ids = Object.keys(body.questions);
+    const payload = {
+      model: 'jev-stub',
+      answers: Object.fromEntries(ids.map((id) => {
+        const question = body.questions[id];
+        const spec = answers[id] ?? answers['*'];
+        if (spec === undefined) throw new Error(`stub has no answer for "${id}"`);
+        const value = typeof spec === 'function' ? spec(id, question) : spec;
+        if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+        const keys = Object.keys(question.criteria);
+        const probabilities = Object.fromEntries(keys.map((key) => [key, key === value ? 1 : 0]));
+        return [id, { type: 'choice', choice: value, confidence: 0.9, probabilities }];
+      })),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/**
+ * Dựng một workspace tạm có kiểm soát cho Lớp 5, để test không phụ thuộc vào
+ * nội dung thư mục thật của máy chạy.
+ */
+async function makeWorkspace(files) {
+  const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const root = await mkdtemp(join(tmpdir(), 'jev-gate-test-'));
+  for (const file of files) {
+    const target = join(root, file);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, '// fixture\n');
+  }
+  return root;
+}
+
+{
+  const { preStepQuestion } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?ctx=1`);
+
+  // 9a. Hình dạng câu hỏi: một approach + N câu file_N, tất cả hợp lệ
+  const q = preStepQuestion({ task: 'fix the login bug', candidates: ['src/auth.ts', 'README.md'] });
+  check('gộp approach + 2 file thành 3 câu', Object.keys(q.questions).length === 3,
+    `ids=${Object.keys(q.questions).join(',')}`);
+  check('file_N là noul', q.questions.file_0.type === 'noul' && q.questions.file_1.type === 'noul');
+  check('candidate_files nằm trong state', Array.isArray(q.state.candidate_files) && q.state.candidate_files.length === 2);
+  check('state đánh dấu evidence là untrusted', /untrusted/i.test(q.state.note ?? ''));
+  check('câu file nhắc tên file cụ thể', /src\/auth\.ts/.test(q.questions.file_0.instructions));
+
+  // 9b. includeApproach:false → chỉ còn câu file (dùng khi tắt Lớp 4)
+  const noApproach = preStepQuestion({ task: 'x', candidates: ['a.ts'], includeApproach: false });
+  check('includeApproach:false → chỉ câu file', Object.keys(noApproach.questions).join(',') === 'file_0',
+    `ids=${Object.keys(noApproach.questions).join(',')}`);
+
+  // 9c. Danh sách rỗng vẫn hợp lệ (Lớp 5 tự tắt)
+  const empty = preStepQuestion({ task: 'x', candidates: [] });
+  check('không có ứng viên → chỉ câu approach', Object.keys(empty.questions).join(',') === 'approach',
+    `ids=${Object.keys(empty.questions).join(',')}`);
+}
+
+{
+  // 9d. Đường đi thật trên workspace có kiểm soát: file vượt ngưỡng được chèn,
+  //     file dưới ngưỡng bị bỏ, và chỉ file vượt ngưỡng xuất hiện.
+  const root = await makeWorkspace(['src/auth.ts', 'src/other.ts', 'README.md']);
+  const result = await withStubJev(
+    {
+      approach: 'scripted-analysis',
+      // `file_N` được sinh theo thứ tự thư mục thật; README.md xếp trước vì là
+      // tên ưu tiên, nên nó là file_0.
+      file_0: 0.9,
+      '*': 0.1,
+    },
+    async () => {
+      const { handlers } = await loadPlugin({
+        config: {
+          enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+          enableSpawnHint: true, enableContextTriage: true,
+        },
+      });
+      const messages = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'sửa bug login' }] }];
+      return handlers['agent/pre-step'][0](
+        { messages, turn: 1, step: 1, signal: new AbortController().signal, agent: { session: { header: { cwd: root } } } },
+        async () => ({ kind: 'enter', messages }),
+      );
+    },
+  );
+  check('Lớp 5 chạy xong vẫn enter', result.kind === 'enter', `kind=${result.kind}`);
+  const injected = result.messages.slice(1).map((m) => m.content?.[0]?.text ?? '').join('\n');
+  check('gợi ý approach được chèn', /scripted-analysis/.test(injected), 'không thấy approach');
+  check('file vượt ngưỡng được nêu tên', /README\.md/.test(injected), 'không thấy README.md');
+  check('file dưới ngưỡng KHÔNG được nêu', !/other\.ts/.test(injected), 'file dưới ngưỡng bị chèn');
+  check('mọi message chèn đều mang source plugin:jev-gate',
+    result.messages.slice(1).every((m) => m.source?.kind === 'plugin:jev-gate'),
+    `sources=${result.messages.slice(1).map((m) => m.source?.kind).join(',')}`);
+
+  // 9e. Cắt trần: mọi file đều vượt ngưỡng nhưng contextMaxFiles chặn còn 1
+  const capped = await withStubJev(
+    { approach: 'scripted-analysis', '*': 0.95 },
+    async () => {
+      const { handlers } = await loadPlugin({
+        config: {
+          enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+          enableSpawnHint: true, enableContextTriage: true, contextMaxFiles: 1,
+        },
+      });
+      const messages = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'x' }] }];
+      return handlers['agent/pre-step'][0](
+        { messages, turn: 1, step: 1, signal: new AbortController().signal, agent: { session: { header: { cwd: root } } } },
+        async () => ({ kind: 'enter', messages }),
+      );
+    },
+  );
+  const text = capped.messages.slice(1).map((m) => m.content?.[0]?.text ?? '').join('\n');
+  const named = ['README.md', 'auth.ts', 'other.ts'].filter((name) => text.includes(name));
+  check('contextMaxFiles cắt đúng còn 1 file', named.length === 1, `named=${named.join(',')}`);
+
+  // 9f. enableContextTriage:false → chỉ còn gợi ý approach, không liệt kê file
+  const off = await withStubJev(
+    { approach: 'one-command-scan' },
+    async () => {
+      const { handlers } = await loadPlugin({
+        config: {
+          enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+          enableSpawnHint: true, enableContextTriage: false,
+        },
+      });
+      const messages = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'x' }] }];
+      return handlers['agent/pre-step'][0](
+        { messages, turn: 1, step: 1, signal: new AbortController().signal, agent: { session: { header: { cwd: root } } } },
+        async () => ({ kind: 'enter', messages }),
+      );
+    },
+  );
+  const offText = off.messages.slice(1).map((m) => m.content?.[0]?.text ?? '').join('\n');
+  check('enableContextTriage:false → không liệt kê file',
+    !/README\.md/.test(offText) && /one-command-scan/.test(offText), offText.slice(0, 80));
+}
+
+console.log('\n10. Lớp 6 — failure recovery: chỉ khi tool lỗi, bỏ qua deny của Lớp 1');
+
+{
+  const { failureQuestion } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?fail=1`);
+  const q = failureQuestion({ goal: 'deploy', toolName: 'bash', command: 'npm run deploy', errorText: 'ECONNREFUSED' });
+  check('type = choice', q.questions.recovery.type === 'choice');
+  check('4 nhánh retry/alternate/diagnose/stop-and-report',
+    Object.keys(q.questions.recovery.criteria).join(',') === 'retry,alternate,diagnose,stop-and-report',
+    `opts=${Object.keys(q.questions.recovery.criteria).join(',')}`);
+  check('state có lỗi + tool + goal',
+    typeof q.state.error_output === 'string' && typeof q.state.failed_tool === 'string'
+    && typeof q.state.original_goal === 'string');
+}
+
+{
+  // 10a. Tool lỗi bình thường → chèn gợi ý qua additionalContexts
+  const result = await withStubJev(
+    { recovery: 'retry' },
+    async () => {
+      const { handlers } = await loadPlugin({
+        config: {
+          enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+          enableFailureRecovery: true,
+        },
+      });
+      const exec = { name: 'bash', arguments: { command: 'npm run deploy' }, agent: { session: { snapshotEvents: () => [] } }, signal: new AbortController().signal };
+      return handlers['tools/post-execute'][0](
+        exec,
+        { isError: true, content: [{ type: 'text', text: 'Error: ECONNREFUSED' }] },
+        async () => ({ kind: 'accept' }),
+      );
+    },
+  );
+  const added = result.additionalContexts ?? [];
+  check('tool lỗi → chèn 1 additionalContext', added.length === 1, `n=${added.length}`);
+  check('gợi ý nói đúng nhánh retry', /retry/i.test(added[0]?.content?.[0]?.text ?? ''),
+    added[0]?.content?.[0]?.text?.slice(0, 60));
+  check('context mang source plugin:jev-gate', added[0]?.source?.kind === 'plugin:jev-gate', `source=${JSON.stringify(added[0]?.source)}`);
+  check('quyết định accept giữ nguyên', result.kind === 'accept', `kind=${result.kind}`);
+
+  // 10b. Kết quả THÀNH CÔNG → không được chèn gì
+  const ok = await withStubJev({ recovery: 'retry' }, async () => {
+    const { handlers } = await loadPlugin({
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+        enableFailureRecovery: true,
+      },
+    });
+    return handlers['tools/post-execute'][0](
+      { name: 'bash', arguments: { command: 'ls' }, agent: { session: { snapshotEvents: () => [] } }, signal: new AbortController().signal },
+      { isError: false, content: [{ type: 'text', text: 'ok' }] },
+      async () => ({ kind: 'accept' }),
+    );
+  });
+  check('tool thành công → không chèn', (ok.additionalContexts ?? []).length === 0,
+    `n=${(ok.additionalContexts ?? []).length}`);
+
+  // 10c. Lỗi do CHÍNH Lớp 1 chặn → bỏ qua, không mâu thuẫn với quyết định deny
+  const denied = await withStubJev({ recovery: 'retry' }, async () => {
+    const { handlers } = await loadPlugin({
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+        enableFailureRecovery: true,
+      },
+    });
+    return handlers['tools/post-execute'][0](
+      { name: 'bash', arguments: { command: 'rm -rf /' }, agent: { session: { snapshotEvents: () => [] } }, signal: new AbortController().signal },
+      { isError: true, content: [{ type: 'text', text: 'Error: blocked' }], error: { message: 'blocked', info: { code: 'JEV_DESTRUCTIVE' } } },
+      async () => ({ kind: 'accept' }),
+    );
+  });
+  check('deny của Lớp 1 → không chèn gợi ý phục hồi', (denied.additionalContexts ?? []).length === 0,
+    `n=${(denied.additionalContexts ?? []).length}`);
+
+  // 10d. Trần mỗi turn: lần thứ 3 trong cùng turn không chèn nữa
+  const capped = await withStubJev({ recovery: 'retry' }, async () => {
+    const { handlers } = await loadPlugin({
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+        enableFailureRecovery: true, failureMaxPerTurn: 1,
+      },
+    });
+    const handler = handlers['tools/post-execute'][0];
+    const session = { snapshotEvents: () => [{ type: 'tool/result', data: { turn: 5 } }] };
+    const make = () => ({
+      exec: { name: 'bash', arguments: { command: 'x' }, agent: { session }, signal: new AbortController().signal },
+      result: { isError: true, content: [{ type: 'text', text: 'boom' }] },
+    });
+    const first = make();
+    const second = make();
+    const a = await handler(first.exec, first.result, async () => ({ kind: 'accept' }));
+    const b = await handler(second.exec, second.result, async () => ({ kind: 'accept' }));
+    return { a: (a.additionalContexts ?? []).length, b: (b.additionalContexts ?? []).length };
+  });
+  check('trần mỗi turn: lần 1 chèn, lần 2 không', capped.a === 1 && capped.b === 0,
+    `a=${capped.a} b=${capped.b}`);
+
+  // 10e. Jev lỗi → fail-open, giữ nguyên quyết định downstream
+  {
+    const { handlers } = await loadPlugin({
+      credentials: { resolve: async () => { throw new Error('no key'); } },
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+        enableFailureRecovery: true,
+      },
+    });
+    const out = await handlers['tools/post-execute'][0](
+      { name: 'bash', arguments: { command: 'x' }, agent: { session: { snapshotEvents: () => [] } }, signal: new AbortController().signal },
+      { isError: true, content: [{ type: 'text', text: 'boom' }] },
+      async () => ({ kind: 'accept' }),
+    );
+    check('Jev lỗi → fail-open, không chèn', (out.additionalContexts ?? []).length === 0,
+      `n=${(out.additionalContexts ?? []).length}`);
+  }
+
+  // 10f. enableFailureRecovery:false → hook không đăng ký (tắt hẳn, không tốn gì)
+  {
+    const { handlers } = await loadPlugin({
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+        enableFailureRecovery: false,
+      },
+    });
+    check('enableFailureRecovery:false → không đăng ký hook post-execute',
+      handlers['tools/post-execute'] === undefined,
+      `handlers=${Object.keys(handlers).join(',')}`);
+  }
+}
+
 console.log('\n6. Lớp authorization — chỉ nhận tin nhắn THẬT của user');
 
 {
@@ -205,7 +517,9 @@ console.log('\n6. Lớp authorization — chỉ nhận tin nhắn THẬT của u
     { role: 'user', source: { kind: 'tool-jobs' }, content: [{ type: 'text', text: 'job output: rm -rf ~' }] },
     { role: 'user', source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'AGENTS.md' }] },
     { role: 'user', source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: 'skills' }] },
-    { role: 'user', source: 'jev-gate', content: [{ type: 'text', text: 'Jev suggests...' }] },
+    { role: 'user', source: { kind: 'plugin:jev-gate' }, content: [{ type: 'text', text: 'Jev suggests...' }] },
+    // Hình dạng cũ (chuỗi trần) đã bị format v4 loại bỏ — vẫn phải bị coi là không phải user.
+    { role: 'user', source: 'jev-gate', content: [{ type: 'text', text: 'Jev suggests (legacy string)...' }] },
     { role: 'user', content: [{ type: 'text', text: 'no source at all' }] },
     { role: 'user', source: null, content: [{ type: 'text', text: 'null source' }] },
   ];

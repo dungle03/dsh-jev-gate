@@ -4,7 +4,7 @@
 
 ![dsh-jev-gate architecture](assets/architecture.png)
 
-Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **four high-value
+Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **six high-value
 moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
 one principle:
 
@@ -12,23 +12,73 @@ one principle:
 > the moments where a wrong decision is expensive.**
 
 Jev does not generate text, does not plan, does not write code. It only scores a
-closed question and returns a probability. This plugin uses Jev as **four
+closed question and returns a probability. This plugin uses Jev as **six
 checkpoints**, not as a second brain.
 
-## Five layers
+## Six layers
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
 | Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
-| User authorization | `tools/pre-execute` | Did the user actually ask to delete this exact thing? | `choice` | **on** |
+| User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
 | Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | Effort routing | `agent/request` | Does the next step need deep thinking? For how long? | `choice` ×2 | **on** |
-| Approach choice | `agent/pre-step` | Which approach is optimal for this task? | `choice` | **on** |
+| Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
+| Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
 `(prefix, effort)`, so the only cost is the first touch of a new effort being
 cold — measured to cost exactly the same as a cold new prefix.
+
+### Why the "Context choice" layer exists
+
+This is the clearest cost target. Most input tokens are burned by the model
+hunting for the relevant files itself through a chain of tool calls (`glob` →
+`grep` → `read` → read again), when most of those tokens only answer the question
+"which file is worth reading".
+
+The plugin lists candidates by **file name** (one breadth-first `readdir`, ranked
+by tokens matching the task), then asks Jev one `noul` question **per** candidate.
+All questions ride in **one request**, so 13 batched questions cost 271ms — the
+same as a single question. The host applies `contextFileThreshold` (0.6), sorts
+by probability, and truncates to `contextMaxFiles` (3).
+
+Why N `noul` questions instead of one multi-branch `choice`: the file list is
+generated per repository, while `choice.criteria` must be fixed in code — criteria
+cannot be built from a runtime list.
+
+Measured on the real API (`jev-1.13.0`); the margin is very wide:
+
+| Case | File it should pick | Unrelated files |
+|---|---|---|
+| Login-session bug | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
+| Recolour the logo | `assets/logo.svg` **0.94** | every other file 0.02–0.03 |
+| Add a migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
+| Write onboarding docs | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+
+### Why the "Tool-failure recovery" layer exists
+
+A failed tool usually makes the model retry the same call a few times before
+changing approach — each attempt is a full generation. A 250ms question answers
+instead. The four branches are four situations different in kind, so there is no
+threshold to tune: `retry` (transient), `alternate` (wrong approach), `diagnose`
+(cause unknown), and `stop-and-report` (cannot be resolved alone).
+
+This layer **skips** commands blocked by layer 1 itself: that is not a tool
+failure but a gate decision, and layer 1 already has its own message. It is
+recognised by `error.info.code === 'JEV_DESTRUCTIVE'`. A `failureMaxPerTurn` cap
+stops a repeatedly failing command from generating endless hints.
+
+Measured (`jev-1.13.0`, 6 runs/case, stable 6/6 per case):
+
+| Error | Branch Jev picks | Expected |
+|---|---|---|
+| `request timed out after 30000ms` | `retry` | retry ✓ |
+| `cat: ... No such file or directory` | `alternate` 0.81 | alternate ✓ |
+| test failure, cause unknown | `diagnose` 0.95 | diagnose ✓ |
+| `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
+| `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ (retrying a dead DB is pointless) |
 
 ### Why the "User authorization" layer exists
 
@@ -98,13 +148,26 @@ dsh-jev-gate
 │   └── asks Jev (choice ×2): "does the next step need deep thinking? for how long?"
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
 │
-├── LAYER 4 · approach choice         hook: agent/pre-step (step 1 only)
-│   └── asks Jev (choice): "which approach is optimal for this task?"
-│       ├── one-command-scan   ──► "run the single command, do not split it"
-│       ├── scripted-analysis  ──► "write one short script and read its result"
-│       ├── parallel-workers   ──► "delegate to subagents in parallel"
-│       └── guided-interview   ──► "clarify with the user first"
-│           (silent below conf 0.3; the model decides, the plugin does not act)
+├── LAYER 4+5 · approach + context    hook: agent/pre-step (step 1 only)
+│   └── ONE Jev request, two question kinds:
+│       ├── choice "which approach is optimal?" (layer 4)
+│       │   ├── one-command-scan   ──► "run the single command, do not split it"
+│       │   ├── scripted-analysis  ──► "write one short script and read its result"
+│       │   ├── parallel-workers   ──► "delegate to subagents in parallel"
+│       │   └── guided-interview   ──► "clarify with the user first"
+│       │       (silent below conf 0.3; the model decides, the plugin does not act)
+│       └── noul ×N "must this file be read?" (layer 5)
+│           ├── the plugin lists candidates by FILE NAME (BFS readdir + ranking)
+│           ├── p ≥ 0.6 → keep, sort descending, truncate to contextMaxFiles (3)
+│           └── injects "read these first" — a hint, not a restriction
+│
+├── LAYER 6 · tool-failure recovery   hook: tools/post-execute
+│   └── only when a tool actually failed (skips layer 1 denials):
+│       ├── retry           ──► "transient; run the same call once more"
+│       ├── alternate       ──► "wrong approach; change tool/flag/path"
+│       ├── diagnose        ──► "cause unknown; investigate first"
+│       └── stop-and-report ──► "cannot be resolved alone; report it"
+│           (returned via additionalContexts → spliced into the next step)
 │
 └── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -121,8 +184,8 @@ command stays blocked rather than being silently allowed.
 User types a prompt
       │
       ▼
-LAYER 4 · agent/pre-step    step 1 only: which approach is optimal?
-      │                     → injects a hint (one command / script / subagents / clarify)
+LAYER 4+5 · agent/pre-step  step 1 only, ONE Jev request:
+      │                     which approach is optimal + which files to read first
       ▼
 LAYER 3 · agent/request     on every model call: does the next step need deep thinking?
       │                     → writes reasoningEffort, provider and model UNCHANGED
@@ -134,9 +197,8 @@ LAYER 1 · tools/pre-execute  bash/pwsh only: would this command destroy data?
       │                      → p < 0.7: allow
       │                      → p ≥ 0.7: ask LAYER 1b
       ▼
-LAYER 1b · user authorization  did the user ask to delete this exact thing?
-      │                      → authorized: allow
-      │                      → otherwise: DENY, the command does not run
+LAYER 6 · tools/post-execute the tool just failed: retry / change / diagnose / report
+      │                      → injects a hint for the next step
       ▼
 LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
       │                      → unfinished or no proof means steer to keep working
@@ -144,9 +206,9 @@ LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
 turn ends
 ```
 
-> LAYER 4 runs once per turn (step 1). LAYER 3 runs on **every step**, while the
-> LLM, LAYER 1 and LAYER 1b **repeat** on every tool call. The diagram above
-> draws one pass for readability.
+> LAYER 4+5 runs once per turn (step 1). LAYER 3 runs on **every step**, while the
+> LLM, LAYER 1, LAYER 1b and LAYER 6 **repeat** on every tool call. The diagram
+> above draws one pass for readability.
 
 ## Install
 
@@ -213,24 +275,32 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     evidenceThreshold: 0.5      # p < this means "evidence missing"
     executionThreshold: 0.5     # p >= this means the goal needs execution
     approachConfidenceThreshold: 0.3
+    contextFileThreshold: 0.6   # p >= this means the file is worth reading
+    contextCandidateLimit: 12   # max candidates handed to Jev
+    contextMaxFiles: 3          # max files named in the hint
+    failureMaxPerTurn: 2        # max recovery hints per turn
     gateTimeoutMs: 2000
     authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
-    spawnTimeoutMs: 4000
+    spawnTimeoutMs: 6000
+    contextTimeoutMs: 6000
+    failureTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
+    enableContextTriage: true           # context file-selection layer
+    enableFailureRecovery: true         # tool-failure recovery layer
 ```
 
 ## Verify
 
 ```bash
 bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 35 checks, no secret needed
+node tests/offline.mjs      # 63 checks, no secret needed
 node tests/live-check.mjs   # 15 checks, needs TYPESAFE_API_KEY + network
 ```
 
@@ -240,6 +310,19 @@ node tests/live-check.mjs   # 15 checks, needs TYPESAFE_API_KEY + network
 - `tests/offline.mjs` — no secret needed: fail-open, model invariance, shell-tool
   gating only, layer-4 guards, genuine-user-message filtering, export contract.
 - `tests/live-check.mjs` — real Jev API calls against known-answer cases.
+
+- `tools/repair-session-source.mjs` — repairs old session logs corrupted by
+  versions < 0.3.1, which wrote `source` as a bare string (see CHANGELOG 0.3.1).
+  Run it while dsh is stopped:
+
+  ```bash
+  node tools/repair-session-source.mjs --check   # list logs that need repair
+  node tools/repair-session-source.mjs           # repair every session in $DSH_HOME
+  ```
+
+  Each file keeps its original beside it as `.bak-sourcekind-<time>`, and the new
+  bytes must pass strict validation before publication. Logs held open by another
+  process are skipped.
 
 CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
 `live-check.mjs` when the repo has a `TYPESAFE_API_KEY` secret. See
@@ -262,6 +345,12 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Fail-open layer 1 (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
 | Approach choice | 9/10 correct (disk scan → one command; 5 topics → parallel; vague → clarify) |
+| Context choice — threshold margin | files worth reading **0.70–0.97**, unrelated files **0.02–0.18** |
+| Context choice — strict 6-case expectation | 5/6 (for "flaky test" Jev picked only the test file — reasonable) |
+| Tool-failure recovery, 6 runs/case | 4/4 cases stable 6/6 each |
+| Layers 5+6 end-to-end (real handler + real Jev) | 12/12 correct, layer 1 not regressed (p=0.95) |
+| Layer 5 latency (13 questions batched in 1 request) | median 271ms — same as one question |
+| Layer 6 latency (1 question) | median 267ms |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
 
@@ -274,6 +363,9 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
   `agent` API exposes no way to call a tool directly, so the model decides. The
   model may ignore it — and Jev picks the wrong approach about 1 in 10 times in
   the measured set.
+- **Does not read files for the model.** Layer 5 only *names* files worth reading;
+  the model still calls the read tool. It also reads no file contents to score —
+  only file names inside the workspace.
 - **Does not replace the agent's judgement.** A recommendation is not an authorisation.
 
 ## Uninstall

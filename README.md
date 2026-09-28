@@ -4,30 +4,79 @@
 
 ![Kiến trúc dsh-jev-gate](assets/architecture.png)
 
-Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **bốn khoảnh khắc đắt
+Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **sáu khoảnh khắc đắt
 giá** của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
 
 > **LLM hiểu và làm. Jev chỉ trả lời câu hỏi ĐÓNG ở khoảnh khắc mà một quyết
 > định sai gây tốn kém.**
 
 Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó chỉ chấm một câu
-hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **bốn chốt chặn**, không
+hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **sáu chốt chặn**, không
 phải làm bộ não thứ hai.
 
-## Năm lớp
+## Sáu lớp
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
 | Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
-| Quyền của user | `tools/pre-execute` | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
+| Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
 | Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? Giữ bao lâu? | `choice` ×2 | **bật** |
-| Chọn hướng | `agent/pre-step` | Hướng nào tối ưu nhất cho task này? | `choice` | **bật** |
+| Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
+| Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
 nhất là lần đầu chạm một effort mới thì cold — đo được tốn đúng bằng cold của
 một prefix mới.
+
+### Vì sao có lớp "Chọn file nạp vào context"
+
+Đây là mục tiêu chi phí rõ nhất. Phần lớn token đầu vào bị đốt vào việc model tự
+đi tìm file liên quan bằng một chuỗi tool call (`glob` → `grep` → `read` → `read`
+lại), trong khi phần lớn token đó chỉ để trả lời câu hỏi "file nào đáng đọc".
+
+Plugin liệt kê ứng viên bằng **tên file** (một lần `readdir` theo chiều rộng, có
+xếp hạng theo token khớp trong task), rồi hỏi Jev một câu `noul` cho **mỗi** ứng
+viên. Mọi câu đi trong **cùng một request**, nên 13 câu gộp tốn 271ms — bằng một
+câu đơn. Host so ngưỡng `contextFileThreshold` (0.6), xếp theo xác suất rồi cắt
+còn `contextMaxFiles` (3).
+
+Vì sao N câu `noul` chứ không một `choice` nhiều nhánh: danh sách file sinh động
+theo từng repo, mà `choice.criteria` phải cố định trong code — không dựng được
+criteria từ danh sách runtime.
+
+Số đo trên API thật (`jev-1.13.0`), biên rất rộng:
+
+| Case | File nên chọn | File không liên quan |
+|---|---|---|
+| Bug phiên đăng nhập | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
+| Đổi màu logo | `assets/logo.svg` **0.94** | mọi file khác 0.02–0.03 |
+| Thêm migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
+| Viết tài liệu onboarding | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+
+### Vì sao có lớp "Phục hồi khi tool lỗi"
+
+Một tool lỗi thường khiến model thử lại y hệt vài lần rồi mới đổi cách — mỗi lần
+thử là một generation đầy đủ. Một câu hỏi 250ms trả lời thay. Bốn nhánh là bốn
+tình huống khác nhau về bản chất nên không phải chọn ngưỡng: `retry` (lỗi tạm
+thời), `alternate` (cách sai, đổi cách), `diagnose` (chưa hiểu vì sao), và
+`stop-and-report` (không tự vượt được).
+
+Lớp này **bỏ qua** lệnh bị chính Lớp 1 chặn: đó không phải tool lỗi mà là gate
+chặn, và Lớp 1 đã có thông báo riêng. Nhận biết qua `error.info.code ===
+'JEV_DESTRUCTIVE'`. Có trần `failureMaxPerTurn` để một lệnh lỗi lặp lại không
+sinh vô hạn gợi ý.
+
+Số đo (`jev-1.13.0`, 6 lần/case, ổn định 6/6 mỗi case):
+
+| Lỗi | Nhánh Jev chọn | Kỳ vọng |
+|---|---|---|
+| `request timed out after 30000ms` | `retry` | retry ✓ |
+| `cat: ... No such file or directory` | `alternate` 0.81 | alternate ✓ |
+| test fail, chưa rõ lý do | `diagnose` 0.95 | diagnose ✓ |
+| `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
+| `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ (DB không chạy thì retry vô nghĩa) |
 
 ### Vì sao có lớp "Quyền của user"
 
@@ -95,13 +144,26 @@ dsh-jev-gate
 │   └── hỏi Jev (choice ×2): "bước tới cần nghĩ nhiều không? giữ bao lâu?"
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
 │
-├── LỚP 4 · chọn hướng tiếp cận       hook: agent/pre-step (chỉ step 1)
-│   └── hỏi Jev (choice): "hướng nào tối ưu nhất cho task này?"
-│       ├── one-command-scan   ──► "chạy 1 lệnh duy nhất, đừng chia việc"
-│       ├── scripted-analysis  ──► "viết 1 script ngắn rồi đọc kết quả"
-│       ├── parallel-workers   ──► "chia cho subagent chạy song song"
-│       └── guided-interview   ──► "hỏi lại user cho rõ trước"
-│           (conf < 0.3 thì im lặng; model tự quyết, plugin không tự làm)
+├── LỚP 4+5 · chọn hướng + chọn file  hook: agent/pre-step (chỉ step 1)
+│   └── MỘT request Jev, hai loại câu:
+│       ├── choice "hướng nào tối ưu?" (Lớp 4)
+│       │   ├── one-command-scan   ──► "chạy 1 lệnh duy nhất, đừng chia việc"
+│       │   ├── scripted-analysis  ──► "viết 1 script ngắn rồi đọc kết quả"
+│       │   ├── parallel-workers   ──► "chia cho subagent chạy song song"
+│       │   └── guided-interview   ──► "hỏi lại user cho rõ trước"
+│       │       (conf < 0.3 thì im lặng; model tự quyết, plugin không tự làm)
+│       └── noul ×N "file này có cần đọc không?" (Lớp 5)
+│           ├── plugin liệt kê ứng viên bằng TÊN file (readdir BFS + xếp hạng)
+│           ├── p ≥ 0.6 → giữ, xếp giảm dần, cắt còn contextMaxFiles (3)
+│           └── chèn "đọc các file này trước" — gợi ý, không phải giới hạn
+│
+├── LỚP 6 · phục hồi khi tool lỗi        hook: tools/post-execute
+│   └── chỉ khi tool thật sự lỗi (bỏ qua deny của Lớp 1):
+│       ├── retry           ──► "lỗi tạm thời, chạy lại y hệt một lần"
+│       ├── alternate       ──► "cách sai, đổi tool/flag/path khác"
+│       ├── diagnose        ──► "chưa hiểu vì sao, điều tra trước"
+│       └── stop-and-report ──► "không tự vượt được, báo user"
+│           (trả qua additionalContexts → engine splice vào step kế tiếp)
 │
 └── mọi quyết định ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
@@ -109,14 +171,14 @@ dsh-jev-gate
 Mọi lần gọi Jev đều **fail-open**: Jev lỗi, chậm, hay trả rác thì việc đi tiếp
 như chưa từng có Jev.
 
-**Một lượt chạy qua bốn lớp** — bốn chốt chặn ở bốn thời điểm khác nhau:
+**Một lượt chạy qua các lớp** — các chốt chặn ở những thời điểm khác nhau:
 
 ```
 User gõ prompt
       │
       ▼
-LỚP 4 · agent/pre-step     chỉ step 1: hướng nào tối ưu cho task này?
-      │                    → chèn gợi ý (1 lệnh / script / subagent / hỏi lại)
+LỚP 4+5 · agent/pre-step   chỉ step 1, MỘT request Jev:
+      │                    hướng nào tối ưu + file nào cần đọc trước
       ▼
 LỚP 3 · agent/request      mỗi lần gọi model: bước tới cần nghĩ nhiều không?
       │                    → ghi reasoningEffort, provider và model GIỮ NGUYÊN
@@ -125,7 +187,10 @@ LLM sinh phản hồi hoặc gọi tool
       │
       ▼
 LỚP 1 · tools/pre-execute  chỉ với bash/pwsh: lệnh này có phá dữ liệu không?
-      │                    → p ≥ 0.7 thì CHẶN, lệnh không được chạy
+      │                    → p ≥ 0.7 thì CHẶN (qua LỚP 1b xét quyền user)
+      ▼
+LỚP 6 · tools/post-execute tool vừa lỗi: retry / đổi cách / điều tra / báo user
+      │                    → chèn gợi ý cho step kế tiếp
       ▼
 LỚP 2 · agent/turn-stopping khi model định dừng: xong chưa? có bằng chứng chưa?
       │                     → chưa xong hoặc thiếu bằng chứng thì đẩy làm tiếp
@@ -133,8 +198,9 @@ LỚP 2 · agent/turn-stopping khi model định dừng: xong chưa? có bằng 
 lượt kết thúc
 ```
 
-> LỚP 4 chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở **mỗi bước**, còn LLM
-> và LỚP 1 **lặp lại** mỗi khi có tool call. Sơ đồ trên vẽ một vòng để dễ đọc.
+> LỚP 4+5 chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở **mỗi bước**, còn
+> LLM, LỚP 1, LỚP 1b và LỚP 6 **lặp lại** mỗi khi có tool call. Sơ đồ trên vẽ
+> một vòng để dễ đọc.
 
 ## Cài đặt
 
@@ -200,24 +266,32 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     evidenceThreshold: 0.5      # p < ngưỡng này thì coi là thiếu bằng chứng
     executionThreshold: 0.5     # p >= ngưỡng này thì goal cần thi hành
     approachConfidenceThreshold: 0.3
+    contextFileThreshold: 0.6   # p >= ngưỡng này thì coi là file cần đọc
+    contextCandidateLimit: 12   # số ứng viên tối đa đưa cho Jev chấm
+    contextMaxFiles: 3          # số file tối đa nêu trong gợi ý
+    failureMaxPerTurn: 2        # số lần gợi ý phục hồi tối đa mỗi turn
     gateTimeoutMs: 2000
     authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
-    spawnTimeoutMs: 4000
+    spawnTimeoutMs: 6000
+    contextTimeoutMs: 6000
+    failureTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
+    enableContextTriage: true           # lớp chọn file nạp vào context
+    enableFailureRecovery: true         # lớp phục hồi khi tool lỗi
 ```
 
 ## Kiểm chứng
 
 ```bash
 bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 35 check, không cần secret
+node tests/offline.mjs      # 63 check, không cần secret
 node tests/live-check.mjs   # 15 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
@@ -226,6 +300,17 @@ node tests/live-check.mjs   # 15 check, chỉ cần TYPESAFE_API_KEY + mạng
 - `tests/offline.mjs` — kiểm không cần secret: fail-open, bất biến model, chỉ
   gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export.
 - `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
+- `tools/repair-session-source.mjs` — vá session log cũ bị hỏng do bản < 0.3.1 ghi
+  `source` dạng chuỗi trần (xem CHANGELOG 0.3.1). Chạy khi dsh đã tắt:
+
+  ```bash
+  node tools/repair-session-source.mjs --check   # chỉ liệt kê file cần vá
+  node tools/repair-session-source.mjs           # vá mọi session trong $DSH_HOME
+  ```
+
+  Mỗi file được giữ bản gốc cạnh nó với hậu tố `.bak-sourcekind-<time>`, và bytes
+  mới phải qua strict validation trước khi publish. File đang được tiến trình
+  khác mở sẽ bị bỏ qua.
 
 CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, và
 `live-check.mjs` khi repo có secret `TYPESAFE_API_KEY`. Xem
@@ -248,6 +333,12 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Fail-open lớp 1 (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
 | Chọn hướng tiếp cận | 9/10 đúng (scan ổ đĩa → 1 lệnh; 5 chủ đề → song song; mơ hồ → hỏi lại) |
+| Chọn file nạp — biên ngưỡng | file nên đọc **0.70–0.97**, file không liên quan **0.02–0.18** |
+| Chọn file nạp — kỳ vọng chặt 6 case | 5/6 (case "test flaky" Jev chỉ chọn file test — hợp lý) |
+| Phục hồi khi tool lỗi, 6 lần/case | 4/4 case ổn định 6/6 mỗi case |
+| Lớp 5+6 end-to-end (handler thật + Jev thật) | 12/12 đúng, Lớp 1 không hồi quy (p=0.95) |
+| Độ trễ Lớp 5 (13 câu gộp 1 request) | median 271ms — bằng một câu đơn |
+| Độ trễ Lớp 6 (1 câu) | median 267ms |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 
@@ -259,6 +350,9 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 - **Không tự làm theo hướng đã chọn.** Lớp 4 chỉ *gợi ý* hướng; API `agent` của
   DSH không phơi cách gọi tool trực tiếp, nên model tự quyết. Không đảm bảo model
   nghe theo — và Jev chọn hướng sai khoảng 1/10 lần trong phép đo.
+- **Không tự đọc file cho model.** Lớp 5 chỉ *nêu tên* file đáng đọc; việc đọc
+  vẫn do model gọi tool. Nó cũng không đọc nội dung file nào để chấm — chỉ đọc
+  TÊN file trong workspace.
 - **Không thay thế phán đoán của agent.** Một khuyến nghị không phải uỷ quyền.
 
 ## Gỡ

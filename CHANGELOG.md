@@ -3,7 +3,123 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
-## [Unreleased]
+## [0.3.1]
+
+### Sửa
+
+- **`source` của message chèn sai định dạng session v4 → làm hỏng log session.**
+  Cả ba chỗ chèn message (`agent/pre-step`, `additionalContexts` của Lớp 1, và
+  `agent.steer` của Lớp 2) đặt `source: 'jev-gate'` — một **chuỗi trần**. Session
+  format v4 đã bỏ dạng đó: mọi slot message phải có `source` là object với
+  `kind` không rỗng và khác `'plugin'`; một plugin khai kind riêng là
+  `plugin:<tên>`. Log ghi ra vẫn append được (validate lúc ghi không kiểm
+  source), nhưng **lần đọc lại kế tiếp** ném
+  `SessionFormatError: format v4 message requires a producer-owned source kind`,
+  và cả session bị coi là corrupt — không load lại được.
+
+  Đã đo trên máy này: 10/95 session log có record `"source":"jev-gate"`; 9 file
+  đã được vá tại chỗ (23 record), file còn lại là session đang chạy.
+
+  Giờ dùng `source: { kind: SOURCE_KIND }` với
+  `SOURCE_KIND = 'plugin:jev-gate'` — đúng giá trị mà chính DSH v3→v4 sinh ra
+  cho dạng cũ, nên log cũ và log mới đọc về cùng một shape. `isGenuineUserMessage`
+  vẫn chỉ nhận `source.kind === 'user'`, nên gợi ý của plugin tiếp tục bị loại
+  khỏi trường "yêu cầu của user" (test có case cho cả dạng chuỗi cũ lẫn object
+  mới).
+
+### Thêm
+
+- **LỚP 5 — chọn file nạp vào context** (gộp vào `agent/pre-step` cùng Lớp 4, chỉ
+  step 1). Đây là mục tiêu chi phí rõ nhất: phần lớn token đầu vào bị đốt vào việc
+  model tự đi tìm file liên quan bằng chuỗi tool call, trong khi phần lớn token đó
+  chỉ để trả lời "file nào đáng đọc".
+
+  Cách làm: plugin liệt kê ứng viên bằng **tên file** (`readdir` theo chiều rộng
+  tới 4 tầng, tối đa 60 thư mục, xếp hạng theo token khớp trong task rồi tới tên
+  file định hướng), rồi hỏi Jev một câu `noul` cho **mỗi** ứng viên. Mọi câu đi
+  trong **cùng một request** với câu hỏi approach của Lớp 4. Host so ngưỡng
+  `contextFileThreshold` (0.6), xếp giảm dần, cắt còn `contextMaxFiles` (3).
+
+  Vì sao N câu `noul` chứ không một `choice` nhiều nhánh: danh sách file sinh động
+  theo từng repo, mà `choice.criteria` phải cố định trong code.
+
+  Config: `enableContextTriage` (bật), `contextFileThreshold` (0.6),
+  `contextCandidateLimit` (12), `contextMaxFiles` (3), `contextTimeoutMs` (6000).
+
+  Số đo trên API thật (`jev-1.13.0`) — biên rất rộng:
+
+  | Case | File nên chọn | File không liên quan |
+  |---|---|---|
+  | Bug phiên đăng nhập | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
+  | Đổi màu logo | `assets/logo.svg` **0.94** | mọi file khác 0.02–0.03 |
+  | Thêm migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
+  | Viết tài liệu onboarding | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+
+  Kỳ vọng chặt 6 case: **5/6** (case "test flaky" Jev chỉ chọn file test — hợp lý;
+  kỳ vọng của người viết test mới là quá chặt).
+
+  Độ trễ: **13 câu gộp trong 1 request median 271ms** — bằng một câu đơn, xác nhận
+  việc gộp câu chấm song song.
+
+- **LỚP 6 — phục hồi khi tool lỗi** (`tools/post-execute`). Một tool lỗi thường
+  khiến model thử lại y hệt vài lần rồi mới đổi cách; mỗi lần thử là một
+  generation đầy đủ. Hỏi Jev một câu `choice` 4 nhánh thay cho việc đoán:
+  `retry` (lỗi tạm thời) / `alternate` (cách sai) / `diagnose` (chưa rõ nguyên
+  nhân) / `stop-and-report` (không tự vượt được).
+
+  Gợi ý trả qua `additionalContexts`, được engine splice vào batch kế tiếp
+  (`dsh-agent-loop/lib/index.js:1139`). Có trần `failureMaxPerTurn` (2) để một
+  lệnh lỗi lặp lại không sinh vô hạn gợi ý.
+
+  Lớp này **bỏ qua** lệnh bị chính Lớp 1 chặn (nhận biết qua
+  `error.info.code === 'JEV_DESTRUCTIVE'`): đó không phải tool lỗi mà là gate
+  chặn, và Lớp 1 đã có thông báo riêng.
+
+  Config: `enableFailureRecovery` (bật), `failureMaxPerTurn` (2),
+  `failureTimeoutMs` (4000).
+
+  Số đo (`jev-1.13.0`, 6 lần/case, ổn định 6/6 mỗi case):
+
+  | Lỗi | Nhánh Jev chọn | Kỳ vọng |
+  |---|---|---|
+  | `request timed out after 30000ms` | `retry` | retry ✓ |
+  | `cat: ... No such file or directory` | `alternate` 0.81 | alternate ✓ |
+  | test fail, chưa rõ lý do | `diagnose` 0.95 | diagnose ✓ |
+  | `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
+  | `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ |
+
+  Ghi chú thiết kế: kỳ vọng đầu tiên cho `ECONNREFUSED` là `retry`, nhưng đo ra
+  `diagnose` 6/6 — và `diagnose` mới đúng (DB không chạy thì chạy lại vô nghĩa).
+  Prompt được viết lại một lần để nói rõ worker có shell access, và tránh
+  `stop-and-report` hút hết các case (ban đầu nó chiếm `ECONNREFUSED`).
+
+### Sửa
+
+- **`textOf` không đọc được `result.content` dạng mảng block.** Hàm cũ chỉ xử lý
+  chuỗi, mảng, và object có `.content`; nhưng `result.content` của tool LÀ mảng
+  block (`[{ type: 'text', text }]`), nên rơi vào nhánh cuối và trả `''`. Hệ quả:
+  Lớp 6 im lặng cho mọi lỗi. Phát hiện nhờ test stub ở tầng HTTP, không phải test
+  fail-open. Đã thêm nhánh nhận một content block đơn lẻ.
+
+- **`listCandidateFiles` bỏ sót file ở tầng 3.** Bản đầu chỉ đào hai tầng, và đo
+  trên workspace thật thì bỏ sót `src/auth/session.ts` — trong khi
+  `src/<module>/<file>` là cấu trúc phổ biến nhất của mọi repo. Đổi sang BFS tới
+  4 tầng với trần số thư mục, và thêm xếp hạng theo token khớp tên file.
+
+### Đổi
+
+- **Gộp Lớp 4 và Lớp 5 vào một lần gọi Jev.** Hai lớp dùng chung hook
+  `agent/pre-step` ở step 1, nên gộp vào một request: 1 lần gọi trả cả hai, Lớp 5
+  gần như không thêm độ trễ. Log đổi `type: 'approach_hint'` → `type: 'pre_step'`,
+  với các trường `approach`, `context`, `files`.
+
+### Sửa (tài liệu)
+
+- README (cả hai bản): "năm lớp" → **sáu lớp**; thêm Lớp 5 + Lớp 6 vào bảng, cây
+  kiến trúc và luồng một lượt; thêm 6 khoá config mới; sửa số test thật (offline
+  61 check); thêm số đo Lớp 5/6 và độ trễ vào bảng "Số đo đã kiểm".
+
+## [0.3.0] — 2026-09-28
 
 ### Thêm
 
