@@ -14,11 +14,12 @@ Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó c
 hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **bốn chốt chặn**, không
 phải làm bộ não thứ hai.
 
-## Bốn lớp
+## Năm lớp
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
 | Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
+| Quyền của user | `tools/pre-execute` | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
 | Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? Giữ bao lâu? | `choice` ×2 | **bật** |
 | Chọn hướng | `agent/pre-step` | Hướng nào tối ưu nhất cho task này? | `choice` | **bật** |
@@ -27,6 +28,44 @@ Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá 
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
 nhất là lần đầu chạm một effort mới thì cold — đo được tốn đúng bằng cold của
 một prefix mới.
+
+### Vì sao có lớp "Quyền của user"
+
+Gate phá dữ liệu cũ **không phân biệt được rác session với dữ liệu thật**. Log
+thật cho thấy `rm -rf /tmp/gtest` (thư mục test do chính session tạo) bị chặn ở
+p=0.77, trong khi `rm -rf <path không tồn tại>` chỉ 0.40 — nên dọn rác hợp lệ bị
+chặn oan và phải thử lại nhiều lần (một lệnh bị chặn **7 lần** liên tiếp).
+
+Lớp mới chỉ chạy **khi** lớp 1 đã kết luận lệnh là phá dữ liệu, và chỉ để trả
+lời một câu: user có tự tay yêu cầu xoá đúng thứ đó không. Chặn chỉ xảy ra khi
+hội đủ hai điều — **phá dữ liệu VÀ không được user yêu cầu**:
+
+```
+p ≥ 0.7  ──► hỏi tiếp "user có yêu cầu không?"
+              ├── authorized        ──► CHO CHẠY
+              └── narrower/unrelated/quoted ──► CHẶN
+```
+
+Bốn nhánh `choice` thay vì `noul` vì chúng là bốn tình huống khác nhau về bản
+chất, không phải bốn mức của một đại lượng — nên không phải chọn ngưỡng, và
+nhánh `quoted` chặn được nội dung dán vào tự nhận quyền.
+
+Đo trên API thật (`jev-1.13.0`, 6–10 lần/case):
+
+| Nhóm | Kết quả |
+|---|---|
+| Nội dung dán vào tự nhận quyền (web/README/log, nhờ dịch/tóm tắt, giả mạo "user đã phê duyệt") | **0/66** ra `authorized` |
+| Lệnh nguy hiểm không được yêu cầu (không liên quan, mơ hồ, mở rộng phạm vi) | **0/48** ra `authorized` |
+| Dọn dẹp hợp lệ user yêu cầu (đúng path, glob, cache, session scratch) | **46/48** ra `authorized` |
+
+Bằng chứng `user_request` **chỉ** lấy tin nhắn thật của user (`source.kind ===
+'user'`). Trước đây `notePrompt` gộp mọi message `role=user` — kể cả output job
+nền (`tool-jobs`) và gợi ý do chính plugin chèn — nên nội dung không tin cậy có
+thể lọt vào trường "yêu cầu của user".
+
+Lớp này **fail-closed**: hỏi lỗi/timeout thì giữ nguyên hành vi chặn. Khác lớp 1
+(fail-open) — vì đây là lớp phòng thủ, lỗi của Jev không được biến thành "cho qua".
+
 
 ## Kiến trúc
 
@@ -40,7 +79,12 @@ dsh-jev-gate
 ├── LỚP 1 · gate phá dữ liệu          hook: tools/pre-execute
 │   └── hỏi Jev (noul): "lệnh này có phá dữ liệu không thể khôi phục?"
 │       ├── p < 0.7  ──► cho chạy
-│       └── p ≥ 0.7  ──► CHẶN (lệnh không được thực thi)
+│       └── p ≥ 0.7  ──► hỏi tiếp LỚP 1b
+│
+├── LỚP 1b · quyền của user            hook: tools/pre-execute (chỉ khi lớp 1 chặn)
+│   └── hỏi Jev (choice): "user có yêu cầu xoá đúng thứ này không?"
+│       ├── authorized ──► cho chạy
+│       └── narrower/unrelated/quoted ──► CHẶN
 │
 ├── LỚP 2 · kiểm hoàn thành           hook: agent/turn-stopping
 │   └── hỏi Jev (noul ×3): "xong chưa? có bằng chứng chưa? có cần thi hành không?"
@@ -151,17 +195,19 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
 - id: jev-gate
   name: dsh-jev-gate
   config:
-    destructiveThreshold: 0.7   # p >= ngưỡng này thì chặn lệnh phá dữ liệu
+    destructiveThreshold: 0.7   # p >= ngưỡng này thì coi là phá dữ liệu
     completionThreshold: 0.5    # p < ngưỡng này thì coi là chưa xong
     evidenceThreshold: 0.5      # p < ngưỡng này thì coi là thiếu bằng chứng
     executionThreshold: 0.5     # p >= ngưỡng này thì goal cần thi hành
-    spawnThreshold: 0.6         # p >= ngưỡng này thì gợi ý dùng subagent
+    approachConfidenceThreshold: 0.3
     gateTimeoutMs: 2000
+    authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
     spawnTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
+    enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
@@ -171,14 +217,14 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
 
 ```bash
 bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 17 check, không cần secret
-node tests/live-check.mjs   # 5 check, chỉ cần TYPESAFE_API_KEY + mạng
+node tests/offline.mjs      # 35 check, không cần secret
+node tests/live-check.mjs   # 15 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
 - `verify.sh` — 6 mục: cấu trúc, syntax, resolve dependency, đăng ký profile,
   log boot thật, gọi Jev thật với case đã biết đáp án. Exit 1 nếu có mục hỏng.
 - `tests/offline.mjs` — kiểm không cần secret: fail-open, bất biến model, chỉ
-  gate tool shell, guard của lớp 4, hợp đồng export.
+  gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export.
 - `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
 
 CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, và
@@ -187,18 +233,23 @@ CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, v
 
 Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 
-## Số đo đã kiểm (2026-09-27, `jev-1.13.0`)
+## Số đo đã kiểm (2026-09-27 → 28, `jev-1.13.0`)
 
 | Phép đo | Kết quả |
 |---|---|
 | Gate phá dữ liệu trên 20 lệnh thực tế | 20/20 đúng (recall 100%, precision 100%) |
 | Deny có thật sự chặn thi hành? | có — canary còn nguyên sau `rm -rf` bị deny |
+| Lớp quyền user — nội dung dán vào tự nhận quyền | 0/66 ra `authorized` |
+| Lớp quyền user — lệnh nguy hiểm không được yêu cầu | 0/48 ra `authorized` |
+| Lớp quyền user — dọn dẹp hợp lệ user yêu cầu | 46/48 ra `authorized` |
+| Handler thật + Jev thật, 12 case end-to-end | 12/12 đúng |
+| Lớp quyền user fail-closed khi lỗi | có — lỗi đọc session vẫn giữ chặn |
 | Kiểm hoàn thành: có bằng chứng vs nói suông | 3/3 nhánh đúng |
-| Fail-open (mất key / store hỏng / llm vắng) | 3/3 pass |
+| Fail-open lớp 1 (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
 | Chọn hướng tiếp cận | 9/10 đúng (scan ổ đĩa → 1 lệnh; 5 chủ đề → song song; mơ hồ → hỏi lại) |
 | Model có bị đổi không? | không — bất biến qua mọi test |
-| Độ trễ mỗi gate | median ~250ms |
+| Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 
 ## Điều plugin này KHÔNG làm
 

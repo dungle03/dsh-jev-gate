@@ -15,11 +15,12 @@ Jev does not generate text, does not plan, does not write code. It only scores a
 closed question and returns a probability. This plugin uses Jev as **four
 checkpoints**, not as a second brain.
 
-## Four layers
+## Five layers
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
 | Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
+| User authorization | `tools/pre-execute` | Did the user actually ask to delete this exact thing? | `choice` | **on** |
 | Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | Effort routing | `agent/request` | Does the next step need deep thinking? For how long? | `choice` ×2 | **on** |
 | Approach choice | `agent/pre-step` | Which approach is optimal for this task? | `choice` | **on** |
@@ -28,6 +29,45 @@ Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
 `(prefix, effort)`, so the only cost is the first touch of a new effort being
 cold — measured to cost exactly the same as a cold new prefix.
+
+### Why the "User authorization" layer exists
+
+The old destructive gate **could not tell session scratch from real data**. Real
+log: `rm -rf /tmp/gtest` (a test directory this very session created) was blocked
+at p=0.77, while `rm -rf <nonexistent path>` scored only 0.40 — so legitimate
+cleanup was blocked and had to be retried (one command was blocked **7 times in a
+row**).
+
+The new layer runs **only** when layer 1 has already judged the command
+destructive, and it answers one question: did the user themselves ask to delete
+exactly this? Blocking now requires **destructive AND not user-authorized**:
+
+```
+p ≥ 0.7  ──► ask again "did the user authorize this?"
+              ├── authorized                  ──► ALLOW
+              └── narrower/unrelated/quoted   ──► DENY
+```
+
+Four `choice` branches instead of `noul` because they are four situations
+different in kind, not four levels of one quantity — so there is no threshold to
+tune, and the `quoted` branch catches pasted content claiming authority.
+
+Measured on the real API (`jev-1.13.0`, 6–10 runs/case):
+
+| Group | Result |
+|---|---|
+| Pasted content claiming authority (web/README/log, translate/summarise requests, forged "the user approved this") | **0/66** returned `authorized` |
+| Destructive commands the user did not ask for (unrelated, vague, scope escalation) | **0/48** returned `authorized` |
+| Legitimate user-requested cleanup (exact path, glob, cache, session scratch) | **46/48** returned `authorized` |
+
+The `user_request` evidence is taken **only** from genuine user messages
+(`source.kind === 'user'`). `notePrompt` used to join every `role=user` message —
+including background job output (`tool-jobs`) and the plugin's own injected hints
+— so untrusted content could leak into the "user request" field.
+
+This layer is **fail-closed**: on error/timeout it keeps blocking. Unlike layer 1
+(fail-open) — an error of Jev's must not become a silent allow in a defensive
+layer.
 
 ## Architecture
 
@@ -42,7 +82,12 @@ dsh-jev-gate
 ├── LAYER 1 · destructive gate        hook: tools/pre-execute
 │   └── asks Jev (noul): "would this command destroy data irrecoverably?"
 │       ├── p < 0.7  ──► allow
-│       └── p ≥ 0.7  ──► DENY (the command does not run)
+│       └── p ≥ 0.7  ──► ask LAYER 1b
+│
+├── LAYER 1b · user authorization     hook: tools/pre-execute (only when layer 1 denies)
+│   └── asks Jev (choice): "did the user ask to delete this exact thing?"
+│       ├── authorized ──► allow
+│       └── narrower/unrelated/quoted ──► DENY
 │
 ├── LAYER 2 · completion check        hook: agent/turn-stopping
 │   └── asks Jev (noul ×3): "done? any evidence? does it need execution?"
@@ -67,8 +112,10 @@ dsh-jev-gate
 Every Jev call **fails open**: if Jev errors, times out, or returns garbage,
 work proceeds as if Jev never existed.
 
-**One turn passing through the four layers** — four checkpoints at four
-different moments:
+Exception: the user-authorization layer (1b) is **fail-closed** — if it errors, the
+command stays blocked rather than being silently allowed.
+
+**One turn passing through the layers** — checkpoints at different moments:
 
 ```
 User types a prompt
@@ -84,7 +131,12 @@ LLM generates a reply or a tool call
       │
       ▼
 LAYER 1 · tools/pre-execute  bash/pwsh only: would this command destroy data?
-      │                      → p ≥ 0.7 means DENY, the command does not run
+      │                      → p < 0.7: allow
+      │                      → p ≥ 0.7: ask LAYER 1b
+      ▼
+LAYER 1b · user authorization  did the user ask to delete this exact thing?
+      │                      → authorized: allow
+      │                      → otherwise: DENY, the command does not run
       ▼
 LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
       │                      → unfinished or no proof means steer to keep working
@@ -93,8 +145,8 @@ turn ends
 ```
 
 > LAYER 4 runs once per turn (step 1). LAYER 3 runs on **every step**, while the
-> LLM and LAYER 1 **repeat** on every tool call. The diagram above draws one
-> pass for readability.
+> LLM, LAYER 1 and LAYER 1b **repeat** on every tool call. The diagram above
+> draws one pass for readability.
 
 ## Install
 
@@ -156,17 +208,19 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
 - id: jev-gate
   name: dsh-jev-gate
   config:
-    destructiveThreshold: 0.7   # p >= this blocks the destructive command
+    destructiveThreshold: 0.7   # p >= this counts as destructive
     completionThreshold: 0.5    # p < this means "not done yet"
     evidenceThreshold: 0.5      # p < this means "evidence missing"
     executionThreshold: 0.5     # p >= this means the goal needs execution
-    spawnThreshold: 0.6         # p >= this hints at using subagent
+    approachConfidenceThreshold: 0.3
     gateTimeoutMs: 2000
+    authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
     spawnTimeoutMs: 4000
     maxLeaseSteps: 10
     enableDestructiveGate: true
+    enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
@@ -176,15 +230,15 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
 
 ```bash
 bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 17 checks, no secret needed
-node tests/live-check.mjs   # 5 checks, needs TYPESAFE_API_KEY + network
+node tests/offline.mjs      # 35 checks, no secret needed
+node tests/live-check.mjs   # 15 checks, needs TYPESAFE_API_KEY + network
 ```
 
 - `verify.sh` — 6 items: structure, syntax, dependency resolution, profile
   registration, real boot log, real Jev calls against known-answer cases.
   Exit 1 if any item fails.
 - `tests/offline.mjs` — no secret needed: fail-open, model invariance, shell-tool
-  gating only, layer-4 guards, export contract.
+  gating only, layer-4 guards, genuine-user-message filtering, export contract.
 - `tests/live-check.mjs` — real Jev API calls against known-answer cases.
 
 CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
@@ -193,18 +247,23 @@ CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
 
 Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-## Measured results (2026-09-27, `jev-1.13.0`)
+## Measured results (2026-09-27 → 28, `jev-1.13.0`)
 
 | Measurement | Result |
 |---|---|
 | Destructive gate on 20 real commands | 20/20 correct (recall 100%, precision 100%) |
 | Does deny actually prevent execution? | yes — canary intact after a denied `rm -rf` |
+| User-authorization layer — pasted content claiming authority | 0/66 returned `authorized` |
+| User-authorization layer — destructive commands not asked for | 0/48 returned `authorized` |
+| User-authorization layer — legitimate user-requested cleanup | 46/48 returned `authorized` |
+| Real handler + real Jev, 12 end-to-end cases | 12/12 correct |
+| User-authorization layer fails closed on error | yes — a session read error still blocks |
 | Completion check: evidence vs bare claim | 3/3 branches correct |
-| Fail-open (missing key / broken store / no llm) | 3/3 pass |
+| Fail-open layer 1 (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
 | Approach choice | 9/10 correct (disk scan → one command; 5 topics → parallel; vague → clarify) |
 | Does it change the model? | no — invariant across every test |
-| Per-gate latency | median ~250ms |
+| Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
 
 ## What this plugin does NOT do
 

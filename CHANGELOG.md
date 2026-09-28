@@ -5,6 +5,62 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Thêm
+
+- **LỚP 1b — quyền của user** (`tools/pre-execute`, chạy chỉ khi lớp 1 đã kết luận
+  lệnh phá dữ liệu). Hỏi Jev một câu `choice` 4 nhánh: user có tự tay yêu cầu xoá
+  đúng thứ này không? Chặn chỉ khi hội đủ **phá dữ liệu VÀ không được user yêu
+  cầu**. Config: `enableAuthorizationOverride` (mặc định bật),
+  `authorizationTimeoutMs` (4000).
+
+  Lý do: gate cũ không phân biệt được rác session với dữ liệu thật. Log thật cho
+  thấy `rm -rf /tmp/gtest` — thư mục test do chính session tạo — bị chặn ở p=0.77,
+  trong khi `rm -rf <path không tồn tại>` chỉ 0.40; một lệnh dọn rác hợp lệ bị
+  chặn **7 lần liên tiếp**, và cách lách duy nhất còn lại là đổi sang
+  `find -delete` (cũng bị chặn).
+
+  Vì sao `choice` 4 nhánh (`authorized`/`narrower`/`unrelated`/`quoted`) chứ
+  không `noul`: đã đo bản `noul` — cần chỉnh ngưỡng, và vẫn hở trước nội dung dán
+  vào (nhờ dịch/tóm tắt một câu chứa `rm -rf` cho ra 0.75–0.93 "đã được phép").
+  Bốn nhánh là bốn tình huống khác nhau về bản chất, nên không phải chọn ngưỡng,
+  và nhánh `quoted` chặn được injection.
+
+  Số đo trên API thật (`jev-1.13.0`, 6–10 lần/case):
+  - Nội dung dán vào tự nhận quyền: **0/66** ra `authorized`.
+  - Lệnh nguy hiểm không được yêu cầu (không liên quan, mơ hồ, mở rộng phạm vi):
+    **0/48** ra `authorized`.
+  - Dọn dẹp hợp lệ user yêu cầu: **46/48** ra `authorized`.
+  - Handler thật + Jev thật, 12 case end-to-end: **12/12** đúng.
+  - Lớp 1 giữ nguyên hiệu chuẩn cũ **10/10 nguy hiểm, 10/10 an toàn** (bằng chứng:
+    câu hỏi lớp 1 dùng đúng state cũ, không thêm trường).
+
+  Lớp này **fail-closed** (khác lớp 1 fail-open): hỏi lỗi/timeout thì giữ chặn —
+  lỗi của Jev không được biến thành "cho qua". Đã kiểm: lỗi đọc session vẫn deny.
+
+### Sửa
+
+- README (cả hai bản): "bốn lớp" → **năm lớp**; thêm LỚP 1b vào bảng, cây kiến
+  trúc và luồng một lượt; sửa số test thật (offline 35 check, live-check 15 check);
+  thay `spawnThreshold` bằng `approachConfidenceThreshold` trong ví dụ config;
+  thêm `enableAuthorizationOverride` + `authorizationTimeoutMs`; bổ sung số đo
+  lớp 1b vào bảng "Số đo đã kiểm".
+
+- **`notePrompt` lọc tin nhắn thật của user.** Trước đây gộp MỌI message
+  `role=user` — kể cả `runtime-context`, `skill-catalog`, `agent-instructions`,
+  `tool-jobs` (output job nền), và gợi ý do chính plugin chèn (`source:
+  'jev-gate'`). Nghĩa là output tool có thể lọt vào trường "yêu cầu của user".
+  Giờ chỉ nhận `source.kind === 'user'`; không nhận diện được thì coi là không
+  phải user (thà bỏ sót còn hơn nhận nhầm).
+
+- `collectUserRequest` lấy 3 tin nhắn user thật gần nhất (mỗi tin cắt 600 ký tự)
+  làm bằng chứng cho lớp 1b — đủ cho ngữ cảnh "ok làm đi" nối tiếp yêu cầu trước,
+  mà không nhồi cả hội thoại.
+
+- Thông báo deny đổi cho đúng sự thật: bản cũ hứa "reissue it with an explicit
+  justification", nhưng plugin **không có kênh nào đọc justification** —
+  `rawCommandOf` chỉ lấy `args.command`. Giờ thông báo nói đúng việc cần làm:
+  xin user xác nhận đúng target đó rồi chạy lại.
+
 ### Đổi
 
 - **LỚP 4: từ `noul` "có nên spawn không?" → `choice` "hướng nào tối ưu?".**
@@ -27,7 +83,7 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 - README: sửa "ba lớp/ba chốt chặn" thành **bốn** ở cả hai bản; thêm LỚP 4 vào
   cây kiến trúc và luồng một lượt; sửa `verify.sh` (6 mục, không phải 6/6), số
-  test thật (offline 17 check, live-check 5 check); sửa mục "Điều KHÔNG làm"
+  test thật (offline 35 check, live-check 15 check); sửa mục "Điều KHÔNG làm"
   (trước ghi "không chọn tool" trong khi LỚP 4 gợi ý dùng tool `subagent`);
   bổ sung `spawnThreshold`/`spawnTimeoutMs`/`enableSpawnHint` vào ví dụ config;
   làm rõ số đo bounded state (1.500/700/900 ký tự, 6 tool result).
