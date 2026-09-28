@@ -46,14 +46,18 @@ Vì sao N câu `noul` chứ không một `choice` nhiều nhánh: danh sách fil
 theo từng repo, mà `choice.criteria` phải cố định trong code — không dựng được
 criteria từ danh sách runtime.
 
-Số đo trên API thật (`jev-1.13.0`), biên rất rộng:
+Số đo trên API thật (`jev-1.13.0`), sau khi sửa prompt ở 0.3.2:
 
-| Case | File nên chọn | File không liên quan |
-|---|---|---|
-| Bug phiên đăng nhập | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
-| Đổi màu logo | `assets/logo.svg` **0.94** | mọi file khác 0.02–0.03 |
-| Thêm migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
-| Viết tài liệu onboarding | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+| Case | File nên chọn | p | File không liên quan |
+|---|---|---|---|
+| Bug phiên đăng nhập | `src/auth/session.ts` | **0.88–0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
+| Đổi màu logo | `assets/logo.svg` | **0.94** | mọi file khác 0.02–0.03 |
+| Thêm migration | `src/db/migrations/0012.sql` | **0.87** | `src/auth/session.ts` 0.10 |
+| Viết tài liệu onboarding | `docs/onboarding.md` | **0.65** | `package.json` 0.07 |
+
+Trước 0.3.2, hai case "tạo artifact mới" chỉ đạt **0.39** và **0.34** — dưới ngưỡng
+0.6. Prompt thiếu nhánh "file anh em cùng loại định nghĩa format cho artifact mới".
+Xem CHANGELOG 0.3.2 để có bảng trước/sau và ba bộ kiểm định.
 
 ### Vì sao có lớp "Phục hồi khi tool lỗi"
 
@@ -333,7 +337,7 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Fail-open lớp 1 (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
 | Chọn hướng tiếp cận | 9/10 đúng (scan ổ đĩa → 1 lệnh; 5 chủ đề → song song; mơ hồ → hỏi lại) |
-| Chọn file nạp — biên ngưỡng | file nên đọc **0.70–0.97**, file không liên quan **0.02–0.18** |
+| Chọn file nạp — biên ngưỡng | file nên đọc **0.65–0.98**, file không liên quan **0.02–0.18** |
 | Chọn file nạp — kỳ vọng chặt 6 case | 5/6 (case "test flaky" Jev chỉ chọn file test — hợp lý) |
 | Phục hồi khi tool lỗi, 6 lần/case | 4/4 case ổn định 6/6 mỗi case |
 | Lớp 5+6 end-to-end (handler thật + Jev thật) | 12/12 đúng, Lớp 1 không hồi quy (p=0.95) |

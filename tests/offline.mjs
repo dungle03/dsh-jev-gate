@@ -293,6 +293,16 @@ async function makeWorkspace(files) {
   const empty = preStepQuestion({ task: 'x', candidates: [] });
   check('không có ứng viên → chỉ câu approach', Object.keys(empty.questions).join(',') === 'approach',
     `ids=${Object.keys(empty.questions).join(',')}`);
+
+  // 9c2. Prompt phải có nhánh (b) "artifact cùng loại ở cùng chỗ". Thiếu nhánh này
+  //      thì task tạo mới (thêm migration, viết tài liệu) bị chấm 0 cho file anh em
+  //      — đo được 0.39 và 0.34, dưới ngưỡng 0.6. Đây là hồi quy của 0.3.2.
+  const instr = q.questions.file_0.instructions;
+  check('có nhánh (a) file định nghĩa hành vi/config/schema', /behaviour|configuration|schema/i.test(instr));
+  check('có nhánh (b) artifact cùng loại ở cùng chỗ', /same kind in the same place/i.test(instr));
+  check('nêu ví dụ migration/document/endpoint', /migration/i.test(instr) && /document/i.test(instr));
+  check('chặn hiểu nhầm tài liệu chỉ để định hướng', /not merely orientation/i.test(instr));
+  check('chặn nới quá rộng theo thư mục/đuôi file', /not enough on its own/i.test(instr));
 }
 
 {

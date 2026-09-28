@@ -3,6 +3,31 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.3.2]
+
+### Sửa
+
+- **Prompt Lớp 5 bỏ sót artifact cùng loại.** Khi task tạo/thêm thứ mới (migration,
+  tài liệu, handler, script), Jev trả 0 cho file anh em đã có trong cùng thư mục —
+  dù file đó định nghĩa format và số thứ tự mà artifact mới phải khớp. Đo được:
+  `src/db/migrations/0012.sql` cho task "thêm migration" chỉ **0.39** (ngưỡng 0.6),
+  `docs/onboarding.md` cho task "viết tài liệu onboarding" chỉ **0.34**.
+
+  Thêm nhánh (b) vào câu hỏi: file cần đọc khi "task creates or adds an artifact of
+  the SAME KIND IN THE SAME PLACE", kèm câu chặn hiểu nhầm "a document the task is
+  writing is itself the file to read, not merely orientation" và câu chặn nới quá
+  rộng "sharing a directory or a file extension with the task is not enough on its
+  own". Sau khi sửa: migration **0.39 → 0.87**, onboarding **0.34 → 0.65**.
+
+  Kiểm định ba bộ độc lập (5 lần/case): gốc 3/5 → **5/5**, held-out 7/8 → **8/8**,
+  đối kháng 6/6. False-positive **0** trên cả ba bộ.
+
+### Đổi
+
+- **Prompt Lớp 5 dài hơn ~1.4k token vào mỗi request pre-step** (7.6KB → 13.2KB
+  cho 8 ứng viên, +74%). Đây là giá của nhánh (b). Đáng đổi vì Lớp 5 gộp chung
+  request với Lớp 4 nên chỉ trả thêm một lần mỗi turn, không phải mỗi file.
+
 ## [0.3.1]
 
 ### Sửa
@@ -46,20 +71,45 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
   Config: `enableContextTriage` (bật), `contextFileThreshold` (0.6),
   `contextCandidateLimit` (12), `contextMaxFiles` (3), `contextTimeoutMs` (6000).
 
-  Số đo trên API thật (`jev-1.13.0`) — biên rất rộng:
+  Số đo trên API thật (`jev-1.13.0`). Bảng dưới là số đo LẠI khi kiểm định prompt
+  lần đầu — nó phát hiện hai case biên không đạt ngưỡng:
 
-  | Case | File nên chọn | File không liên quan |
+  | Case | File nên chọn | p (prompt đầu) | Kết quả |
+  |---|---|---|---|
+  | Bug phiên đăng nhập | `src/auth/session.ts` | 0.88–0.89 | đạt |
+  | Đổi màu logo | `assets/logo.svg` | 0.93–0.94 | đạt |
+  | Thêm migration | `src/db/migrations/0012.sql` | **0.37–0.41** | KHÔNG đạt |
+  | Viết tài liệu onboarding | `docs/onboarding.md` | **0.33–0.35** | KHÔNG đạt |
+
+  Hai case hỏng cùng một nguyên nhân: task **tạo/thêm** artifact mới, nên Jev đọc
+  "file này không phải thứ tôi sửa" và trả 0 — dù file anh em định nghĩa format mà
+  artifact mới phải khớp. Đây là lỗi của prompt, không phải của ngưỡng: hạ ngưỡng
+  xuống 0.35 sẽ kéo theo false-positive ở mọi case khác.
+
+  **Đã sửa prompt** (xem mục "Sửa" của 0.3.2): bổ sung nhánh (b) "artifact CÙNG
+  LOẠI Ở CÙNG CHỖ". Sau khi sửa:
+
+  | Case | p trước | p sau |
   |---|---|---|
-  | Bug phiên đăng nhập | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
-  | Đổi màu logo | `assets/logo.svg` **0.94** | mọi file khác 0.02–0.03 |
-  | Thêm migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
-  | Viết tài liệu onboarding | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+  | Thêm migration | 0.39 | **0.87** |
+  | Viết tài liệu onboarding | 0.34 | **0.65** |
+  | Bug phiên đăng nhập | 0.89 | 0.88–0.90 |
+  | Đổi màu logo | 0.94 | 0.94 |
+  | Test flaky | 0.77 | 0.77 |
 
-  Kỳ vọng chặt 6 case: **5/6** (case "test flaky" Jev chỉ chọn file test — hợp lý;
-  kỳ vọng của người viết test mới là quá chặt).
+  Kiểm định trên ba bộ độc lập, mỗi case 5 lần, ngưỡng 0.6, cắt 3 file:
+
+  | Bộ | Nội dung | Trước | Sau |
+  |---|---|---|---|
+  | Gốc | 5 case, workspace `src/<module>/` | 3/5 | **5/5** |
+  | Held-out | 8 case, cấu trúc Go/JS/Python khác | 7/8 | **8/8** |
+  | Đối kháng | 6 bẫy (câu hỏi chung, chỉ đọc log, …) | — | **6/6** |
+
+  False-positive trên cả ba bộ: **0**.
 
   Độ trễ: **13 câu gộp trong 1 request median 271ms** — bằng một câu đơn, xác nhận
-  việc gộp câu chấm song song.
+  việc gộp câu chấm song song. Prompt dài hơn làm request nặng thêm ~1.4k token vào
+  (xem mục "Đổi" của 0.3.2).
 
 - **LỚP 6 — phục hồi khi tool lỗi** (`tools/post-execute`). Một tool lỗi thường
   khiến model thử lại y hệt vài lần rồi mới đổi cách; mỗi lần thử là một

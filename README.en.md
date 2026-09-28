@@ -48,14 +48,19 @@ Why N `noul` questions instead of one multi-branch `choice`: the file list is
 generated per repository, while `choice.criteria` must be fixed in code — criteria
 cannot be built from a runtime list.
 
-Measured on the real API (`jev-1.13.0`); the margin is very wide:
+Measured on the real API (`jev-1.13.0`), after the 0.3.2 prompt fix:
 
-| Case | File it should pick | Unrelated files |
-|---|---|---|
-| Login-session bug | `src/auth/session.ts` **0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
-| Recolour the logo | `assets/logo.svg` **0.94** | every other file 0.02–0.03 |
-| Add a migration | `src/db/migrations/0012.sql` **0.70** | `src/auth/session.ts` 0.10 |
-| Write onboarding docs | `docs/onboarding.md` **0.87** | `package.json` 0.07 |
+| Case | File it should pick | p | Unrelated files |
+|---|---|---|---|
+| Login-session bug | `src/auth/session.ts` | **0.88–0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
+| Recolour the logo | `assets/logo.svg` | **0.94** | every other file 0.02–0.03 |
+| Add a migration | `src/db/migrations/0012.sql` | **0.87** | `src/auth/session.ts` 0.10 |
+| Write onboarding docs | `docs/onboarding.md` | **0.65** | `package.json` 0.07 |
+
+Before 0.3.2 the two "creates a new artifact" cases scored only **0.39** and
+**0.34** — below the 0.6 threshold. The prompt was missing the "a sibling of the
+same kind defines the format for the new artifact" branch. See the 0.3.2
+CHANGELOG entry for the before/after table and the three validation suites.
 
 ### Why the "Tool-failure recovery" layer exists
 
@@ -345,7 +350,7 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Fail-open layer 1 (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
 | Approach choice | 9/10 correct (disk scan → one command; 5 topics → parallel; vague → clarify) |
-| Context choice — threshold margin | files worth reading **0.70–0.97**, unrelated files **0.02–0.18** |
+| Context choice — threshold margin | files worth reading **0.65–0.98**, unrelated files **0.02–0.18** |
 | Context choice — strict 6-case expectation | 5/6 (for "flaky test" Jev picked only the test file — reasonable) |
 | Tool-failure recovery, 6 runs/case | 4/4 cases stable 6/6 each |
 | Layers 5+6 end-to-end (real handler + real Jev) | 12/12 correct, layer 1 not regressed (p=0.95) |
