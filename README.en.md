@@ -4,7 +4,7 @@
 
 ![dsh-jev-gate architecture](assets/architecture.png)
 
-Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **six high-value
+Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **seven high-value
 moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
 one principle:
 
@@ -12,19 +12,20 @@ one principle:
 > the moments where a wrong decision is expensive.**
 
 Jev does not generate text, does not plan, does not write code. It only scores a
-closed question and returns a probability. This plugin uses Jev as **six
+closed question and returns a probability. This plugin uses Jev as **seven
 checkpoints**, not as a second brain.
 
-## Six layers
+## Seven layers
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
 | Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
 | User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
 | Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
-| Effort routing | `agent/request` | Does the next step need deep thinking? For how long? | `choice` ×2 | **on** |
+| Effort routing | `agent/request` | Does the next step need deep thinking? | `choice` | **on** |
 | Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
 | Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
+| Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
@@ -84,6 +85,53 @@ Measured (`jev-1.13.0`, 6 runs/case, stable 6/6 per case):
 | test failure, cause unknown | `diagnose` 0.95 | diagnose ✓ |
 | `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
 | `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ (retrying a dead DB is pointless) |
+
+### Why the "Quality review" layer exists
+
+Measured across 110 real sessions: the `mcp__jev-review__jev_review` tool is
+**registered and present in the prompt** (the `mcp:jev-review` section is injected
+by `dsh-mcp-client`), yet it was called **once** — and that was the plugin author
+testing it. In real work: **zero times**.
+
+So "the tool exists" does not mean "the tool gets used". Every Jev channel except
+`dsh-jev-gate` is **passive**: MCP tools, skills, and CLIs all wait for the agent
+to decide to call them. Only an engine hook runs by itself. This layer hooks
+`jev_review` into `turn-stopping`.
+
+Four abuse gates, because this hook blocks the turn:
+
+| Gate | Condition | Why |
+|---|---|---|
+| 1 | Only when the turn truly ends | Reviewing half-finished code is meaningless |
+| 2 | Main turn only (`delegationDepth === 0`) | Subagents do not own the workspace change; reviewing there multiplies calls by worker count |
+| 3 | Diff ≥ `reviewMinChangedLines` (20 lines) | Reviewing an empty diff or a typo fix burns money for nothing |
+| 4 | Cap `reviewMaxPerTurn` (1) | Without it, every turn-stopping pass is another call |
+
+Scores are returned via `agent.steer` as a **report**, not an instruction: scores
+are evidence, not an objective to optimise.
+
+Latency: `jev_review` takes ~100ms on a healthy API, ~0.7–2.5s when the API is
+slow. A missing tool, missing service, or a failed review all **fail open** — the
+turn ends normally.
+
+### How layer 7 and the `jev-review` skill work together
+
+These are two **complementary** mechanisms, not duplicates:
+
+| | `jev-review` skill | Layer 7 (plugin) |
+|---|---|---|
+| Triggered by | the agent calling `skill` | the engine hook, automatically |
+| What it does | teaches the **loop**: score → improve → rescore | scores a **baseline** once per turn end |
+| Frequency | several times per turn | once per turn, only when the diff ≥ 20 lines |
+
+So the skill is **not deleted**. It was edited so the two do not step on each
+other: it now states that a baseline may already have arrived from layer 7, and the
+agent must **check before calling again** — re-scoring unchanged code produces no
+new information, only cost and latency.
+
+The skill's real prompt cost: the catalog carries only `name` + `description`
+(**319 characters**, ~80 tokens), not the full 6.6 KB body. The body loads only
+when the agent actually calls `skill`.
 
 ### Why the "User authorization" layer exists
 
@@ -174,6 +222,12 @@ dsh-jev-gate
 │       └── stop-and-report ──► "cannot be resolved alone; report it"
 │           (returned via additionalContexts → spliced into the next step)
 │
+├── LAYER 7 · quality review          hook: agent/turn-stopping
+│   └── auto-calls `jev_review` (MCP) when the turn ends:
+│       ├── four gates: turn really ended / main turn / diff ≥ 20 lines / cap 1
+│       ├── assembles a unified diff from the workspaceChanges service
+│       └── scores → agent.steer (a report, not an instruction)
+│
 └── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
 
@@ -208,12 +262,16 @@ LAYER 6 · tools/post-execute the tool just failed: retry / change / diagnose / 
 LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
       │                      → unfinished or no proof means steer to keep working
       ▼
+LAYER 7 · agent/turn-stopping turn truly ended with a large-enough diff
+      │                      → auto-calls jev_review, steers scores back as a report
+      ▼
 turn ends
 ```
 
-> LAYER 4+5 runs once per turn (step 1). LAYER 3 runs on **every step**, while the
-> LLM, LAYER 1, LAYER 1b and LAYER 6 **repeat** on every tool call. The diagram
-> above draws one pass for readability.
+> LAYER 4+5 runs once per turn (step 1). LAYER 3 runs on most steps (it now reuses
+> a confident decision for the next step). LAYER 7 runs once per turn, only when
+> the turn produced a large-enough diff. The LLM, LAYER 1, LAYER 1b and LAYER 6
+> **repeat** on every tool call. The diagram above draws one pass for readability.
 
 ## Install
 
@@ -291,7 +349,12 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     spawnTimeoutMs: 6000
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
-    maxLeaseSteps: 10
+    effortReuseConfidence: 0.6  # at or above this confidence, keep the effort for the next step
+    reviewMinChangedLines: 20   # do not review diffs smaller than this
+    reviewMaxPerTurn: 1         # max reviews per turn
+    reviewMaxDiffChars: 24000   # max diff characters sent to the review
+    reviewServerName: jev-review
+    reviewReportToAgent: true   # report scores back to the agent via steer
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour
     enableCompletionCheck: true
@@ -299,14 +362,15 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     enableSpawnHint: true
     enableContextTriage: true           # context file-selection layer
     enableFailureRecovery: true         # tool-failure recovery layer
+    enableQualityReview: true           # auto-call jev_review when the turn ends
 ```
 
 ## Verify
 
 ```bash
 bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 63 checks, no secret needed
-node tests/live-check.mjs   # 15 checks, needs TYPESAFE_API_KEY + network
+node tests/offline.mjs      # 89 checks, no secret needed
+node tests/live-check.mjs   # 21 checks, needs TYPESAFE_API_KEY + network
 ```
 
 - `verify.sh` — 6 items: structure, syntax, dependency resolution, profile
@@ -356,6 +420,14 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Layers 5+6 end-to-end (real handler + real Jev) | 12/12 correct, layer 1 not regressed (p=0.95) |
 | Layer 5 latency (13 questions batched in 1 request) | median 271ms — same as one question |
 | Layer 6 latency (1 question) | median 267ms |
+| Layer 3 — Jev cost by layer | **65%** (3,238,650 / 4,958,494 tokens) |
+| Layer 3 — the old lease in practice | `lease=1` in **1,777/1,830 runs (97%)** — the mechanism was effectively dead |
+| Layer 3 — confidence vs stability | conf 0.6 → next step keeps the effort 88%; conf 0.9 → 95% |
+| Layer 3 — what reuse skips | **32%** of Jev calls, wrong 8% (missed an increase 4.3%) |
+| Dropping the `lease` question | saves **148 input + 43 output** tokens per call |
+| Layer 7 — how often `jev_review` ran across 110 real sessions | **once** (author testing), 0 times in real work |
+| Layer 7 — real handler + real MCP | called the review once and steered the scores to the agent |
+| Layer 7 — `jev_review` latency | ~100ms |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
 
@@ -371,6 +443,8 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 - **Does not read files for the model.** Layer 5 only *names* files worth reading;
   the model still calls the read tool. It also reads no file contents to score —
   only file names inside the workspace.
+- **Does not fix what the review finds.** Layer 7 only reports scores back to the
+  agent; the agent decides whether another justified improvement is warranted.
 - **Does not replace the agent's judgement.** A recommendation is not an authorisation.
 
 ## Uninstall

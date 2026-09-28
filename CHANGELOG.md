@@ -3,6 +3,148 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.4.0] — 2026-09-28
+
+### Đổi (phá vỡ tương thích: cơ chế lease bị thay)
+
+- **LỚP 3 — thay cơ chế lease bằng tái dùng theo confidence.** Lớp 3 là chỗ tốn
+  nhất trong toàn bộ plugin: đo trên 9.263 dòng log thật, nó chiếm **65% chi phí
+  Jev** (3.238.650 / 4.958.494 input token, 1.831 lần gọi, 1.768 token/lần).
+
+  Cơ chế cũ dựa vào câu hỏi `lease` ("giữ mức này bao lâu?") gần như **chết**:
+  Jev trả `lease=1` ở **1.777/1.830 lần (97%)**, kể cả khi confidence 0.9. Ở mọi
+  mức confidence, lease trung bình chỉ 1.00–1.08 — đó là hành vi nhất quán, không
+  phải lỗi, nên hỏi lại cũng không cho lease dài hơn.
+
+  Cái quyết định được là **confidence của chính câu effort**. Đo trên 1.225 cặp
+  step liên tiếp, confidence của step trước tương quan mạnh với việc step sau giữ
+  nguyên effort:
+
+  | conf | step sau giữ nguyên |
+  |------|--------------------|
+  | 0.1  | 46% |
+  | 0.4  | 78% |
+  | 0.6  | 88% |
+  | 0.7  | 93% |
+  | 0.9  | 95% |
+
+  Giờ: confidence ≥ `effortReuseConfidence` (0.6) **và** không có tool call mới
+  **và** cùng turn → giữ nguyên mức, không hỏi Jev. Đo được: bỏ 32% số lần gọi,
+  chỉ đoán sai 8% (bỏ sót TĂNG 4,3%).
+
+  Ba điều kiện chặn là bắt buộc, mỗi cái có lý do đo được:
+  - **Cùng turn** — sang turn mới, goal và lịch sử tool khác hẳn, quyết định cũ
+    không còn là bằng chứng.
+  - **Không có tool call mới** — một tool result mới là thông tin mới về độ khó;
+    tái dùng khi đã có thông tin mới là mù với thực tế.
+  - **Mức cũ vẫn được route nhận** — route có thể đã đổi.
+
+  Vì sao KHÔNG nâng 1 bậc khi tái dùng để bù rủi ro: đo được nâng 1 bậc làm
+  **95,7% trường hợp cao hơn mức cần** — đốt reasoning token trên mọi step để
+  phòng 4,3% trường hợp, đắt hơn nhiều so với tiết kiệm.
+
+- **BỎ câu hỏi `lease` khỏi `effortQuestion`.** Không còn ai dùng nó. Đo được
+  tiết kiệm **148 input + 43 output token mỗi lần gọi**. Xoá kèm `LEASE_MEANING`,
+  hằng `LEASES`, và config `maxLeaseSteps`.
+
+### Thêm
+
+- **LỚP 7 — tự gọi `jev_review` khi turn kết thúc** (`agent/turn-stopping`).
+
+  Lý do: đo trên 110 session thật, tool `mcp__jev-review__jev_review` **được đăng
+  ký và có trong prompt** (section `mcp:jev-review` do `dsh-mcp-client` chèn qua
+  `systemPrompt.section`), nhưng được gọi **1 lần duy nhất** — và đó là lần tác
+  giả plugin tự test. Trong công việc thật: **0 lần**.
+
+  Nghĩa là "có tool" không bằng "tool được dùng". Mọi kênh Jev trừ `dsh-jev-gate`
+  đều thụ động (MCP tool, skill, CLI đều chờ agent quyết định gọi); chỉ hook
+  engine là chạy tự động. Nên lớp này cắm `jev_review` vào hook.
+
+  Gọi qua `ctx.tools.execute({ name: 'mcp__<server>__jev_review' })` — đúng đường
+  của DSH, không tự spawn tiến trình, không tự quản key.
+
+  BỐN CHỐT chống lạm dụng (hook này chặn turn, nên mỗi chốt đều cần):
+  1. Chỉ khi turn thật sự kết thúc — review code dở dang là vô nghĩa.
+  2. Chỉ turn chính, không phải subagent (`delegationDepth === 0`) — subagent
+     không sở hữu workspace change và sẽ nhân số lần review theo số worker.
+  3. Chỉ khi thay đổi đủ lớn (`reviewMinChangedLines`, 20 dòng) — review diff
+     rỗng hay sửa typo là đốt tiền không đổi lại gì.
+  4. Trần `reviewMaxPerTurn` (1) — không có nó thì mỗi lần turn-stopping chạy lại
+     là một lần gọi.
+
+  Điểm số trả về qua `agent.steer` dưới dạng **báo cáo**, không phải mệnh lệnh:
+  điểm là bằng chứng, không phải mục tiêu để tối ưu. Tắt bằng
+  `enableQualityReview: false`.
+
+  Config mới: `enableQualityReview`, `reviewMinChangedLines` (20),
+  `reviewMaxPerTurn` (1), `reviewMaxDiffChars` (24000), `reviewServerName`
+  ('jev-review'), `reviewReportToAgent` (true).
+
+### Sửa
+
+- **`agent/request` THỰC SỰ nhận `agent`** — note cũ trong
+  `~/.dsh/notes/jev-gate.md` ghi ngược lại và đã lỗi thời. Engine fuse `agent`
+  vào MỌI payload agent-scoped (`dsh-agent/lib/index.js:242`), kể cả
+  `agent/request`. Hệ quả của việc không đọc nó: guard "có tool call mới" đọc
+  lịch sử tool từ `lastSeenSession` cũ nên luôn thấy mảng rỗng, và tái dùng cả
+  khi đã có thông tin mới. Phát hiện nhờ test stub đếm số lần gọi.
+
+- **Đọc service tuỳ chọn bằng `ctx.get(name, false)`**, không phải
+  `ctx.inject([...], cb)`. `ctx.inject` là loader plugin bất đồng bộ, KHÔNG phải
+  service getter — dùng nó sẽ luôn trả `undefined`. `workspaceChanges` là service
+  tuỳ chọn (do `dsh-workspace-changes` cung cấp), không được đưa vào `inject` của
+  plugin vì sẽ làm cả plugin không nạp khi service vắng.
+
+### Đổi (skill `jev-review`)
+
+- **Skill `jev-review` được sửa để phối hợp với Lớp 7, KHÔNG bị xoá.** Ban đầu định
+  xoá skill khỏi catalog, nhưng kiểm chứng cho thấy tiền đề sai và hai thứ không
+  trùng chức năng:
+
+  | | Skill `jev-review` | Lớp 7 |
+  |---|---|---|
+  | Ai kích hoạt | agent chủ động gọi `skill` | hook engine tự chạy |
+  | Làm gì | dạy **vòng lặp** chấm→sửa→chấm lại | chấm **baseline** 1 lần cuối turn |
+  | Tần suất | nhiều lần trong turn | 1 lần/turn |
+
+  Chi phí thật của skill trong prompt cũng nhỏ hơn nhiều so với tưởng ban đầu:
+  catalog chỉ chứa `name` + `description` (**319 ký tự**, ~80 token), không phải
+  toàn bộ body 6,6 KB. Body chỉ nạp khi agent thực sự gọi `skill`.
+
+  Vấn đề thật tìm được là **trùng lặp lời gọi**: skill cũ dạy agent gọi
+  `jev_review` để lập baseline, trong khi Lớp 7 đã tự chấm baseline và báo về.
+  Đã thêm mục "A baseline may already be waiting for you" — agent kiểm tra xem đã
+  nhận message "Jev Review scored this turn's changes" chưa, và chỉ gọi lại sau
+  khi thực sự cải thiện code. Gọi lại trên cùng code không tạo thông tin mới, chỉ
+  tốn tiền và độ trễ.
+
+  Hai bản skill (`~/.dsh/skills/` và `~/.dsh/plugins/jev-review/skills/`) được
+  đồng bộ cùng nội dung.
+
+### Sửa (vệ sinh test)
+
+- **`makeWorkspace` để lại rác trong `/tmp`.** Hàm dựng workspace tạm cho test Lớp 5
+  nhưng không ai dọn: đo được **42 thư mục `jev-gate-test-*`** sau vài lần chạy.
+  Giờ đăng ký dọn qua `process.on('exit')`. Kiểm chứng: chạy test, số thư mục
+  trong `/tmp` không tăng.
+
+- **`live-check.mjs` dao động 2/3 lần pass.** Một timeout thoáng qua làm
+  `jev.evaluate` ném lỗi và sập **cả suite**, nên kết quả phản ánh mạng chứ không
+  phản ánh chất lượng code. Giờ có helper `evaluate` thử lại 3 lần khi lỗi tạm
+  thời (timeout/429/5xx), nhưng ném ngay với lỗi 401/422 (sai key, request hỏng).
+  Kiểm chứng: **4/4 lần chạy exit 0**.
+
+### Kiểm chứng ở bản này
+
+| Phép đo | Kết quả |
+|---|---|
+| Offline (không cần secret) | **89 check pass**, 0 fail (trước 61) |
+| Live-check (Jev thật) | 21 check pass |
+| `verify.sh` | exit 0, 6/6 mục |
+| Lớp 3 tái dùng — handler thật + Jev thật | step 2 tái dùng, chỉ 1 lần gọi Jev |
+| Lớp 7 — handler thật + MCP thật | gọi `jev_review` 1 lần, steer điểm về agent |
+| Bỏ câu `lease` | tiết kiệm 148 input + 43 output token mỗi lần gọi |
+
 ## [0.3.3]
 
 ### Sửa

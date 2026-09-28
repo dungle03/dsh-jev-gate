@@ -4,26 +4,27 @@
 
 ![Kiến trúc dsh-jev-gate](assets/architecture.png)
 
-Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **sáu khoảnh khắc đắt
+Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **bảy khoảnh khắc đắt
 giá** của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
 
 > **LLM hiểu và làm. Jev chỉ trả lời câu hỏi ĐÓNG ở khoảnh khắc mà một quyết
 > định sai gây tốn kém.**
 
 Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó chỉ chấm một câu
-hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **sáu chốt chặn**, không
+hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **bảy chốt chặn**, không
 phải làm bộ não thứ hai.
 
-## Sáu lớp
+## Bảy lớp
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
 | Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
 | Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
 | Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
-| Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? Giữ bao lâu? | `choice` ×2 | **bật** |
+| Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? | `choice` | **bật** |
 | Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
+| Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
@@ -81,6 +82,51 @@ Số đo (`jev-1.13.0`, 6 lần/case, ổn định 6/6 mỗi case):
 | test fail, chưa rõ lý do | `diagnose` 0.95 | diagnose ✓ |
 | `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
 | `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ (DB không chạy thì retry vô nghĩa) |
+
+### Vì sao có lớp "Review chất lượng"
+
+Đo trên 110 session thật: tool `mcp__jev-review__jev_review` **được đăng ký và có
+trong prompt** (section `mcp:jev-review` do `dsh-mcp-client` chèn), nhưng được
+gọi **1 lần duy nhất** — và đó là lần tác giả plugin tự test. Trong công việc
+thật: **0 lần**.
+
+Nghĩa là "có tool" không bằng "tool được dùng". Mọi kênh Jev trừ `dsh-jev-gate`
+đều **thụ động**: MCP tool, skill, và CLI đều chờ agent quyết định gọi. Chỉ hook
+engine là chạy tự động. Nên lớp này cắm `jev_review` vào hook `turn-stopping`.
+
+Bốn chốt chống lạm dụng, vì hook này chặn turn:
+
+| Chốt | Điều kiện | Vì sao |
+|---|---|---|
+| 1 | Chỉ khi turn thật sự kết thúc | Review code dở dang là vô nghĩa |
+| 2 | Chỉ turn chính (`delegationDepth === 0`) | Subagent không sở hữu workspace change; review ở đó nhân số lần gọi theo số worker |
+| 3 | Diff ≥ `reviewMinChangedLines` (20 dòng) | Review diff rỗng hay sửa typo là đốt tiền không đổi lại gì |
+| 4 | Trần `reviewMaxPerTurn` (1) | Không có nó thì mỗi lần turn-stopping là một lần gọi |
+
+Điểm số trả về qua `agent.steer` dưới dạng **báo cáo**, không phải mệnh lệnh:
+điểm là bằng chứng, không phải mục tiêu để tối ưu.
+
+Đo độ trễ: `jev_review` mất ~100ms khi API khoẻ, ~0,7–2,5s khi API chậm. Nếu tool
+vắng, service vắng, hay review lỗi → **fail-open**, turn vẫn kết thúc bình thường.
+
+### Lớp 7 phối hợp với skill `jev-review` như thế nào
+
+Đây là hai cơ chế **bổ sung**, không trùng nhau:
+
+| | Skill `jev-review` | Lớp 7 (plugin) |
+|---|---|---|
+| Ai kích hoạt | agent chủ động gọi `skill` | hook engine tự chạy |
+| Làm gì | dạy **vòng lặp**: chấm → sửa → chấm lại | chấm **baseline** một lần khi turn xong |
+| Tần suất | nhiều lần trong turn | 1 lần/turn, chỉ khi diff ≥ 20 dòng |
+
+Vì vậy skill **không bị xoá**. Nhưng nó đã được sửa để hai bên không giẫm chân:
+skill giờ nói rõ rằng một baseline có thể đã đến từ Lớp 7, và agent phải **kiểm
+tra trước khi gọi lại** — gọi lại trên cùng code không tạo thông tin mới, chỉ tốn
+tiền và độ trễ.
+
+Chi phí thật của skill trong prompt: catalog chỉ chứa `name` + `description`
+(**319 ký tự**, ~80 token), không phải toàn bộ body 6,6 KB. Body chỉ được nạp khi
+agent thực sự gọi `skill`.
 
 ### Vì sao có lớp "Quyền của user"
 
@@ -169,6 +215,12 @@ dsh-jev-gate
 │       └── stop-and-report ──► "không tự vượt được, báo user"
 │           (trả qua additionalContexts → engine splice vào step kế tiếp)
 │
+├── LỚP 7 · review chất lượng           hook: agent/turn-stopping
+│   └── tự gọi `jev_review` (MCP) khi turn kết thúc:
+│       ├── bốn chốt: turn thật sự xong / turn chính / diff ≥ 20 dòng / trần 1
+│       ├── ghép unified diff từ service workspaceChanges
+│       └── điểm số → agent.steer (báo cáo, không phải mệnh lệnh)
+│
 └── mọi quyết định ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
 
@@ -198,6 +250,9 @@ LỚP 6 · tools/post-execute tool vừa lỗi: retry / đổi cách / điều t
       ▼
 LỚP 2 · agent/turn-stopping khi model định dừng: xong chưa? có bằng chứng chưa?
       │                     → chưa xong hoặc thiếu bằng chứng thì đẩy làm tiếp
+      ▼
+LỚP 7 · agent/turn-stopping lượt thật sự xong và diff đủ lớn
+      │                     → tự gọi jev_review, báo điểm về như một báo cáo
       ▼
 lượt kết thúc
 ```
@@ -281,7 +336,12 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     spawnTimeoutMs: 6000
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
-    maxLeaseSteps: 10
+    effortReuseConfidence: 0.6  # conf >= ngưỡng này thì giữ nguyên effort cho step kế
+    reviewMinChangedLines: 20   # diff nhỏ hơn thì không review
+    reviewMaxPerTurn: 1         # trần số lần review mỗi turn
+    reviewMaxDiffChars: 24000   # trần ký tự diff gửi cho review
+    reviewServerName: jev-review
+    reviewReportToAgent: true   # báo điểm lại cho agent qua steer
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
     enableCompletionCheck: true
@@ -289,14 +349,15 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     enableSpawnHint: true
     enableContextTriage: true           # lớp chọn file nạp vào context
     enableFailureRecovery: true         # lớp phục hồi khi tool lỗi
+    enableQualityReview: true           # lớp tự gọi jev_review khi turn xong
 ```
 
 ## Kiểm chứng
 
 ```bash
 bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 63 check, không cần secret
-node tests/live-check.mjs   # 15 check, chỉ cần TYPESAFE_API_KEY + mạng
+node tests/offline.mjs      # 89 check, không cần secret
+node tests/live-check.mjs   # 21 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
 - `verify.sh` — 6 mục: cấu trúc, syntax, resolve dependency, đăng ký profile,
@@ -343,6 +404,14 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Lớp 5+6 end-to-end (handler thật + Jev thật) | 12/12 đúng, Lớp 1 không hồi quy (p=0.95) |
 | Độ trễ Lớp 5 (13 câu gộp 1 request) | median 271ms — bằng một câu đơn |
 | Độ trễ Lớp 6 (1 câu) | median 267ms |
+| Lớp 3 — chi phí Jev theo lớp | **65%** (3.238.650 / 4.958.494 token) |
+| Lớp 3 — lease cũ thực tế | `lease=1` ở **1.777/1.830 lần (97%)** → cơ chế coi như chết |
+| Lớp 3 — confidence ↔ độ ổn định | conf 0.6 → step sau giữ nguyên 88%; conf 0.9 → 95% |
+| Lớp 3 — tái dùng bỏ được bao nhiêu | **32%** số lần gọi, đoán sai 8% (bỏ sót TĂNG 4,3%) |
+| Bỏ câu `lease` | tiết kiệm **148 input + 43 output** token mỗi lần gọi |
+| Lớp 7 — `jev_review` được gọi bao nhiêu trong 110 session thật | **1 lần** (do tác giả test), 0 lần trong việc thật |
+| Lớp 7 — handler thật + MCP thật | gọi review 1 lần, steer điểm về agent |
+| Lớp 7 — độ trễ `jev_review` | ~100ms |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 
@@ -357,6 +426,8 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 - **Không tự đọc file cho model.** Lớp 5 chỉ *nêu tên* file đáng đọc; việc đọc
   vẫn do model gọi tool. Nó cũng không đọc nội dung file nào để chấm — chỉ đọc
   TÊN file trong workspace.
+- **Không tự sửa theo điểm review.** Lớp 7 chỉ báo điểm về cho agent; agent tự
+  quyết có nên cải thiện thêm không.
 - **Không thay thế phán đoán của agent.** Một khuyến nghị không phải uỷ quyền.
 
 ## Gỡ

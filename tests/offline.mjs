@@ -42,7 +42,7 @@ const check = (label, ok, detail) => {
  *   - hàm async nhận (body) → trả object kết quả
  *   - hoặc ném lỗi để kiểm fail-open
  */
-async function loadPlugin({ jevStub, llm, credentials, config = {} } = {}) {
+async function loadPlugin({ jevStub, llm, credentials, tools, services, config = {} } = {}) {
   const mod = await import(`${pathToFileURL(PLUGIN).href}?t=${Math.random()}`);
   const handlers = {};
   const captured = [];
@@ -56,6 +56,13 @@ async function loadPlugin({ jevStub, llm, credentials, config = {} } = {}) {
         reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }, { id: 'max' }] },
       }),
     },
+    // Service tuỳ chọn (Lớp 7 đọc `workspaceChanges` qua ctx.get(name, false)).
+    get: (name, strict = true) => {
+      const found = services?.[name];
+      if (found === undefined && strict) throw new Error(`service "${name}" is not available`);
+      return found;
+    },
+    ...(tools ? { tools } : {}),
   };
   await mod.apply(ctx, { logDir: TMP_LOG_DIR, ...config });
   return { handlers, captured, mod };
@@ -276,6 +283,12 @@ async function makeWorkspace(files) {
   const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const root = await mkdtemp(join(tmpdir(), 'jev-gate-test-'));
+  /**
+   * Đăng ký dọn khi tiến trình thoát. Trước đây hàm này chỉ tạo mà không xoá,
+   * nên mỗi lần chạy test để lại một thư mục `jev-gate-test-*` trong /tmp —
+   * đo được 42 thư mục rác sau vài lần chạy. Test tự dọn phần nó tạo.
+   */
+  TEMP_DIRS.push(root);
   for (const file of files) {
     const target = join(root, file);
     await mkdir(dirname(target), { recursive: true });
@@ -283,6 +296,14 @@ async function makeWorkspace(files) {
   }
   return root;
 }
+
+/** Thư mục tạm do test tạo, được xoá khi tiến trình thoát. */
+const TEMP_DIRS = [];
+process.on('exit', () => {
+  for (const dir of TEMP_DIRS) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
 
 {
   const { preStepQuestion } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?ctx=1`);
@@ -520,6 +541,309 @@ console.log('\n10. Lớp 6 — failure recovery: chỉ khi tool lỗi, bỏ qua 
     });
     check('enableFailureRecovery:false → không đăng ký hook post-execute',
       handlers['tools/post-execute'] === undefined,
+      `handlers=${Object.keys(handlers).join(',')}`);
+  }
+}
+
+console.log('\n11. Lớp 3 — tái dùng effort theo confidence (thay cơ chế lease cũ)');
+
+/**
+ * Stub Jev ĐẾM số lần gọi, để kiểm được cơ chế tái dùng.
+ * Trả về `{ calls, run }`: `calls()` là số request Jev đã nhận.
+ */
+async function withCountingJev(answers, run) {
+  const realFetch = globalThis.fetch;
+  let count = 0;
+  globalThis.fetch = async (_url, init) => {
+    count += 1;
+    const body = JSON.parse(init.body);
+    const ids = Object.keys(body.questions);
+    const payload = {
+      model: 'jev-stub',
+      answers: Object.fromEntries(ids.map((id) => {
+        const question = body.questions[id];
+        const spec = answers[id] ?? answers['*'];
+        const value = typeof spec === 'function' ? spec(id, question, count) : spec;
+        if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+        const keys = Object.keys(question.criteria);
+        const probabilities = Object.fromEntries(keys.map((key) => [key, key === value ? 1 : 0]));
+        return [id, { type: 'choice', choice: value, confidence: answers.__confidence ?? 0.9, probabilities }];
+      })),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    return await run(() => count);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  const llm = {
+    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }),
+  };
+  const session = { snapshotEvents: () => [] };
+
+  // 11a. confidence cao + không có tool call mới → tái dùng, KHÔNG gọi Jev lần 2
+  await withCountingJev({ effort: 'low', __confidence: 0.9 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+    });
+    const handler = handlers['agent/request'][0];
+    const down = async () => ({ provider: 'p', model: 'm' });
+    const first = await handler({ turn: 1, step: 1, signal: new AbortController().signal, agent: { session } }, down);
+    const second = await handler({ turn: 1, step: 2, signal: new AbortController().signal, agent: { session } }, down);
+    check('step 1 gọi Jev, áp effort', first.reasoningEffort === 'low', `effort=${first.reasoningEffort}`);
+    check('step 2 TÁI DÙNG, không gọi Jev', calls() === 1, `số lần gọi Jev=${calls()}`);
+    check('step 2 giữ đúng mức cũ', second.reasoningEffort === 'low', `effort=${second.reasoningEffort}`);
+  });
+
+  // 11b. confidence thấp → KHÔNG tái dùng, gọi lại mỗi step
+  await withCountingJev({ effort: 'high', __confidence: 0.2 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+    });
+    const handler = handlers['agent/request'][0];
+    const down = async () => ({ provider: 'p', model: 'm' });
+    await handler({ turn: 1, step: 1, signal: new AbortController().signal, agent: { session } }, down);
+    await handler({ turn: 1, step: 2, signal: new AbortController().signal, agent: { session } }, down);
+    check('confidence thấp → gọi lại mỗi step', calls() === 2, `số lần gọi Jev=${calls()}`);
+  });
+
+  // 11c. sang TURN mới → không tái dùng quyết định của turn cũ
+  await withCountingJev({ effort: 'low', __confidence: 0.95 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+    });
+    const handler = handlers['agent/request'][0];
+    const down = async () => ({ provider: 'p', model: 'm' });
+    await handler({ turn: 1, step: 1, signal: new AbortController().signal, agent: { session } }, down);
+    await handler({ turn: 2, step: 1, signal: new AbortController().signal, agent: { session } }, down);
+    check('turn mới → hỏi lại Jev', calls() === 2, `số lần gọi Jev=${calls()}`);
+  });
+
+  // 11d. có TOOL RESULT MỚI → không tái dùng (thông tin đã đổi)
+  await withCountingJev({ effort: 'low', __confidence: 0.95 }, async (calls) => {
+    let toolCalls = 0;
+    const live = {
+      snapshotEvents: () => Array.from({ length: toolCalls }, (_v, i) => ({
+        type: 'tool/call',
+        data: { name: 'bash', arguments: { command: `echo ${i}` } },
+      })),
+    };
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+    });
+    const handler = handlers['agent/request'][0];
+    const down = async () => ({ provider: 'p', model: 'm' });
+    await handler({ turn: 1, step: 1, signal: new AbortController().signal, agent: { session: live } }, down);
+    toolCalls = 1; // có tool call mới
+    await handler({ turn: 1, step: 2, signal: new AbortController().signal, agent: { session: live } }, down);
+    check('có tool result mới → hỏi lại Jev', calls() === 2, `số lần gọi Jev=${calls()}`);
+  });
+
+  // 11e. effortReuseConfidence=1.0 → tắt hẳn tái dùng
+  await withCountingJev({ effort: 'low', __confidence: 0.99 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true,
+        effortReuseConfidence: 1.0,
+      },
+    });
+    const handler = handlers['agent/request'][0];
+    const down = async () => ({ provider: 'p', model: 'm' });
+    await handler({ turn: 1, step: 1, signal: new AbortController().signal, agent: { session } }, down);
+    await handler({ turn: 1, step: 2, signal: new AbortController().signal, agent: { session } }, down);
+    check('effortReuseConfidence=1.0 → tắt tái dùng', calls() === 2, `số lần gọi Jev=${calls()}`);
+  });
+
+  // 11f. bất biến model vẫn giữ sau khi viết lại Lớp 3
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+    });
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent: { session } },
+      async () => ({ provider: 'modlens-nine-router', model: 'cbai/deepseek-v4.1-flash' }),
+    );
+    check('không đổi provider/model', out.provider === 'modlens-nine-router' && out.model === 'cbai/deepseek-v4.1-flash',
+      `${out.provider}/${out.model}`);
+  });
+}
+
+console.log('\n12. Lớp 7 — tự gọi jev_review khi turn kết thúc (bốn chốt chống lạm dụng)');
+
+/**
+ * Stub `ctx.tools` cho Lớp 7: `get()` cho biết tool MCP có tồn tại, `execute()`
+ * ghi lại mọi lần gọi để kiểm số lần thật sự chạy.
+ */
+function makeTools({ present = true, isError = false, content = '{"metrics":{"correctness":{"applicable":true,"score":8}}}' } = {}) {
+  const calls = [];
+  return {
+    calls,
+    get: (name) => (present && name === 'mcp__jev-review__jev_review' ? { name } : undefined),
+    execute: async (exec) => {
+      calls.push(exec);
+      return { isError, content: [{ type: 'text', text: content }] };
+    },
+  };
+}
+
+/** Session giả có `workspace/changes` với tổng số dòng thay đổi cho trước. */
+function makeChangedSession({ added = 50, deleted = 10, files = 1, depth = 0 } = {}) {
+  const fileList = Array.from({ length: files }, (_v, i) => ({ path: `src/f${i}.ts`, display: `src/f${i}.ts`, seq: 100 + i }));
+  return {
+    id: 'session-test',
+    delegationDepth: depth,
+    snapshotEvents: () => [
+      { type: 'workspace/changes', seq: 500, data: { turn: 1 } },
+    ],
+    header: { cwd: '/tmp' },
+    _summary: { turn: 1, cwd: '/tmp', files: fileList, total: files, added, deleted },
+  };
+}
+
+function makeWorkspaceChanges(summary) {
+  return {
+    summary: () => summary,
+    diff: async (_id, _seq, index) => ({
+      kind: 'text',
+      path: `src/f${index}.ts`,
+      display: `src/f${index}.ts`,
+      before: true,
+      hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 3, lines: [' const a = 1', '+const b = 2', ' const c = 3'] }],
+    }),
+  };
+}
+
+function makeReviewAgent(session) {
+  return {
+    id: 'a1',
+    session,
+    goal: { objective: 'Add proration to the billing calculator' },
+    steered: [],
+    steer(m) { this.steered.push(m); },
+  };
+}
+
+{
+  const base = {
+    enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+    enableQualityReview: true,
+  };
+
+  // 12a. Đường đi đầy đủ: có tool + đổi đủ lớn → gọi review, báo lại cho agent
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 50, deleted: 10, files: 2 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('có tool + diff đủ lớn → gọi jev_review', tools.calls.length === 1, `calls=${tools.calls.length}`);
+    check('gọi đúng tên tool MCP', tools.calls[0]?.name === 'mcp__jev-review__jev_review',
+      `name=${tools.calls[0]?.name}`);
+    check('truyền diff + task cho review', typeof tools.calls[0]?.arguments?.diff === 'string'
+      && tools.calls[0].arguments.diff.length > 0 && typeof tools.calls[0]?.arguments?.task === 'string',
+      `diffLen=${tools.calls[0]?.arguments?.diff?.length}`);
+    check('báo điểm lại cho agent qua steer', agent.steered.length === 1, `steer=${agent.steered.length}`);
+    check('message có điểm số', /correctness 8\/10/.test(agent.steered[0]?.content?.[0]?.text ?? ''),
+      agent.steered[0]?.content?.[0]?.text?.slice(0, 80));
+  }
+
+  // 12b. Chốt 3: diff quá nhỏ → không review
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 2, deleted: 1, files: 1 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('diff nhỏ → KHÔNG gọi review', tools.calls.length === 0, `calls=${tools.calls.length}`);
+    check('diff nhỏ → không steer', agent.steered.length === 0, `steer=${agent.steered.length}`);
+  }
+
+  // 12c. Chốt 2: subagent → không review
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 80, deleted: 20, depth: 1 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('subagent → KHÔNG review', tools.calls.length === 0, `calls=${tools.calls.length}`);
+  }
+
+  // 12d. Chốt 4: trần mỗi turn
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 50, deleted: 10 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: { ...base, reviewMaxPerTurn: 1 },
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('trần 1 lần/turn → chỉ gọi 1', tools.calls.length === 1, `calls=${tools.calls.length}`);
+  }
+
+  // 12e. Thiếu tool MCP → fail-open, không nổ
+  {
+    const tools = makeTools({ present: false });
+    const session = makeChangedSession({ added: 50, deleted: 10 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('thiếu tool MCP → fail-open', tools.calls.length === 0 && agent.steered.length === 0,
+      `calls=${tools.calls.length}`);
+  }
+
+  // 12f. Thiếu service workspaceChanges → fail-open
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 50, deleted: 10 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({ tools, services: {}, config: base });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('thiếu service workspaceChanges → fail-open', tools.calls.length === 0, `calls=${tools.calls.length}`);
+  }
+
+  // 12g. Tool trả isError → fail-open, không steer
+  {
+    const tools = makeTools({ isError: true, content: 'Jev input limit exceeded' });
+    const session = makeChangedSession({ added: 50, deleted: 10 });
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+      config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
+    check('review lỗi → fail-open, không steer', agent.steered.length === 0, `steer=${agent.steered.length}`);
+  }
+
+  // 12h. enableQualityReview:false → không đăng ký hook
+  {
+    const { handlers } = await loadPlugin({ config: { ...base, enableQualityReview: false } });
+    check('enableQualityReview:false → không có hook turn-stopping',
+      handlers['agent/turn-stopping'] === undefined,
       `handlers=${Object.keys(handlers).join(',')}`);
   }
 }
