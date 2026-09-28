@@ -4,8 +4,9 @@
  * Cố định tập case để lệnh kiểm có ngưỡng rõ, không phụ thuộc "cảm giác đúng".
  * Exit 1 nếu bất kỳ case nào lệch kỳ vọng.
  */
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createJev } from '../lib/jev-client.mjs';
 import {
   destructiveQuestion,
@@ -29,6 +30,13 @@ async function apiKey() {
 
 const jev = createJev({ getApiKey: apiKey, timeoutMs: 20_000 });
 let failed = 0;
+
+/**
+ * Log kiểm định đi vào thư mục tạm, không vào log quyết định thật.
+ * `apply()` nhận `logDir` để test cô lập được.
+ */
+const TMP_LOG_DIR = mkdtempSync(join(tmpdir(), 'jev-gate-live-'));
+process.on('exit', () => { try { rmSync(TMP_LOG_DIR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 const check = (label, condition, detail) => {
   if (condition) {
@@ -152,7 +160,7 @@ apply({
   credentials: { resolve: async () => ({ value: await apiKey() }) },
   on: (name, fn) => { handlers[name] = fn; },
   effect: () => {},
-}, {});
+}, { logDir: TMP_LOG_DIR });
 
 const aborted = {
   name: 'bash',
@@ -172,7 +180,7 @@ check('fail-open khi Jev bị abort', result.kind === 'allow', `kind=${result.ki
     llm: { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }) },
     on: (name, fn) => { handlers2[name] = fn; },
     effect: () => {},
-  }, {});
+  }, { logDir: TMP_LOG_DIR });
   await handlers2['tools/pre-execute'](
     { name: 'read', arguments: { file_path: 'x' }, callId: 'c', agent: { session: { snapshotEvents: () => [] }, goal: { objective: 'Trace why the auth callback deadlocks under concurrent login.' } }, signal: new AbortController().signal },
     async () => ({ kind: 'allow' }),

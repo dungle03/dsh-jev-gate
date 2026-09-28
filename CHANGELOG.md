@@ -3,6 +3,24 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.3.3]
+
+### Sửa
+
+- **Log kiểm định lẫn vào log quyết định thật.** `tests/offline.mjs` và
+  `tests/live-check.mjs` nạp `lib/index.mjs` qua `apply()`, mà `LOG_DIR` tính từ
+  `XDG_DATA_HOME` lúc nạp module — nên test ghi chung `decisions.jsonl` với DSH
+  thật. Hệ quả đo được: trong 8,945 dòng log có **575 dòng `boot`** (60 cụm test),
+  **152 `jev_error` "Jev API key invalid"** từ key giả của test, và `pre_step`
+  `turn:1` lặp 22 lần. Mọi số đo trên log phải lọc tay mới tách được session thật
+  khỏi test — và bảng "tỷ lệ lỗi 14%" đọc lên gây hiểu nhầm.
+
+  `apply()` giờ nhận config `logDir`; cả hai test trỏ vào `mkdtempSync()` và tự
+  xoá khi thoát. Kiểm chứng: chạy cả hai test, `decisions.jsonl` thật **0 dòng
+  thêm, mtime không đổi**; DSH thật vẫn ghi bình thường.
+
+  Config mới: `logDir` (không default — thiếu khoá thì dùng đường mặc định cũ).
+
 ## [0.3.2]
 
 ### Sửa

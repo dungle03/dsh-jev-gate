@@ -15,9 +15,21 @@
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN = join(HERE, '..', 'lib', 'index.mjs');
+
+/**
+ * Log kiểm định đi vào thư mục tạm, KHÔNG vào `~/.local/share/dsh-jev-gate`.
+ *
+ * Trước đây test và DSH thật ghi chung một `decisions.jsonl`, nên log quyết định
+ * thật bị trộn 575 dòng `boot` và hàng trăm `jev_error` giả (key test) — mọi số
+ * đo trên log phải lọc tay. Giờ `apply()` nhận `logDir`, test trỏ vào đây.
+ */
+const TMP_LOG_DIR = mkdtempSync(join(tmpdir(), 'jev-gate-test-'));
+process.on('exit', () => { try { rmSync(TMP_LOG_DIR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 let failed = 0;
 const check = (label, ok, detail) => {
@@ -45,7 +57,7 @@ async function loadPlugin({ jevStub, llm, credentials, config = {} } = {}) {
       }),
     },
   };
-  await mod.apply(ctx, config);
+  await mod.apply(ctx, { logDir: TMP_LOG_DIR, ...config });
   return { handlers, captured, mod };
 }
 
