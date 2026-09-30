@@ -3,6 +3,47 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.4.3] — 2026-09-30
+
+### Sửa (tài liệu + ảnh)
+
+- **Ảnh kiến trúc đầu README vẽ 4 chốt chặn, nhưng plugin đã có 7 lớp.**
+  `assets/architecture.json`/`.png`/`.html` vẫn là bản 4 lớp (lớp 1–4), thiếu
+  Lớp 1b, 2 (đổi số), 5, 6, 7. Vẽ lại toàn bộ bằng archify với 7 lớp đúng thứ tự,
+  gồm cả Lớp 1b (`tools/pre-execute`, chỉ khi Lớp 1 chặn).
+
+  Ảnh mới: 2020×1248 (2×), nền sáng, không UI chrome. Spec qua `archify validate
+  --quality showcase`: **9/9 artifact checks, 0 lỗi, 0 cảnh báo**. Thêm bản HTML
+  tương tác (pan/zoom, sáng/tối, tìm kiếm) và link tới nó trong cả hai README.
+
+- **README mô tả sai Lớp 3 — còn câu `lease` đã bị bỏ ở 0.4.0.**
+  Viết `choice ×2: "... giữ bao lâu?"`, nhưng câu hỏi `lease` đã bị xoá hẳn ở
+  0.4.0 (xem mục 0.4.0). Sửa thành `choice` một câu. Cùng lỗi trong README.en.md
+  (`choice ×2: "for how long?"`).
+
+- **Số check trong README lỗi thời: 89 → 99.** Cả hai bản README đều ghi
+  `node tests/offline.mjs # 89 check`; con số thật hiện tại là **99**.
+
+- **README.en.md thiếu `completionMaxPerTurn`** trong khối cấu hình mẫu (thêm ở
+  0.4.1 nhưng chỉ cập nhật README.md).
+
+- **Bảng "Bảy lớp" không có số thứ tự** — thêm `1 / 1b / 2 / 3 / 4+5 / 6 / 7`
+  cho khớp ảnh và mục "Kiến trúc".
+
+- **Bảng số đo thiếu kết quả 0.4.1–0.4.2.** Bổ sung: Lớp 7 chạy thật lần đầu
+  (154 dòng/3 file), Lớp 1b tìm được yêu cầu ở tin 10/25 và 18/25, nới cửa sổ
+  10 tin không đủ, và bug `\b` tiếng Việt có dấu. Cập nhật mốc ngày
+  `2026-09-27 → 28` thành `→ 30`.
+
+### Kiểm chứng ở bản này
+
+| Phép đo | Kết quả |
+|---|---|
+| `archify validate --quality showcase` | **9/9 artifact checks**, 0 lỗi, 0 cảnh báo |
+| Spec hash khớp HTML đã deliver | `27008e8f…` — HTML sinh đúng từ spec này |
+| `tests/offline.mjs` | **TẤT CẢ PASS**, 99 check |
+| `verify.sh` | exit 0, 6/6 mục |
+
 ## [0.4.2] — 2026-09-30
 
 ### Sửa

@@ -4,6 +4,9 @@
 
 ![Kiến trúc dsh-jev-gate](assets/architecture.png)
 
+*Sơ đồ tương tác (pan/zoom, đổi theme sáng/tối, tìm kiếm): mở
+[`assets/architecture.html`](assets/architecture.html) trong trình duyệt.*
+
 Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **bảy khoảnh khắc đắt
 giá** của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
 
@@ -18,13 +21,13 @@ phải làm bộ não thứ hai.
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
-| Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
-| Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
-| Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
-| Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? | `choice` | **bật** |
-| Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
-| Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
-| Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
+| **1** · Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
+| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
+| **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
+| **3** · Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? | `choice` | **bật** |
+| **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
+| **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
+| **7** · Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
@@ -197,7 +200,7 @@ dsh-jev-gate
 │       └── chưa xong / thiếu bằng chứng ──► đẩy làm tiếp
 │
 ├── LỚP 3 · chọn mức suy nghĩ         hook: agent/request
-│   └── hỏi Jev (choice ×2): "bước tới cần nghĩ nhiều không? giữ bao lâu?"
+│   └── hỏi Jev (choice): "bước tới cần nghĩ nhiều không?"
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
 │
 ├── LỚP 4+5 · chọn hướng + chọn file  hook: agent/pre-step (chỉ step 1)
@@ -363,7 +366,7 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
 
 ```bash
 bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 89 check, không cần secret
+node tests/offline.mjs      # 99 check, không cần secret
 node tests/live-check.mjs   # 21 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
@@ -390,7 +393,7 @@ CI (GitHub Actions) chạy `offline.mjs` trên Node 20 + 22 cho mọi push/PR, v
 
 Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 
-## Số đo đã kiểm (2026-09-27 → 28, `jev-1.13.0`)
+## Số đo đã kiểm (2026-09-27 → 30, `jev-1.13.0`)
 
 | Phép đo | Kết quả |
 |---|---|
@@ -421,7 +424,12 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Lớp 7 — độ trễ `jev_review` | ~100ms |
 | **Lớp 7 trên 16.905 dòng log thật (0.4.0)** | fire **66 lần**, `reviewed` **0 lần** — bug `seq`, sửa ở 0.4.1 |
 | **Lớp 7 sau 0.4.1 (tái hiện provider thật)** | trước `diff.length=0` → sau `diff.length=52` |
+| **Lớp 7 chạy thật lần đầu (0.4.1)** | `decision:"reviewed"` — 154 dòng / 3 file |
 | **Lớp 2 trên log thật (0.4.0)** | turn=9 fire **16 lần**, không lần nào `accept` — thêm trần ở 0.4.1 |
+| **Lớp 1b — yêu cầu xoá ở tin 10/25 (0.4.2)** | `unrelated` → **`authorized`** (trước: chặn oan) |
+| **Lớp 1b — yêu cầu xoá ở tin 18/25 (0.4.2)** | `unrelated` → **`authorized`** |
+| **Lớp 1b — nới cửa sổ 10 tin có đủ không? (0.4.2)** | **không** — vẫn chặn ở tin 10/25, phải tìm theo nội dung |
+| **`DELETE_HINT` tiếng Việt có dấu (0.4.2)** | `\b` trượt `xoá`/`dẹp` → lookaround Unicode khớp hết |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 

@@ -4,6 +4,9 @@
 
 ![dsh-jev-gate architecture](assets/architecture.png)
 
+*Interactive version (pan/zoom, light/dark theme, search): open
+[`assets/architecture.html`](assets/architecture.html) in a browser.*
+
 Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **seven high-value
 moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
 one principle:
@@ -19,13 +22,13 @@ checkpoints**, not as a second brain.
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
-| Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
-| User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
-| Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
-| Effort routing | `agent/request` | Does the next step need deep thinking? | `choice` | **on** |
-| Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
-| Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
-| Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
+| **1** · Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
+| **1b** · User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
+| **2** · Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
+| **3** · Effort routing | `agent/request` | Does the next step need deep thinking? | `choice` | **on** |
+| **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
+| **6** · Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
+| **7** · Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
@@ -205,7 +208,7 @@ dsh-jev-gate
 │       └── unfinished / no proof ──► steer to keep working
 │
 ├── LAYER 3 · effort routing          hook: agent/request
-│   └── asks Jev (choice ×2): "does the next step need deep thinking? for how long?"
+│   └── asks Jev (choice): "does the next step need deep thinking?"
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
 │
 ├── LAYER 4+5 · approach + context    hook: agent/pre-step (step 1 only)
@@ -357,6 +360,7 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
     effortReuseConfidence: 0.6  # at or above this confidence, keep the effort for the next step
+    completionMaxPerTurn: 2     # max completion checks per turn
     reviewMinChangedLines: 20   # do not review diffs smaller than this
     reviewMaxPerTurn: 1         # max reviews per turn
     reviewMaxDiffChars: 24000   # max diff characters sent to the review
@@ -376,7 +380,7 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
 
 ```bash
 bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 89 checks, no secret needed
+node tests/offline.mjs      # 99 checks, no secret needed
 node tests/live-check.mjs   # 21 checks, needs TYPESAFE_API_KEY + network
 ```
 
@@ -406,7 +410,7 @@ CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
 
 Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-## Measured results (2026-09-27 → 28, `jev-1.13.0`)
+## Measured results (2026-09-27 → 30, `jev-1.13.0`)
 
 | Measurement | Result |
 |---|---|
@@ -435,6 +439,14 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Layer 7 — how often `jev_review` ran across 110 real sessions | **once** (author testing), 0 times in real work |
 | Layer 7 — real handler + real MCP | called the review once and steered the scores to the agent |
 | Layer 7 — `jev_review` latency | ~100ms |
+| **Layer 7 on 16,905 real log lines (0.4.0)** | fired **66 times**, `reviewed` **0 times** — `seq` bug, fixed in 0.4.1 |
+| **Layer 7 after 0.4.1 (real provider repro)** | before `diff.length=0` → after `diff.length=52` |
+| **Layer 7 first real run (0.4.1)** | `decision:"reviewed"` — 154 lines / 3 files |
+| **Layer 2 on real logs (0.4.0)** | turn=9 fired **16 times**, never `accept` — cap added in 0.4.1 |
+| **Layer 1b — delete request at message 10/25 (0.4.2)** | `unrelated` → **`authorized`** (previously blocked in error) |
+| **Layer 1b — delete request at message 18/25 (0.4.2)** | `unrelated` → **`authorized`** |
+| **Layer 1b — is widening the window to 10 enough? (0.4.2)** | **no** — still blocks at message 10/25; must match by content |
+| **`DELETE_HINT` with Vietnamese diacritics (0.4.2)** | `\b` missed `xoá`/`dẹp` → Unicode lookaround matches all |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
 
