@@ -359,6 +359,22 @@ export TYPESAFE_API_KEY="apikey_..."
 #     TYPESAFE_API_KEY: "apikey_..."
 ```
 
+### Layer 8 also needs the `jg` CLI (optional)
+
+Layer 8 calls `jg` (the [jevgrep](https://github.com/dzhng/jevgrep) skill) to
+fetch verbatim source excerpts. It is **optional**: without `jg` this layer
+disables itself silently and the other seven layers run normally.
+
+```bash
+npm install --global @dzhng/jevgrep   # needs Node 22+
+jg doctor                             # must print "Jev connection verified"
+```
+
+`jg` uses its own credential store and does **not** read `TYPESAFE_API_KEY` from
+above. If `jg doctor` reports a missing credential, run `jg auth` once in your
+own terminal (it opens a hidden prompt for the key; never paste the key into
+chat).
+
 Restart DSH. Verify:
 
 ```bash
@@ -433,9 +449,9 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     enableJevgrepEscalation: true       # source-search escalation via `jg` (requires the jevgrep skill)
 ```
 
-Layer 8 needs the `jg` CLI on PATH (the `jevgrep` skill,
-`npm install --global @dzhng/jevgrep`). Without it the layer disables itself
-silently — no error, nothing blocked.
+Layer 8 needs the `jg` CLI on PATH (see
+[Install](#layer-8-also-needs-the-jg-cli-optional)). Without it the layer
+disables itself silently — no error, nothing blocked.
 
 ## Verify
 

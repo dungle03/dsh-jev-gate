@@ -343,6 +343,21 @@ export TYPESAFE_API_KEY="apikey_..."
 #     TYPESAFE_API_KEY: "apikey_..."
 ```
 
+### Lớp 8 cần thêm CLI `jg` (tuỳ chọn)
+
+Lớp 8 gọi `jg` (skill [jevgrep](https://github.com/dzhng/jevgrep)) để lấy trích
+nguồn verbatim. Nó là **tuỳ chọn**: thiếu `jg` thì lớp này tự tắt im lặng, bảy
+lớp còn lại chạy bình thường.
+
+```bash
+npm install --global @dzhng/jevgrep   # cần Node 22+
+jg doctor                             # phải in "Jev connection verified"
+```
+
+`jg` dùng credential riêng, **không** đọc `TYPESAFE_API_KEY` ở trên. Nếu
+`jg doctor` báo thiếu credential, chạy `jg auth` một lần trong terminal của bạn
+(nó mở prompt ẩn để nhập key; đừng dán key vào chat).
+
 Khởi động lại DSH. Kiểm chứng:
 
 ```bash
@@ -416,7 +431,7 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     enableJevgrepEscalation: true       # lớp leo thang tìm nguồn bằng `jg` (cần skill jevgrep)
 ```
 
-Lớp 8 cần CLI `jg` trên PATH (skill `jevgrep`, `npm install --global @dzhng/jevgrep`).
+Lớp 8 cần CLI `jg` trên PATH (xem [Cài đặt](#lớp-8-cần-thêm-cli-jg-tuỳ-chọn)).
 Thiếu nó thì lớp này tự tắt im lặng — không có lỗi, không chặn gì.
 
 ## Kiểm chứng
