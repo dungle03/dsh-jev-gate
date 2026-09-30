@@ -7,7 +7,7 @@
 *Interactive version (pan/zoom, light/dark theme, search): open
 [`assets/architecture.html`](assets/architecture.html) in a browser.*
 
-Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **seven high-value
+Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **eight high-value
 moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
 one principle:
 
@@ -15,10 +15,10 @@ one principle:
 > the moments where a wrong decision is expensive.**
 
 Jev does not generate text, does not plan, does not write code. It only scores a
-closed question and returns a probability. This plugin uses Jev as **seven
+closed question and returns a probability. This plugin uses Jev as **eight
 checkpoints**, not as a second brain.
 
-## Seven layers
+## Eight layers
 
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
@@ -29,6 +29,7 @@ checkpoints**, not as a second brain.
 | **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
 | **6** · Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
 | **7** · Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
+| **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | (runs `jg` when the task is "where does X live?") | `jg` CLI | **on** |
 
 Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
 does **not** evict the prompt cache of other efforts. Cache is kept per
@@ -65,6 +66,43 @@ Before 0.3.2 the two "creates a new artifact" cases scored only **0.39** and
 **0.34** — below the 0.6 threshold. The prompt was missing the "a sibling of the
 same kind defines the format for the new artifact" branch. See the 0.3.2
 CHANGELOG entry for the before/after table and the three validation suites.
+
+### Why the "Source-search escalation" layer exists (Layer 8)
+
+Layer 5 lists candidate files by **name**. Measured on a real session
+(`777a1746`, 2026-09-30), it hinted `weknora-dsh-setup-guide.md` across **four
+consecutive turns** and the agent **never opened it** (0/4). The same session
+ran **152** raw `grep`/`find`/`rg` commands and used the `jevgrep` skill
+**zero** times, despite it being in the catalog. A filename is not enough for
+the model to trust; it would rather grep.
+
+Layer 8 fills exactly that gap with the `jg` CLI (the `jevgrep` skill): it asks
+Jev "where does this behaviour live?" and returns **file list + line ranges +
+verbatim source excerpts** in one run. That is content, not a name — it answers
+the question the model actually has.
+
+It escalates at two moments, both with the same single action:
+
+- **A. `agent/pre-step` (step 1)** — when the user's task reads as "where does X
+  live" (`chỗ nào xử lý`, `tìm file nào`, `where is X handled`, `which file
+  implements`, `trace this bug`). Runs before the agent spends a single command.
+- **B. `tools/post-execute`** — after `jevGrepSearchTaskThreshold` raw
+  search commands **in a row** within the same turn. Catches the case where the
+  task does not announce itself as a search but the agent is in fact digging.
+
+The threshold of 3 is not a guess. Measuring the longest consecutive raw-search
+run per turn on the real session: search turns (1, 3, 4, 5, 7, 8) all reached
+**≥3**; short answer turns (2, 9, 10) only **1**. A non-search command resets the
+run — the spiral is *consecutive* commands.
+
+Why not replace Layer 5 outright: `jg` measures **~0.9s warm / ~2.6s cold**,
+added to step 1 of *every* turn including turns that are not searches.
+Conditional escalation keeps ordinary turns cheap.
+
+Like every other layer: **absolute fail-open**. `jg` missing from PATH, exiting
+non-zero, timing out, or returning nothing → stay silent and continue. It only
+**injects a hint** with an escape clause, never edits files, never runs anything
+else.
 
 ### Why the "Tool-failure recovery" layer exists
 
@@ -238,6 +276,13 @@ dsh-jev-gate
 │       ├── assembles a unified diff from the workspaceChanges service
 │       └── scores → agent.steer (a report, not an instruction)
 │
+├── LAYER 8 · source-search escalation  hook: agent/pre-step + tools/post-execute
+│   └── runs `jg` (the jevgrep skill) ONCE when the task is "where does X live":
+│       ├── A. step 1: task reads as a search (where is / which file / chỗ nào)
+│       ├── B. after N consecutive grep/find/rg commands with no progress
+│       ├── `jg` returns files + line ranges + verbatim excerpts → inject hint
+│       └── no `jg` / error / timeout / empty → stay silent, fail-open
+│
 └── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
 
@@ -256,6 +301,9 @@ User types a prompt
 LAYER 4+5 · agent/pre-step  step 1 only, ONE Jev request:
       │                     which approach is optimal + which files to read first
       ▼
+LAYER 8 · agent/pre-step     step 1 only, only when the task is "where does X live":
+      │                     → runs `jg`, injects verbatim source excerpts (edits nothing)
+      ▼
 LAYER 3 · agent/request     on every model call: does the next step need deep thinking?
       │                     → writes reasoningEffort, provider and model UNCHANGED
       ▼
@@ -269,6 +317,9 @@ LAYER 1 · tools/pre-execute  bash/pwsh only: would this command destroy data?
 LAYER 6 · tools/post-execute the tool just failed: retry / change / diagnose / report
       │                      → injects a hint for the next step
       ▼
+LAYER 8 · tools/post-execute after N consecutive grep/find/rg commands with no progress:
+      │                      → runs `jg` ONCE, injects verbatim source excerpts
+      ▼
 LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
       │                      → unfinished or no proof means steer to keep working
       ▼
@@ -278,10 +329,11 @@ LAYER 7 · agent/turn-stopping turn truly ended with a large-enough diff
 turn ends
 ```
 
-> LAYER 4+5 runs once per turn (step 1). LAYER 3 runs on most steps (it now reuses
-> a confident decision for the next step). LAYER 7 runs once per turn, only when
-> the turn produced a large-enough diff. The LLM, LAYER 1, LAYER 1b and LAYER 6
-> **repeat** on every tool call. The diagram above draws one pass for readability.
+> LAYER 4+5 and LAYER 8 (branch A) run once per turn (step 1). LAYER 3 runs on
+> most steps (it now reuses a confident decision for the next step). LAYER 7 runs
+> once per turn, only when the turn produced a large-enough diff. The LLM,
+> LAYER 1, LAYER 1b, LAYER 6 and LAYER 8 (branch B) **repeat** on every tool
+> call. The diagram above draws one pass for readability.
 
 ## Install
 
@@ -366,6 +418,10 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     reviewMaxDiffChars: 24000   # max diff characters sent to the review
     reviewServerName: jev-review
     reviewReportToAgent: true   # report scores back to the agent via steer
+    jevGrepSearchTaskThreshold: 3  # consecutive grep/find/rg commands before escalating; 0 disables branch B
+    jevGrepMaxPerTurn: 1        # max jevgrep escalations per turn
+    jevGrepTimeoutMs: 12000     # budget for one `jg` run; on expiry, fail open
+    jevGrepExcerptCap: 4000     # max excerpt characters injected into context
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour
     enableCompletionCheck: true
@@ -374,21 +430,29 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     enableContextTriage: true           # context file-selection layer
     enableFailureRecovery: true         # tool-failure recovery layer
     enableQualityReview: true           # auto-call jev_review when the turn ends
+    enableJevgrepEscalation: true       # source-search escalation via `jg` (requires the jevgrep skill)
 ```
+
+Layer 8 needs the `jg` CLI on PATH (the `jevgrep` skill,
+`npm install --global @dzhng/jevgrep`). Without it the layer disables itself
+silently — no error, nothing blocked.
 
 ## Verify
 
 ```bash
-bash verify.sh              # 6 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 99 checks, no secret needed
-node tests/live-check.mjs   # 21 checks, needs TYPESAFE_API_KEY + network
+bash verify.sh              # 7 items, needs DSH running + TYPESAFE_API_KEY
+node tests/offline.mjs      # 159 checks, no secret needed
+node tests/live-check.mjs   # 24 checks, needs TYPESAFE_API_KEY + network
 ```
 
-- `verify.sh` — 6 items: structure, syntax, dependency resolution, profile
+- `verify.sh` — 7 items: location, structure, syntax, dependency resolution, profile
   registration, real boot log, real Jev calls against known-answer cases.
   Exit 1 if any item fails.
 - `tests/offline.mjs` — no secret needed: fail-open, model invariance, shell-tool
-  gating only, layer-4 guards, genuine-user-message filtering, export contract.
+  gating only, layer-4 guards, genuine-user-message filtering, export contract,
+  and Layer 8 (parsing `jg` output, search-task / raw-search detection, per-turn
+  cap, fail-open). The Layer 8 tests use a **fake** `jg` script on PATH — they
+  never call the real `jg`, so they run in CI with no network and no `jg`.
 - `tests/live-check.mjs` — real Jev API calls against known-answer cases.
 
 - `tools/repair-session-source.mjs` — repairs old session logs corrupted by
@@ -445,6 +509,12 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | **Layer 1b — delete request at message 18/25 (0.4.2)** | `unrelated` → **`authorized`** |
 | **Layer 1b — is widening the window to 10 enough? (0.4.2)** | **no** — still blocks at message 10/25; must match by content |
 | **`DELETE_HINT` with Vietnamese diacritics (0.4.2)** | `\b` missed `xoá`/`dẹp` → Unicode lookaround matches all |
+| **Layer 5 file hint — did the agent read it? (session `777a1746`)** | **0/4** — hinted across 4 consecutive turns, agent never opened the file |
+| **Layer 8 — why it is needed (session `777a1746`)** | 152 raw `grep`/`find`/`rg` commands, **0** uses of the `jevgrep` skill despite it being in the catalog |
+| **Layer 8 — what the threshold of 3 is based on** | longest consecutive raw-search run: search turns 1/3/4/5/7/8 all **≥3**; short turns 2/9/10 only **1** |
+| **Layer 8 — real `jg` latency** | **~0.9s warm** (cached), **~2.6s cold**; E2E through the real handler 2.4s |
+| **Layer 8 — E2E with the real `jg`** | injected the correct verbatim excerpts for 2 files (`handler.js`, `auth.js`) |
+| **Layer 8 — offline tests** | 60 new checks, using a fake `jg` on PATH (never calls the real one, runs in CI) |
 | Does it change the model? | no — invariant across every test |
 | Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
 
@@ -460,6 +530,13 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 - **Does not read files for the model.** Layer 5 only *names* files worth reading;
   the model still calls the read tool. It also reads no file contents to score —
   only file names inside the workspace.
+- **Layer 8 does read contents, but only when triggered.** When the task is
+  "where does X live" (or the agent has dug through several consecutive `grep`
+  commands), Layer 8 runs `jg` to fetch verbatim excerpts. It **does not** edit
+  files, **does not** run anything else, and **does not** replace reading the
+  real files — the hint always carries "verify against the real files before
+  changing anything". It needs the `jg` CLI; without it the layer disables
+  itself silently.
 - **Does not fix what the review finds.** Layer 7 only reports scores back to the
   agent; the agent decides whether another justified improvement is warranted.
 - **Does not replace the agent's judgement.** A recommendation is not an authorisation.

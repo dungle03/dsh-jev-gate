@@ -7,17 +7,17 @@
 *Sơ đồ tương tác (pan/zoom, đổi theme sáng/tối, tìm kiếm): mở
 [`assets/architecture.html`](assets/architecture.html) trong trình duyệt.*
 
-Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **bảy khoảnh khắc đắt
+Đưa [Jev](https://typesafe.ai/) (TypeSafe System One) vào **tám khoảnh khắc đắt
 giá** của [DeepSeek Harness](https://github.com/deepseek-ai/dsh), theo nguyên tắc:
 
 > **LLM hiểu và làm. Jev chỉ trả lời câu hỏi ĐÓNG ở khoảnh khắc mà một quyết
 > định sai gây tốn kém.**
 
 Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó chỉ chấm một câu
-hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **bảy chốt chặn**, không
+hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **tám chốt chặn**, không
 phải làm bộ não thứ hai.
 
-## Bảy lớp
+## Tám lớp
 
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
@@ -28,6 +28,7 @@ phải làm bộ não thứ hai.
 | **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
+| **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | (chạy `jg` khi việc là "tìm X nằm ở đâu") | CLI `jg` | **bật** |
 
 Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
 của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
@@ -62,6 +63,41 @@ Số đo trên API thật (`jev-1.13.0`), sau khi sửa prompt ở 0.3.2:
 Trước 0.3.2, hai case "tạo artifact mới" chỉ đạt **0.39** và **0.34** — dưới ngưỡng
 0.6. Prompt thiếu nhánh "file anh em cùng loại định nghĩa format cho artifact mới".
 Xem CHANGELOG 0.3.2 để có bảng trước/sau và ba bộ kiểm định.
+
+### Vì sao có lớp "Leo thang tìm nguồn" (Lớp 8)
+
+Lớp 5 liệt kê ứng viên bằng **TÊN file**. Đo trên một session thật (`777a1746`,
+2026-09-30), nó hint `weknora-dsh-setup-guide.md` ở **4 turn liên tiếp** và agent
+**không đọc file đó một lần nào** (0/4). Cùng session: **152** lệnh `grep`/`find`/
+`rg` thô, **0** lần dùng skill `jevgrep` dù nó có trong catalog. Tên file không
+đủ để model tin, và model thà tự mò.
+
+Lớp 8 bù đúng chỗ đó bằng CLI `jg` (skill `jevgrep`): nó hỏi Jev "hành vi này nằm
+ở đâu?" và trả về **danh sách file + khoảng dòng + trích nguồn verbatim** trong
+một lần chạy. Đây là nội dung, không phải tên — nên nó trả lời được câu hỏi mà
+model thật sự có.
+
+Leo thang ở hai thời điểm, cùng một hành động:
+
+- **A. `agent/pre-step` (step 1)** — khi task của user đọc ra là "tìm X ở đâu"
+  (`chỗ nào xử lý`, `tìm file nào`, `where is X handled`, `which file implements`,
+  `trace this bug`). Chạy trước khi agent kịp tiêu phí lệnh nào.
+- **B. `tools/post-execute`** — khi đã có `jevGrepSearchTaskThreshold` lệnh dò
+  tìm thô **liên tiếp** trong cùng turn. Bắt ca task không tự khai là tìm-kiếm
+  nhưng thực tế agent đang mò.
+
+Ngưỡng 3 không phải số đoán. Đo run dò-tìm liên tiếp dài nhất mỗi turn trên
+session thật: turn tìm-kiếm (1, 3, 4, 5, 7, 8) đều **≥3**; turn trả lời ngắn
+(2, 9, 10) chỉ **1**. Lệnh không phải dò tìm thì reset chuỗi — vòng xoáy là các
+lệnh *liên tiếp*.
+
+Vì sao không thay hẳn Lớp 5: `jg` đo thật **~0.9s ấm / ~2.6s nguội**, cộng vào
+step 1 của *mọi* turn kể cả turn không phải việc tìm kiếm. Leo thang có điều kiện
+giữ turn thường rẻ. Trần `jevGrepMaxPerTurn` (1) chặn gọi lặp.
+
+Như mọi lớp khác: **fail-open tuyệt đối**. `jg` không có trên PATH, thoát khác 0,
+timeout, hay trả rỗng → im lặng bỏ qua, việc đi tiếp. Chỉ **chèn gợi ý** kèm
+escape clause, không tự sửa file, không tự chạy gì khác.
 
 ### Vì sao có lớp "Phục hồi khi tool lỗi"
 
@@ -230,6 +266,13 @@ dsh-jev-gate
 │       ├── ghép unified diff từ service workspaceChanges
 │       └── điểm số → agent.steer (báo cáo, không phải mệnh lệnh)
 │
+├── LỚP 8 · leo thang tìm nguồn         hook: agent/pre-step + tools/post-execute
+│   └── chạy `jg` (skill jevgrep) MỘT lần khi việc là "tìm X ở đâu":
+│       ├── A. step 1: task đọc ra là tìm-kiếm (chỗ nào / where is / which file)
+│       ├── B. sau N lệnh grep/find/rg LIÊN TIẾP không tiến triển
+│       ├── `jg` trả file + khoảng dòng + trích nguồn verbatim → chèn gợi ý
+│       └── không có `jg` / lỗi / timeout / rỗng → im lặng, fail-open
+│
 └── mọi quyết định ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
 ```
 
@@ -245,6 +288,9 @@ User gõ prompt
 LỚP 4+5 · agent/pre-step   chỉ step 1, MỘT request Jev:
       │                    hướng nào tối ưu + file nào cần đọc trước
       ▼
+LỚP 8 · agent/pre-step     chỉ step 1, chỉ khi task là "tìm X ở đâu":
+      │                    → chạy `jg`, chèn trích nguồn verbatim (không sửa gì)
+      ▼
 LỚP 3 · agent/request      mỗi lần gọi model: bước tới cần nghĩ nhiều không?
       │                    → ghi reasoningEffort, provider và model GIỮ NGUYÊN
       ▼
@@ -257,6 +303,9 @@ LỚP 1 · tools/pre-execute  chỉ với bash/pwsh: lệnh này có phá dữ l
 LỚP 6 · tools/post-execute tool vừa lỗi: retry / đổi cách / điều tra / báo user
       │                    → chèn gợi ý cho step kế tiếp
       ▼
+LỚP 8 · tools/post-execute sau N lệnh grep/find/rg LIÊN TIẾP không tiến triển:
+      │                    → chạy `jg` MỘT lần, chèn trích nguồn verbatim
+      ▼
 LỚP 2 · agent/turn-stopping khi model định dừng: xong chưa? có bằng chứng chưa?
       │                     → chưa xong hoặc thiếu bằng chứng thì đẩy làm tiếp
       ▼
@@ -266,9 +315,9 @@ LỚP 7 · agent/turn-stopping lượt thật sự xong và diff đủ lớn
 lượt kết thúc
 ```
 
-> LỚP 4+5 chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở **mỗi bước**, còn
-> LLM, LỚP 1, LỚP 1b và LỚP 6 **lặp lại** mỗi khi có tool call. Sơ đồ trên vẽ
-> một vòng để dễ đọc.
+> LỚP 4+5 và LỚP 8 (nhánh A) chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở
+> **mỗi bước**, còn LLM, LỚP 1, LỚP 1b, LỚP 6 và LỚP 8 (nhánh B) **lặp lại**
+> mỗi khi có tool call. Sơ đồ trên vẽ một vòng để dễ đọc.
 
 ## Cài đặt
 
@@ -352,6 +401,10 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     reviewMaxDiffChars: 24000   # trần ký tự diff gửi cho review
     reviewServerName: jev-review
     reviewReportToAgent: true   # báo điểm lại cho agent qua steer
+    jevGrepSearchTaskThreshold: 3  # số lệnh grep/find/rg LIÊN TIẾP thì leo thang; 0 = tắt nhánh B
+    jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
+    jevGrepTimeoutMs: 12000     # ngân sách một lần `jg`; quá hạn thì fail-open
+    jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
     enableCompletionCheck: true
@@ -360,20 +413,27 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     enableContextTriage: true           # lớp chọn file nạp vào context
     enableFailureRecovery: true         # lớp phục hồi khi tool lỗi
     enableQualityReview: true           # lớp tự gọi jev_review khi turn xong
+    enableJevgrepEscalation: true       # lớp leo thang tìm nguồn bằng `jg` (cần skill jevgrep)
 ```
+
+Lớp 8 cần CLI `jg` trên PATH (skill `jevgrep`, `npm install --global @dzhng/jevgrep`).
+Thiếu nó thì lớp này tự tắt im lặng — không có lỗi, không chặn gì.
 
 ## Kiểm chứng
 
 ```bash
-bash verify.sh              # 6 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 99 check, không cần secret
-node tests/live-check.mjs   # 21 check, chỉ cần TYPESAFE_API_KEY + mạng
+bash verify.sh              # 7 mục, cần DSH đang chạy + TYPESAFE_API_KEY
+node tests/offline.mjs      # 159 check, không cần secret
+node tests/live-check.mjs   # 24 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
-- `verify.sh` — 6 mục: cấu trúc, syntax, resolve dependency, đăng ký profile,
+- `verify.sh` — 7 mục: vị trí, cấu trúc, syntax, resolve dependency, đăng ký profile,
   log boot thật, gọi Jev thật với case đã biết đáp án. Exit 1 nếu có mục hỏng.
 - `tests/offline.mjs` — kiểm không cần secret: fail-open, bất biến model, chỉ
-  gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export.
+  gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export, và
+  Lớp 8 (parse output `jg`, nhận diện task tìm-kiếm / lệnh dò tìm thô, trần mỗi
+  turn, fail-open). Test Lớp 8 dùng một script `jg` **giả** trên PATH — không bao
+  giờ gọi `jg` thật, nên chạy được trong CI không có mạng lẫn không có `jg`.
 - `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
 - `tools/repair-session-source.mjs` — vá session log cũ bị hỏng do bản < 0.3.1 ghi
   `source` dạng chuỗi trần (xem CHANGELOG 0.3.1). Chạy khi dsh đã tắt:
@@ -428,6 +488,12 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | **Lớp 1b — yêu cầu xoá ở tin 18/25 (0.4.2)** | `unrelated` → **`authorized`** |
 | **Lớp 1b — nới cửa sổ 10 tin có đủ không? (0.4.2)** | **không** — vẫn chặn ở tin 10/25, phải tìm theo nội dung |
 | **`DELETE_HINT` tiếng Việt có dấu (0.4.2)** | `\b` trượt `xoá`/`dẹp` → lookaround Unicode khớp hết |
+| **Lớp 5 hint file — agent có đọc không? (session `777a1746`)** | **0/4 lần** — hint 4 turn liên tiếp, agent không mở file lần nào |
+| **Lớp 8 — vì sao cần (session `777a1746`)** | 152 lệnh `grep`/`find`/`rg` thô, **0** lần dùng skill `jevgrep` dù có trong catalog |
+| **Lớp 8 — ngưỡng 3 dựa trên gì** | run dò-tìm liên tiếp dài nhất: turn tìm-kiếm 1/3/4/5/7/8 đều **≥3**; turn ngắn 2/9/10 chỉ **1** |
+| **Lớp 8 — độ trễ `jg` thật** | **~0.9s ấm** (có cache), **~2.6s nguội**; E2E qua handler thật 2.4s |
+| **Lớp 8 — E2E với `jg` thật** | chèn đúng excerpt verbatim 2 file (`handler.js`, `auth.js`) |
+| **Lớp 8 — test offline** | 60 check mới, dùng `jg` giả trên PATH (không gọi thật, chạy được trong CI) |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 
@@ -442,6 +508,11 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 - **Không tự đọc file cho model.** Lớp 5 chỉ *nêu tên* file đáng đọc; việc đọc
   vẫn do model gọi tool. Nó cũng không đọc nội dung file nào để chấm — chỉ đọc
   TÊN file trong workspace.
+- **Lớp 8 có đọc nội dung, nhưng chỉ khi được kích hoạt.** Khi việc là "tìm X ở
+  đâu" (hoặc agent đã mò bằng nhiều lệnh `grep` liên tiếp), Lớp 8 chạy `jg` để
+  lấy trích nguồn verbatim. Nó **không** sửa file, **không** chạy gì khác, và
+  **không** thay thế việc đọc file thật — gợi ý luôn kèm câu "kiểm lại với file
+  thật trước khi sửa". Cần CLI `jg`; thiếu thì lớp tự tắt im lặng.
 - **Không tự sửa theo điểm review.** Lớp 7 chỉ báo điểm về cho agent; agent tự
   quyết có nên cải thiện thêm không.
 - **Không thay thế phán đoán của agent.** Một khuyến nghị không phải uỷ quyền.

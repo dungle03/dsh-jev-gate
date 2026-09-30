@@ -590,14 +590,18 @@ console.log('\n10. Lớp 6 — failure recovery: chỉ khi tool lỗi, bỏ qua 
   }
 
   // 10f. enableFailureRecovery:false → hook không đăng ký (tắt hẳn, không tốn gì)
+  //
+  // `tools/post-execute` giờ do HAI lớp dùng: Lớp 6 (phục hồi khi tool lỗi) và
+  // Lớp 8 (leo thang jevgrep khi có vòng xoáy dò tìm). Muốn cô lập Lớp 6 thì phải
+  // tắt cả Lớp 8, nếu không hook vẫn tồn tại và phép kiểm này đọc sai.
   {
     const { handlers } = await loadPlugin({
       config: {
         enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
-        enableFailureRecovery: false,
+        enableFailureRecovery: false, enableJevgrepEscalation: false,
       },
     });
-    check('enableFailureRecovery:false → không đăng ký hook post-execute',
+    check('enableFailureRecovery:false + Lớp 8 tắt → không đăng ký hook post-execute',
       handlers['tools/post-execute'] === undefined,
       `handlers=${Object.keys(handlers).join(',')}`);
   }
@@ -1060,6 +1064,562 @@ console.log('\n7. Câu hỏi authorization — hình dạng hợp lệ theo hợ
   // Không có user request → vẫn phải hợp lệ (gate xử lý phần rỗng)
   const q2 = authorizationQuestion({ userRequest: '', command: 'rm -rf /', cwd: '/' });
   check('user request rỗng vẫn hợp lệ', /no user request captured/i.test(q2.state.user_request));
+}
+
+console.log('\n13. Lớp 8 — leo thang jevgrep (parse, phát hiện, fail-open, trần)');
+
+/**
+ * Lớp 8 gọi CLI `jg`. Test offline KHÔNG được phụ thuộc `jg` thật (máy CI không
+ * có, và gọi thật là tốn tiền + cần mạng). Nên ở đây kiểm hai tầng:
+ *
+ *   A. Hàm thuần của `lib/jevgrep.mjs`: parse output, nhận diện task tìm-kiếm,
+ *      nhận diện lệnh dò tìm thô. Đây là logic quyết định lớp có fire hay không.
+ *   B. Đường hook với `jg` GIẢ đặt trên PATH: dựng một script `jg` tạm trả output
+ *      mẫu, trỏ PATH vào đó, rồi chạy handler thật. Kiểm được cả spawn, parse,
+ *      chèn message, trần mỗi turn, và fail-open khi `jg` thoát khác 0.
+ *
+ * `jg` thật không bao giờ được gọi trong file này.
+ */
+{
+  const jg = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'jevgrep.mjs')).href}?jg=1`);
+
+  // ── A. Hàm thuần ────────────────────────────────────────────────────────────
+  const SAMPLE = [
+    'Jevgrep: 2 relevant files.',
+    'AGENTS.md lookup (root and returned-file ancestors): none found.',
+    '- "handler.js" — implementation, caller, helper; selected source and structural context below',
+    '  Reading lead handle: lines 2-2',
+    '- "auth.js" — helper; selected source and structural context below',
+    '  Reading lead verifyToken: lines 1-1',
+    'End file list.',
+    '',
+    'Source block "handler.js" lines 1-3:',
+    "1: import { verifyToken } from './auth.js';",
+    "2: export function handle(req) { if (!verifyToken(req.token, 'x')) throw new Error('unauth'); return 'ok'; }",
+    '3: ',
+    '',
+    'Source block "auth.js" lines 1-2:',
+    '1: export function verifyToken(token, secret) { return token === secret; }',
+    '2: ',
+    '',
+    'End context.',
+  ].join('\n');
+
+  const parsed = jg.parseJevgrepOutput(SAMPLE);
+  check('parse: nhận 2 file', parsed?.files?.length === 2,
+    `files=${JSON.stringify(parsed?.files?.map((f) => f.path))}`);
+  check('parse: nhận 2 khối source', parsed?.blocks?.length === 2,
+    `blocks=${parsed?.blocks?.length}`);
+  check('parse: excerpt giữ nguyên văn dòng nguồn',
+    parsed?.excerpt?.includes("verifyToken(token, secret) { return token === secret; }") === true);
+  check('parse: excerpt có nhãn file + khoảng dòng',
+    parsed?.excerpt?.includes('--- auth.js (lines 1-2) ---') === true);
+  check('parse: output rỗng → undefined', jg.parseJevgrepOutput('') === undefined);
+  check('parse: rác không có dấu hiệu → undefined', jg.parseJevgrepOutput('hello world') === undefined);
+  check('parse: không ném khi nhận non-string', jg.parseJevgrepOutput(null) === undefined);
+
+  check('excerpt bị cắt theo cap',
+    jg.parseJevgrepOutput(SAMPLE, 50).excerpt.length <= 50 + 60,
+    `len=${jg.parseJevgrepOutput(SAMPLE, 50).excerpt.length}`);
+
+  // Nhận diện task tìm-kiếm: bám theo trigger của skill jevgrep.
+  for (const task of [
+    'chỗ nào xử lý auth trong repo này',
+    'tìm file nào làm việc ghi log giúp tôi',
+    'where is authentication checked before a request reaches a handler?',
+    'which file implements the rate limiter',
+    'trace this bug to its source',
+  ]) {
+    check(`search-task nhận: ${JSON.stringify(task.slice(0, 32))}`, jg.looksLikeSearchTask(task) === true);
+  }
+  // Không nhận oan task không phải tìm-kiếm.
+  for (const task of ['sửa lỗi cho tôi', 'báo cáo tình hình hiện tại', 'tôi restart rồi', '']) {
+    check(`search-task bỏ qua: ${JSON.stringify(task.slice(0, 32))}`, jg.looksLikeSearchTask(task) === false);
+  }
+
+  for (const cmd of ['grep -rn auth src', 'rtk grep -n x', 'find ~ -name x', 'rg foo', 'ag bar']) {
+    check(`raw-search nhận: ${JSON.stringify(cmd)}`, jg.isRawSearchCommand(cmd) === true);
+  }
+  for (const cmd of ['rm -rf /tmp/x', 'node build.js', 'cat README.md', '']) {
+    check(`raw-search bỏ qua: ${JSON.stringify(cmd)}`, jg.isRawSearchCommand(cmd) === false);
+  }
+  // Không khớp trong định danh dài hơn (tránh "find" trong "finder", "grep" trong "grepper").
+  check('raw-search không khớp trong định danh', jg.isRawSearchCommand('node finder.js') === false);
+
+  check('buildJevgrepQuestion gộp khoảng trắng',
+    jg.buildJevgrepQuestion('  tìm   file  nào\nxử lý  auth  ') === 'tìm file nào xử lý auth');
+  check('buildJevgrepQuestion rỗng → chuỗi rỗng', jg.buildJevgrepQuestion('') === '');
+
+  // ── B. Đường hook với `jg` giả trên PATH ────────────────────────────────────
+  const { mkdirSync, writeFileSync, chmodSync } = await import('node:fs');
+  const fakeBin = mkdtempSync(join(tmpdir(), 'jevgate-jg-'));
+  const fakeJg = join(fakeBin, 'jg');
+  // Script đọc biến môi trường để test điều khiển hành vi: thành công / lỗi /
+  // output rỗng. Không phụ thuộc `jg` thật.
+  writeFileSync(fakeJg, `#!/bin/sh
+if [ "$JEVRGATE_FAKE" = "fail" ]; then echo "boom" >&2; exit 3; fi
+if [ "$JEVRGATE_FAKE" = "empty" ]; then exit 0; fi
+cat <<'OUT'
+Jevgrep: 1 relevant files.
+- "auth.js" — helper; selected source below
+End file list.
+
+Source block "auth.js" lines 1-1:
+1: export function verifyToken(t, s) { return t === s; }
+
+End context.
+OUT
+`, 'utf8');
+  chmodSync(fakeJg, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}:${oldPath}`;
+  const oldFake = process.env.JEVRGATE_FAKE;
+
+  /** Agent tối thiểu + session trả event để `currentTurnOf` đọc được turn. */
+  const makeAgent = (turn, cwd = '/tmp/jgtest') => ({
+    id: 'a-jg',
+    cwd,
+    session: { header: { cwd }, snapshotEvents: () => [{ type: 'turn/start', data: { turn } }] },
+  });
+
+  /**
+   * `agent/pre-step` có HAI handler: Lớp 4+5 đăng ký trước (`index.mjs`), Lớp 8
+   * đăng ký sau. Nên handler của Lớp 8 là phần tử CUỐI. Hàm này lấy nó và kiểm
+   * luôn số lượng để một lần đổi thứ tự đăng ký bị bắt ngay, không âm thầm
+   * kiểm nhầm lớp.
+   */
+  const layer8PreStep = (handlers) => {
+    const list = handlers['agent/pre-step'] ?? [];
+    return list[list.length - 1];
+  };
+
+  try {
+    // Bật Lớp 8, tắt các lớp khác để cô lập. `jg` giả đã ở trên PATH.
+    const cfgJg = {
+      enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+      enableSpawnHint: false, enableContextTriage: false, enableFailureRecovery: false,
+      enableQualityReview: false, enableJevgrepEscalation: true,
+    };
+
+    // B1. pre-step: task tìm-kiếm → chèn excerpt.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      check('pre-step có 2 handler (Lớp 4+5 rồi Lớp 8)',
+        (handlers['agent/pre-step'] ?? []).length === 2,
+        `n=${(handlers['agent/pre-step'] ?? []).length}`);
+      // `lastSeenPrompt` được ghi từ chính handler Lớp 4+5 qua notePrompt, nên
+      // phải chạy nó trước để mô phỏng đúng luồng thật.
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken giúp tôi' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await layer8PreStep(handlers)(
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const injected = (out.messages ?? []).map((m) => m.content?.[0]?.text ?? '').join('\n');
+      check('pre-step task tìm-kiếm → chèn excerpt', injected.includes('verifyToken(t, s)'),
+        `injected=${JSON.stringify(injected.slice(0, 80))}`);
+      check('message chèn mang source v4 hợp lệ',
+        (out.messages ?? []).some((m) => m.source?.kind === 'plugin:jev-gate'));
+      check('excerpt có escape clause (không phải mệnh lệnh)',
+        /only if it matches what you find/i.test(injected));
+    }
+
+    // B2. pre-step: task KHÔNG tìm-kiếm → không chèn gì.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'sửa lỗi đăng nhập cho tôi' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await layer8PreStep(handlers)(
+        { turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      check('pre-step task thường → không chèn', (out.messages ?? []).length === 0,
+        `messages=${(out.messages ?? []).length}`);
+    }
+
+    // B3. pre-step chỉ chạy ở step 1.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await layer8PreStep(handlers)(
+        { turn: 1, step: 2, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      check('pre-step step 2 → không chèn (chỉ step 1)', (out.messages ?? []).length === 0);
+    }
+
+    // B4. post-execute: đủ ngưỡng lệnh dò tìm thô → chèn một lần, đúng mốc.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: { ...cfgJg, jevGrepSearchTaskThreshold: 3 } });
+      const run = async (command) => handlers['tools/post-execute'][0](
+        { name: 'bash', arguments: { command }, agent: makeAgent(7), signal: new AbortController().signal },
+        { isError: false },
+        async () => ({ kind: 'allow' }),
+      );
+      const r1 = await run('grep -rn auth src');
+      const r2 = await run('find src -name "*.ts"');
+      check('dò tìm chưa đủ ngưỡng → chưa chèn',
+        (r1.additionalContexts ?? []).length === 0 && (r2.additionalContexts ?? []).length === 0,
+        `n1=${(r1.additionalContexts ?? []).length} n2=${(r2.additionalContexts ?? []).length}`);
+      const r3 = await run('rg "verifyToken" src');
+      const texts3 = (r3.additionalContexts ?? []).map((c) => c.content?.[0]?.text ?? '').join('\n');
+      check('đạt ngưỡng 3 → chèn excerpt', texts3.includes('verifyToken(t, s)'),
+        `texts=${JSON.stringify(texts3.slice(0, 60))}`);
+      const r4 = await run('grep -rn more src');
+      check('vượt ngưỡng không chèn lại', (r4.additionalContexts ?? []).length === 0,
+        `n4=${(r4.additionalContexts ?? []).length}`);
+    }
+
+    // B5. Lệnh không phải dò tìm → reset chuỗi (không tích luỹ qua lệnh khác).
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: { ...cfgJg, jevGrepSearchTaskThreshold: 3 } });
+      const run = async (command) => handlers['tools/post-execute'][0](
+        { name: 'bash', arguments: { command }, agent: makeAgent(8), signal: new AbortController().signal },
+        { isError: false },
+        async () => ({ kind: 'allow' }),
+      );
+      await run('grep -rn a src');
+      await run('grep -rn b src');
+      await run('node build.js'); // reset
+      await run('grep -rn c src');
+      const r = await run('grep -rn d src');
+      check('lệnh khác ở giữa → chuỗi reset, chưa đủ 3',
+        (r.additionalContexts ?? []).length === 0,
+        `n=${(r.additionalContexts ?? []).length}`);
+    }
+
+    // B6. `jg` thoát khác 0 → fail-open, KHÔNG chèn gì.
+    {
+      process.env.JEVRGATE_FAKE = 'fail';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await layer8PreStep(handlers)(
+        { turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      check('jg lỗi → fail-open, không chèn', (out.messages ?? []).length === 0,
+        `messages=${(out.messages ?? []).length}`);
+    }
+
+    // B7. `jg` trả output rỗng → không chèn.
+    {
+      process.env.JEVRGATE_FAKE = 'empty';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await layer8PreStep(handlers)(
+        { turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      check('jg output rỗng → không chèn', (out.messages ?? []).length === 0);
+    }
+
+    // B8. Trần `jevGrepMaxPerTurn`: cùng turn chỉ leo thang một lần.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: { ...cfgJg, jevGrepMaxPerTurn: 1, jevGrepSearchTaskThreshold: 2 } });
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 5, step: 1, signal: new AbortController().signal, agent: makeAgent(5),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out1 = await layer8PreStep(handlers)(
+        { turn: 5, step: 1, signal: new AbortController().signal, agent: makeAgent(5), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      const out2 = await handlers['tools/post-execute'][0](
+        { name: 'bash', arguments: { command: 'grep -rn a src' }, agent: makeAgent(5), signal: new AbortController().signal },
+        { isError: false },
+        async () => ({ kind: 'allow' }),
+      );
+      const out3 = await handlers['tools/post-execute'][0](
+        { name: 'bash', arguments: { command: 'grep -rn b src' }, agent: makeAgent(5), signal: new AbortController().signal },
+        { isError: false },
+        async () => ({ kind: 'allow' }),
+      );
+      check('trần 1/turn: pre-step chèn', (out1.messages ?? []).length === 1);
+      check('trần 1/turn: post-execute không chèn thêm (hết ngân sách)',
+        (out2.additionalContexts ?? []).length === 0 && (out3.additionalContexts ?? []).length === 0,
+        `n2=${(out2.additionalContexts ?? []).length} n3=${(out3.additionalContexts ?? []).length}`);
+    }
+
+    // B9. Tắt Lớp 8 → không hook nào của lớp này chạy.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({
+        config: { ...cfgJg, enableJevgrepEscalation: false },
+      });
+      // Lớp 4+5 LUÔN đăng ký `agent/pre-step` (guard `enableSpawnHint`/
+      // `enableContextTriage` nằm trong thân hàm, không phải lúc đăng ký), nên
+      // tắt Lớp 8 thì còn đúng 1 handler — của Lớp 4+5.
+      check('Lớp 8 tắt → chỉ còn pre-step của Lớp 4+5',
+        (handlers['agent/pre-step'] ?? []).length === 1,
+        `n=${(handlers['agent/pre-step'] ?? []).length}`);
+      await handlers['agent/pre-step'][0](
+        {
+          turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+          messages: [{
+            role: 'user', source: { kind: 'user' },
+            content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+          }],
+        },
+        async () => ({ kind: 'enter' }),
+      );
+      const out = await handlers['agent/pre-step'][0](
+        { turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+        async () => ({ kind: 'enter' }),
+      );
+      check('enableJevgrepEscalation:false → không chèn', (out.messages ?? []).length === 0);
+    }
+
+    // B10. Không có `jg` trên PATH → im lặng, không ném.
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: cfgJg });
+      jg.resetAvailabilityCache();
+      const emptyBin = mkdtempSync(join(tmpdir(), 'jevgate-nopath-'));
+      const savedPath = process.env.PATH;
+      process.env.PATH = emptyBin; // không có `jg`
+      try {
+        await handlers['agent/pre-step'][0](
+          {
+            turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1),
+            messages: [{
+              role: 'user', source: { kind: 'user' },
+              content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+            }],
+          },
+          async () => ({ kind: 'enter' }),
+        );
+        const out = await layer8PreStep(handlers)(
+          { turn: 1, step: 1, signal: new AbortController().signal, agent: makeAgent(1), messages: [] },
+          async () => ({ kind: 'enter' }),
+        );
+        check('không có jg trên PATH → fail-open, không ném', (out.messages ?? []).length === 0);
+      } finally {
+        process.env.PATH = savedPath;
+        jg.resetAvailabilityCache();
+      }
+    }
+
+    // B11. Ngân sách key theo `agentId:turn`, không theo `turn` trần.
+    // Agent chính và subagent đều có turn 1, 2, 3... riêng — dùng chung `turn`
+    // trần thì subagent tiêu mất ngân sách của agent chính (lỗi Lớp 2 đã gặp).
+    {
+      process.env.JEVRGATE_FAKE = 'ok';
+      const { handlers } = await loadPlugin({ config: { ...cfgJg, jevGrepMaxPerTurn: 1 } });
+      const agentA = { ...makeAgent(3), id: 'main-agent' };
+      const agentB = { ...makeAgent(3), id: 'subagent-1' };
+      const fire = async (agent) => {
+        await handlers['agent/pre-step'][0](
+          {
+            turn: 3, step: 1, signal: new AbortController().signal, agent,
+            messages: [{
+              role: 'user', source: { kind: 'user' },
+              content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+            }],
+          },
+          async () => ({ kind: 'enter' }),
+        );
+        return layer8PreStep(handlers)(
+          { turn: 3, step: 1, signal: new AbortController().signal, agent, messages: [] },
+          async () => ({ kind: 'enter' }),
+        );
+      };
+      const outA = await fire(agentA);
+      const outB = await fire(agentB);
+      check('agent chính leo thang được', (outA.messages ?? []).length === 1,
+        `n=${(outA.messages ?? []).length}`);
+      check('subagent cùng turn có ngân sách RIÊNG (không bị chặn oan)',
+        (outB.messages ?? []).length === 1,
+        `n=${(outB.messages ?? []).length}`);
+    }
+  } finally {
+    process.env.PATH = oldPath;
+    if (oldFake === undefined) delete process.env.JEVRGATE_FAKE;
+    else process.env.JEVRGATE_FAKE = oldFake;
+    jg.resetAvailabilityCache();
+    try { rmSync(fakeBin, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+console.log('\n14. Hợp đồng log quyết định — mọi nhánh Lớp 8 đều để lại dấu vết');
+
+/**
+ * Lớp 8 là lớp mới, chưa có dữ liệu thật. Muốn đo nó sau này thì log phải trả lời
+ * được "vì sao nó im lặng" — nếu nhánh `skip_*` không ghi gì thì không phân biệt
+ * được "không có `jg`" với "không nhận ra task tìm-kiếm".
+ *
+ * Dùng logDir RIÊNG để không lẫn với các section khác (chúng chia sẻ TMP_LOG_DIR).
+ */
+{
+  const { readFileSync } = await import('node:fs');
+  // Import KHÔNG kèm query: `index.mjs` import `./jevgrep.mjs` bằng URL chuẩn, nên
+  // đây mới đúng module instance mà plugin đang dùng. (Import kèm `?query` sẽ tạo
+  // instance riêng, và `resetAvailabilityCache()` trên đó không chạm tới plugin.)
+  const jgMod = await import(pathToFileURL(join(HERE, '..', 'lib', 'jevgrep.mjs')).href);
+  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-log-'));
+  const { handlers } = await loadPlugin({
+    config: {
+      logDir,
+      enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: false,
+      enableSpawnHint: false, enableContextTriage: false, enableFailureRecovery: false,
+      enableQualityReview: false, enableJevgrepEscalation: true,
+    },
+  });
+
+  // Nhánh `skip_unavailable`: không có `jg` trên PATH.
+  const savedPath = process.env.PATH;
+  const emptyBin = mkdtempSync(join(tmpdir(), 'jev-gate-logpath-'));
+  process.env.PATH = emptyBin;
+  // `isJevgrepAvailable` nhớ kết quả ở scope module, nên các section trước đã làm
+  // cache ấm với `jg` giả. Phải xoá cache thì PATH rỗng mới có tác dụng.
+  jgMod.resetAvailabilityCache();
+  try {
+    const agent = {
+      id: 'a-log',
+      cwd: '/tmp',
+      session: { header: { cwd: '/tmp' }, snapshotEvents: () => [{ type: 'turn/start', data: { turn: 1 } }] },
+    };
+    await handlers['agent/pre-step'][0](
+      {
+        turn: 1, step: 1, signal: new AbortController().signal, agent,
+        messages: [{
+          role: 'user', source: { kind: 'user' },
+          content: [{ type: 'text', text: 'tìm file nào xử lý verifyToken' }],
+        }],
+      },
+      async () => ({ kind: 'enter' }),
+    );
+    await handlers['agent/pre-step'][1](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent, messages: [] },
+      async () => ({ kind: 'enter' }),
+    );
+  } finally {
+    process.env.PATH = savedPath;
+  }
+
+  // Ghi log là bất đồng bộ (appendFile); đợi một nhịp cho nó flush.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  let entries = [];
+  try {
+    entries = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === 'jevgrep_escalation');
+  } catch { /* chưa có file */ }
+
+  check('nhánh im lặng vẫn ghi log', entries.length >= 1, `entries=${entries.length}`);
+  const entry = entries[0] ?? {};
+  check('log có `decision` nói rõ vì sao', typeof entry.decision === 'string',
+    `decision=${entry.decision}`);
+  check('log có `reason` (search_task vs raw_search_run)',
+    entry.reason === 'search_task' || entry.reason === 'raw_search_run',
+    `reason=${entry.reason}`);
+  check('log có `ms` kể cả nhánh thoát sớm', Number.isFinite(entry.ms),
+    `ms=${entry.ms}`);
+  check('log ghi đúng nhánh skip_unavailable khi thiếu jg',
+    entry.decision === 'skip_unavailable', `decision=${entry.decision}`);
+
+  try { rmSync(logDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+console.log('\n15. `evictOldest` — trần state dùng chung của năm lớp');
+
+/**
+ * `evictOldest` thay `map.clear()` ở Lớp 2/3/4+5/6/7/8. Nó chỉ chạy khi state
+ * vượt 200 entry — hiếm trong test thường — nên một hồi quy ở đây sẽ im lặng.
+ * Kiểm trực tiếp, gồm cả tính chất quan trọng nhất: entry MỚI NHẤT phải sống sót.
+ */
+{
+  const { evictOldest } = await import(`${pathToFileURL(PLUGIN).href}?ev=1`);
+
+  // Dưới trần → không đụng gì.
+  const small = new Map([['a', 1], ['b', 2]]);
+  evictOldest(small, 200);
+  check('dưới trần → giữ nguyên', small.size === 2, `size=${small.size}`);
+
+  // Vượt trần → xoá đúng phần dư, từ cũ nhất.
+  const over = new Map();
+  for (let i = 0; i < 205; i += 1) over.set(`k${i}`, i);
+  evictOldest(over, 200);
+  check('vượt trần → cắt về đúng trần', over.size === 200, `size=${over.size}`);
+  check('xoá từ CŨ NHẤT (k0..k4 biến mất)', !over.has('k0') && !over.has('k4'),
+    `k0=${over.has('k0')} k4=${over.has('k4')}`);
+  check('entry MỚI NHẤT sống sót (k204)', over.has('k204'),
+    `k204=${over.has('k204')}`);
+  check('entry sát trần sống sót (k5)', over.has('k5'), `k5=${over.has('k5')}`);
+
+  // Set cũng phải dùng được (cùng interface keys/delete/size).
+  const asSet = new Set();
+  for (let i = 0; i < 203; i += 1) asSet.add(`s${i}`);
+  evictOldest(asSet, 200);
+  check('Set dùng được (Lớp 4+5 dùng Set)', asSet.size === 200 && !asSet.has('s0'),
+    `size=${asSet.size} s0=${asSet.has('s0')}`);
+
+  // Đúng bằng trần → không xoá.
+  const exact = new Map();
+  for (let i = 0; i < 200; i += 1) exact.set(`e${i}`, i);
+  evictOldest(exact, 200);
+  check('đúng bằng trần → không xoá', exact.size === 200 && exact.has('e0'),
+    `size=${exact.size}`);
 }
 
 console.log('\n8. Đóng gói — export đúng hợp đồng plugin');

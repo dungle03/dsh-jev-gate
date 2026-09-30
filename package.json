@@ -1,8 +1,8 @@
 {
   "name": "dsh-jev-gate",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "type": "module",
-  "description": "Đưa Jev (TypeSafe System One) vào 7 khoảnh khắc đắt giá của DSH: gate tool nguy hiểm, kiểm hoàn thành, chọn reasoning effort, chọn hướng tiếp cận, chọn file nạp vào context, phục hồi khi tool lỗi, tự review chất lượng khi turn kết thúc.",
+  "description": "Đưa Jev (TypeSafe System One) vào 8 khoảnh khắc đắt giá của DSH: gate tool nguy hiểm, kiểm hoàn thành, chọn reasoning effort, chọn hướng tiếp cận, chọn file nạp vào context, phục hồi khi tool lỗi, tự review chất lượng khi turn kết thúc, và leo thang tìm nguồn bằng jevgrep khi việc là \"tìm X ở đâu\".",
   "license": "MIT",
   "author": "dungle03",
   "repository": {
@@ -24,7 +24,9 @@
     "context-selection",
     "tool-recovery",
     "guardrails",
-    "quality-review"
+    "quality-review",
+    "jevgrep",
+    "source-retrieval"
   ],
   "main": "./lib/index.mjs",
   "exports": {

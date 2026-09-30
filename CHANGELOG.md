@@ -3,6 +3,88 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.5.0] — 2026-09-30
+
+### Thêm — Lớp 8: leo thang tìm nguồn bằng `jg` (skill `jevgrep`)
+
+**Vì sao có lớp này.** Lớp 5 liệt kê ứng viên file bằng **TÊN** (readdir BFS +
+khớp token). Đo trên một session thật (`777a1746`, 2026-09-30) cho thấy nó gần
+như vô dụng:
+
+- Lớp 5 hint `weknora-dsh-setup-guide.md` ở **4 turn liên tiếp**; agent **không
+  đọc file đó một lần nào** (0/4). Tên file không đủ để model tin.
+- Cùng session: **152** lệnh `grep`/`find`/`rg` thô, **0** lần dùng skill
+  `jevgrep` — dù nó có trong catalog với mô tả `MUST USE`.
+
+`jg` trả về **nội dung verbatim** (file + khoảng dòng + trích nguồn), đúng thứ
+Lớp 5 thiếu. Lớp 8 leo thang ở hai thời điểm, cùng một hành động:
+
+- **A. `agent/pre-step` (step 1)** — khi task của user đọc ra là "tìm X ở đâu":
+  `chỗ nào xử lý`, `tìm file nào`, `where is X handled`, `which file implements`,
+  `trace this bug`. Chạy trước khi agent kịp tiêu phí lệnh nào.
+- **B. `tools/post-execute`** — khi đã có `jevGrepSearchTaskThreshold` (3) lệnh
+  dò tìm thô **liên tiếp** trong cùng turn. Bắt ca task không tự khai là tìm-kiếm
+  nhưng thực tế agent đang mò.
+
+**Ngưỡng 3 không phải số đoán.** Đo run dò-tìm liên tiếp dài nhất mỗi turn trên
+session thật: turn tìm-kiếm (1, 3, 4, 5, 7, 8) đều **≥3**; turn trả lời ngắn
+(2, 9, 10) chỉ **1**. Lệnh không phải dò tìm thì reset chuỗi.
+
+**Vì sao không thay hẳn Lớp 5.** `jg` đo thật **~0.9s ấm / ~2.6s nguội**, cộng
+vào step 1 của *mọi* turn kể cả turn không phải việc tìm kiếm. Leo thang có điều
+kiện giữ turn thường rẻ.
+
+**An toàn.** Fail-open tuyệt đối: `jg` không có trên PATH, thoát khác 0, timeout,
+output rỗng → im lặng bỏ qua, việc đi tiếp. Chỉ **chèn gợi ý** kèm escape clause
+("chỉ dùng nếu khớp với những gì bạn thấy; kiểm lại với file thật"), không sửa
+file, không chạy gì khác. Trần `jevGrepMaxPerTurn` (1) chặn gọi lặp.
+
+**File mới.** `lib/jevgrep.mjs` — spawn `jg`, parse output theo dấu hiệu (không
+cứng theo format, có đường lui trả nguyên văn), nhận diện task tìm-kiếm và lệnh
+dò tìm thô, dò `jg` trên PATH có cache.
+
+**Config mới.** `enableJevgrepEscalation` (true), `jevGrepSearchTaskThreshold` (3),
+`jevGrepMaxPerTurn` (1), `jevGrepTimeoutMs` (12000), `jevGrepExcerptCap` (4000).
+
+**Test.** `tests/offline.mjs`: **99 → 159** check. 60 check mới cho Lớp 8, dùng
+một script `jg` **giả** đặt trên PATH — không bao giờ gọi `jg` thật, nên chạy
+được trong CI không có mạng lẫn không có `jg`. E2E với `jg` thật đã kiểm riêng:
+chèn đúng excerpt 2 file, 2.4s qua handler thật.
+
+### Sửa
+
+- **`verify.sh` thiếu `lib/jevgrep.mjs`** trong mục "Cấu trúc plugin" và "Syntax".
+  Bổ sung cả hai.
+- **Test `enableFailureRecovery:false` đọc sai sau khi thêm Lớp 8.**
+  `tools/post-execute` giờ do HAI lớp dùng (Lớp 6 và Lớp 8), nên phép kiểm
+  "tắt Lớp 6 thì không có hook" phải tắt cả Lớp 8 mới cô lập được. Sửa để kiểm
+  đúng ý định gốc thay vì kiểm nhầm lớp.
+- **Trạng thái Lớp 8 key theo `turn` trần thay vì `agentId:turn`.** `turn` là số
+  thứ tự bên trong một session, nên agent chính và mỗi subagent đều có turn 1, 2,
+  3... riêng — dùng chung khoá thì subagent tiêu mất ngân sách của agent chính.
+  Đúng loại lỗi Lớp 2 đã gặp và đã sửa; giờ Lớp 8 dùng cùng khoá. Kèm test.
+- **`clip()` bị cài hai lần.** `policy.mjs` và `jevgrep.mjs` mỗi bên tự viết lại
+  cùng phép cắt head+tail (chia 0.6/0.4, cùng chuỗi `…[omitted N chars]…`). Tách
+  primitive `truncateText()` trong `policy.mjs`; `clip()` bọc nó để giữ cờ
+  `truncated`, `jevgrep.mjs` import thẳng. Sửa một nơi là hết lệch.
+- **Log Lớp 8 thiếu `ms` ở nhánh thoát sớm.** Năm nhánh tự dựng object `record()`
+  riêng, nên `skip_*` không có `ms` — đúng chỗ cần nhất để biết vì sao lớp im
+  lặng. Gom về một cửa `log()` duy nhất: `type`/`turn`/`reason`/`ms` luôn có mặt,
+  mọi nhánh đều để lại dấu vết. Kèm section test "Hợp đồng log quyết định".
+- **Dò `jg` không còn đẩy chuỗi qua shell.** `isJevgrepAvailable()` bản đầu gọi
+  `spawn('command', ['-v', 'jg'], { shell: true })`. Không có injection (mọi tham
+  số là hằng) nhưng nó vẫn là một interpreter sink cho một câu mà hệ thống file
+  trả lời được. Thay bằng quét `PATH` với `access(dir/jg, X_OK)` — bỏ shell, bỏ
+  một tiến trình con, kết quả tất định. (`jg` khai `os: [darwin, linux]` nên
+  không cần `PATHEXT`.)
+- **`map.clear()` khi state vượt 200 entry — lỗi mà Lớp 2 đã sửa, nhưng bốn nơi
+  khác còn sót.** Lớp 6 và Lớp 8 (mới) dùng `clear()`, xoá sạch mọi khoá kể cả
+  của turn/agent đang chạy → turn cũ fire lại (đúng lỗi đã ghi trong comment của
+  Lớp 2: 16 lần fire trên cùng turn=9). Lớp 2 và Lớp 7 thì tự cài lại cùng một
+  vòng FIFO bằng tay. Gom cả sáu nơi về một helper `evictOldest(map, max)` — xoá
+  từ cũ nhất, giữ entry mới. Export để test trực tiếp (nó là hợp đồng chung của
+  năm lớp, và chỉ chạy khi state vượt trần nên hồi quy sẽ im lặng). Kèm 7 check.
+
 ## [0.4.3] — 2026-09-30
 
 ### Sửa (tài liệu + ảnh)

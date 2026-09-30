@@ -2,90 +2,164 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "dsh-jev-gate — Jev làm bảy chốt chặn cho DSH",
+    "title": "dsh-jev-gate — Jev làm tám chốt chặn cho DSH",
     "output": "architecture.html",
     "quality_profile": "showcase"
   },
   "components": [
     {
-      "id": "user",
-      "type": "external",
-      "label": "User",
-      "sublabel": "gõ prompt",
-      "pos": [40, 300],
-      "size": [120, 60]
-    },
-    {
-      "id": "engine",
-      "type": "backend",
-      "label": "DSH engine",
-      "sublabel": "agent loop",
-      "pos": [240, 300],
-      "size": [150, 60]
-    },
-    {
       "id": "l1",
       "type": "security",
       "label": "LỚP 1 · gate phá dữ liệu",
       "sublabel": "tools/pre-execute",
-      "pos": [500, 60],
-      "size": [210, 56]
+      "pos": [
+        500,
+        50
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l2",
       "type": "security",
       "label": "LỚP 1b · quyền của user",
       "sublabel": "tools/pre-execute (khi lớp 1 chặn)",
-      "pos": [500, 130],
-      "size": [210, 56]
+      "pos": [
+        500,
+        120
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l3",
       "type": "backend",
       "label": "LỚP 2 · kiểm hoàn thành",
       "sublabel": "agent/turn-stopping",
-      "pos": [500, 200],
-      "size": [210, 56]
+      "pos": [
+        500,
+        190
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l4",
       "type": "backend",
       "label": "LỚP 3 · chọn effort",
       "sublabel": "agent/request",
-      "pos": [500, 270],
-      "size": [210, 56]
+      "pos": [
+        500,
+        260
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l5",
       "type": "backend",
       "label": "LỚP 4+5 · hướng + file",
       "sublabel": "agent/pre-step (step 1)",
-      "pos": [500, 340],
-      "size": [210, 56]
+      "pos": [
+        500,
+        330
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l6",
       "type": "backend",
       "label": "LỚP 6 · phục hồi tool lỗi",
       "sublabel": "tools/post-execute",
-      "pos": [500, 410],
-      "size": [210, 56]
+      "pos": [
+        500,
+        400
+      ],
+      "size": [
+        210,
+        56
+      ]
     },
     {
       "id": "l7",
       "type": "backend",
       "label": "LỚP 7 · review chất lượng",
       "sublabel": "agent/turn-stopping",
-      "pos": [500, 480],
-      "size": [210, 56]
+      "pos": [
+        500,
+        470
+      ],
+      "size": [
+        210,
+        56
+      ]
+    },
+    {
+      "id": "l8",
+      "type": "backend",
+      "label": "LỚP 8 · leo thang tìm nguồn",
+      "sublabel": "agent/pre-step + tools/post-execute",
+      "pos": [
+        500,
+        540
+      ],
+      "size": [
+        210,
+        56
+      ]
+    },
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "gõ prompt",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "engine",
+      "type": "backend",
+      "label": "DSH engine",
+      "sublabel": "agent loop",
+      "pos": [
+        240,
+        300
+      ],
+      "size": [
+        150,
+        60
+      ]
     },
     {
       "id": "jev",
       "type": "external",
       "label": "Jev API",
       "sublabel": "jev-1.13.0",
-      "pos": [820, 270],
-      "size": [150, 64],
+      "pos": [
+        820,
+        280
+      ],
+      "size": [
+        150,
+        64
+      ],
       "tag": "câu hỏi đóng"
     },
     {
@@ -93,15 +167,30 @@
       "type": "database",
       "label": "decisions.jsonl",
       "sublabel": "mode 0600",
-      "pos": [820, 440],
-      "size": [150, 60]
+      "pos": [
+        820,
+        500
+      ],
+      "size": [
+        150,
+        60
+      ]
     }
   ],
   "boundaries": [
     {
       "kind": "security-group",
       "label": "dsh-jev-gate",
-      "wraps": ["l1", "l2", "l3", "l4", "l5", "l6", "l7"]
+      "wraps": [
+        "l1",
+        "l2",
+        "l3",
+        "l4",
+        "l5",
+        "l6",
+        "l7",
+        "l8"
+      ]
     }
   ],
   "connections": [
@@ -112,25 +201,99 @@
       "label": "prompt",
       "variant": "emphasis"
     },
-    { "id": "engine-l1", "from": "engine", "to": "l1", "variant": "dashed" },
-    { "id": "engine-l2", "from": "engine", "to": "l2", "variant": "dashed" },
-    { "id": "engine-l3", "from": "engine", "to": "l3", "variant": "dashed" },
-    { "id": "engine-l4", "from": "engine", "to": "l4", "variant": "dashed" },
-    { "id": "engine-l5", "from": "engine", "to": "l5", "variant": "dashed" },
-    { "id": "engine-l6", "from": "engine", "to": "l6", "variant": "dashed" },
-    { "id": "engine-l7", "from": "engine", "to": "l7", "variant": "dashed" },
-    { "id": "l1-jev", "from": "l1", "to": "jev" },
-    { "id": "l2-jev", "from": "l2", "to": "jev" },
-    { "id": "l3-jev", "from": "l3", "to": "jev" },
-    { "id": "l4-jev", "from": "l4", "to": "jev" },
-    { "id": "l5-jev", "from": "l5", "to": "jev" },
-    { "id": "l6-jev", "from": "l6", "to": "jev" },
-    { "id": "l7-jev", "from": "l7", "to": "jev" },
+    {
+      "id": "engine-l1",
+      "from": "engine",
+      "to": "l1",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l2",
+      "from": "engine",
+      "to": "l2",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l3",
+      "from": "engine",
+      "to": "l3",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l4",
+      "from": "engine",
+      "to": "l4",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l5",
+      "from": "engine",
+      "to": "l5",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l6",
+      "from": "engine",
+      "to": "l6",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-l7",
+      "from": "engine",
+      "to": "l7",
+      "variant": "dashed"
+    },
+    {
+      "id": "l1-jev",
+      "from": "l1",
+      "to": "jev"
+    },
+    {
+      "id": "l2-jev",
+      "from": "l2",
+      "to": "jev"
+    },
+    {
+      "id": "l3-jev",
+      "from": "l3",
+      "to": "jev"
+    },
+    {
+      "id": "l4-jev",
+      "from": "l4",
+      "to": "jev"
+    },
+    {
+      "id": "l5-jev",
+      "from": "l5",
+      "to": "jev"
+    },
+    {
+      "id": "l6-jev",
+      "from": "l6",
+      "to": "jev"
+    },
+    {
+      "id": "l7-jev",
+      "from": "l7",
+      "to": "jev"
+    },
     {
       "id": "jev-log",
       "from": "jev",
       "to": "log",
       "variant": "dashed"
+    },
+    {
+      "id": "engine-l8",
+      "from": "engine",
+      "to": "l8",
+      "variant": "dashed"
+    },
+    {
+      "id": "l8-jev",
+      "from": "l8",
+      "to": "jev"
     }
   ],
   "cards": [
@@ -150,7 +313,8 @@
         "LỚP 3 · bước tới cần nghĩ nhiều không; chỉ ghi reasoningEffort",
         "LỚP 4+5 · hướng nào tối ưu, file nào cần đọc trước",
         "LỚP 6 · tool vừa lỗi: retry / đổi cách / điều tra / báo user",
-        "LỚP 7 · turn xong và diff ≥ 20 dòng → tự gọi jev_review"
+        "LỚP 7 · turn xong và diff ≥ 20 dòng → tự gọi jev_review",
+        "LỚP 8 · việc là \"tìm X ở đâu\" → chạy jg lấy trích nguồn verbatim"
       ]
     }
   ]
