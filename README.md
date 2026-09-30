@@ -399,11 +399,10 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 |---|---|
 | Gate phá dữ liệu trên 20 lệnh thực tế | 20/20 đúng (recall 100%, precision 100%) |
 | Deny có thật sự chặn thi hành? | có — canary còn nguyên sau `rm -rf` bị deny |
-| Lớp quyền user — nội dung dán vào tự nhận quyền | 0/66 ra `authorized` |
-| Lớp quyền user — lệnh nguy hiểm không được yêu cầu | 0/48 ra `authorized` |
-| Lớp quyền user — dọn dẹp hợp lệ user yêu cầu | 46/48 ra `authorized` |
-| Handler thật + Jev thật, 12 case end-to-end | 12/12 đúng |
-| Lớp quyền user fail-closed khi lỗi | có — lỗi đọc session vẫn giữ chặn |
+| Lớp 1b · quyền của user — nội dung dán vào tự nhận quyền | 0/66 ra `authorized` |
+| Lớp 1b · quyền của user — lệnh nguy hiểm không được yêu cầu | 0/48 ra `authorized` |
+| Lớp 1b · quyền của user — dọn dẹp hợp lệ user yêu cầu | 46/48 ra `authorized` |
+| Lớp 1b · quyền của user fail-closed khi lỗi | có — lỗi đọc session vẫn giữ chặn |
 | Kiểm hoàn thành: có bằng chứng vs nói suông | 3/3 nhánh đúng |
 | Fail-open lớp 1 (mất key / store hỏng / llm vắng) | 3/3 pass |
 | Effort sang số theo độ khó | `low→low→high→low→high` qua 5 bước |
@@ -419,8 +418,7 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Lớp 3 — confidence ↔ độ ổn định | conf 0.6 → step sau giữ nguyên 88%; conf 0.9 → 95% |
 | Lớp 3 — tái dùng bỏ được bao nhiêu | **32%** số lần gọi, đoán sai 8% (bỏ sót TĂNG 4,3%) |
 | Bỏ câu `lease` | tiết kiệm **148 input + 43 output** token mỗi lần gọi |
-| Lớp 7 — `jev_review` được gọi bao nhiêu trong 110 session thật | **1 lần** (do tác giả test), 0 lần trong việc thật |
-| Lớp 7 — handler thật + MCP thật | gọi review 1 lần, steer điểm về agent |
+| Lớp 7 — `jev_review` được gọi bao nhiêu trong 110 session thật | **1 lần** (do tác giả test, handler thật + MCP thật, steer điểm về agent), 0 lần trong việc thật |
 | Lớp 7 — độ trễ `jev_review` | ~100ms |
 | **Lớp 7 trên 16.905 dòng log thật (0.4.0)** | fire **66 lần**, `reviewed` **0 lần** — bug `seq`, sửa ở 0.4.1 |
 | **Lớp 7 sau 0.4.1 (tái hiện provider thật)** | trước `diff.length=0` → sau `diff.length=52` |

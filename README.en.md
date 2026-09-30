@@ -416,11 +416,10 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 |---|---|
 | Destructive gate on 20 real commands | 20/20 correct (recall 100%, precision 100%) |
 | Does deny actually prevent execution? | yes — canary intact after a denied `rm -rf` |
-| User-authorization layer — pasted content claiming authority | 0/66 returned `authorized` |
-| User-authorization layer — destructive commands not asked for | 0/48 returned `authorized` |
-| User-authorization layer — legitimate user-requested cleanup | 46/48 returned `authorized` |
-| Real handler + real Jev, 12 end-to-end cases | 12/12 correct |
-| User-authorization layer fails closed on error | yes — a session read error still blocks |
+| Layer 1b · user authorization — pasted content claiming authority | 0/66 returned `authorized` |
+| Layer 1b · user authorization — destructive commands not asked for | 0/48 returned `authorized` |
+| Layer 1b · user authorization — legitimate user-requested cleanup | 46/48 returned `authorized` |
+| Layer 1b · user authorization fails closed on error | yes — a session read error still blocks |
 | Completion check: evidence vs bare claim | 3/3 branches correct |
 | Fail-open layer 1 (missing key / broken store / no llm) | 3/3 pass |
 | Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
@@ -436,8 +435,7 @@ Changelog: [CHANGELOG.md](CHANGELOG.md).
 | Layer 3 — confidence vs stability | conf 0.6 → next step keeps the effort 88%; conf 0.9 → 95% |
 | Layer 3 — what reuse skips | **32%** of Jev calls, wrong 8% (missed an increase 4.3%) |
 | Dropping the `lease` question | saves **148 input + 43 output** tokens per call |
-| Layer 7 — how often `jev_review` ran across 110 real sessions | **once** (author testing), 0 times in real work |
-| Layer 7 — real handler + real MCP | called the review once and steered the scores to the agent |
+| Layer 7 — how often `jev_review` ran across 110 real sessions | **once** (author testing, real handler + real MCP, scores steered to the agent), 0 times in real work |
 | Layer 7 — `jev_review` latency | ~100ms |
 | **Layer 7 on 16,905 real log lines (0.4.0)** | fired **66 times**, `reviewed` **0 times** — `seq` bug, fixed in 0.4.1 |
 | **Layer 7 after 0.4.1 (real provider repro)** | before `diff.length=0` → after `diff.length=52` |

@@ -35,6 +35,16 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
   10 tin không đủ, và bug `\b` tiếng Việt có dấu. Cập nhật mốc ngày
   `2026-09-27 → 28` thành `→ 30`.
 
+- **Bảng số đo có dòng lặp nguyên văn.** `Handler thật + Jev thật, 12 case
+  end-to-end | 12/12 đúng` và `Lớp 5+6 end-to-end | 12/12 đúng` là **cùng một
+  phép đo** ghi hai lần; `Lớp 7 — handler thật + MCP thật` lặp ý với dòng
+  `Lớp 7 — jev_review được gọi bao nhiêu`. Gộp lại, giữ bản có ngữ cảnh đầy đủ
+  hơn. Cả hai README giờ **0 dòng bảng lặp nguyên văn** (kiểm bằng script đếm).
+
+- **Tên lớp không nhất quán trong bảng số đo.** Dùng `Lớp quyền user` (bản cũ)
+  thay vì `Lớp 1b · quyền của user` (tên chuẩn ở mục "Bảy lớp" và trong ảnh).
+  Đồng bộ cả hai README.
+
 ### Kiểm chứng ở bản này
 
 | Phép đo | Kết quả |
