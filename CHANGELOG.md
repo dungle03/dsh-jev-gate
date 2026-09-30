@@ -3,6 +3,167 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.4.2] — 2026-09-30
+
+### Sửa
+
+- **Lớp 1b quên yêu cầu của user khi hội thoại dài — chặn oan.**
+
+  `collectUserRequest` chỉ lấy **3 tin nhắn gần nhất** (`texts.slice(-3)`). Nếu
+  user yêu cầu xoá ở tin thứ 4 trở đi, rồi vài tin khác xen vào, yêu cầu gốc
+  **rơi khỏi cửa sổ** → Jev nhận `unrelated` → CHẶN dù user đã yêu cầu.
+
+  Đây là lỗi **phân loại**, không phải lỗi cửa sổ nhỏ: quyền bị **suy đoán lại**
+  từ một cửa sổ trượt ở mỗi lệnh, nên cùng một lệnh có thể cho kết quả khác nhau
+  giữa các lần — đúng hiện tượng `rm -rf /tmp/gtest` bị chặn 5 lần liên tiếp.
+
+  **Sửa.** Thay `slice(-3)` bằng `selectEvidence()` — xếp hạng theo **liên quan**
+  thay vì vị trí:
+
+  | Tín hiệu | Điểm | Vì sao |
+  |---|---|---|
+  | Token khớp giữa tin nhắn và lệnh sắp chạy | +10 / token | Mạnh nhất: tin nhắc đúng đường dẫn thì liên quan |
+  | Có động từ xoá (`rm`/`xoá`/`delete`/`dọn`…) | +3 | Yếu, chỉ phân biệt trong nhóm đã khớp |
+  | Recency | +0..1 | Chỉ phá hoà, không lấn át hai tín hiệu trên |
+
+  Ba tin được chọn rồi **sắp lại theo thứ tự thời gian** để Jev đọc mạch liền.
+
+  **Đo được** (Jev API thật, hội thoại 25 tin):
+
+  | Yêu cầu xoá ở | `slice(-3)` cũ | `selectEvidence` mới |
+  |---|---|---|
+  | tin 10/25 | `unrelated` → CHẶN | **`authorized` → CHO CHẠY** |
+  | tin 18/25 | `unrelated` → CHẶN | **`authorized` → CHO CHẠY** |
+  | tin 22/25 | `authorized` | `authorized` |
+
+  Nới cửa sổ (`slice(-10)`) **không giải được** — vẫn chặn ở tin 10/25. Hội
+  thoại dài bao nhiêu cũng có giới hạn, nên phải tìm theo **nội dung**, không
+  theo **vị trí**.
+
+  **An toàn không đổi.** `selectEvidence` chỉ **sắp xếp**, không mở rộng nguồn.
+  Tầng lọc `source.kind === 'user'` chạy **trước** nó, nên nội dung dán vào không
+  tới được đây. Đo lại 3 case injection (`quoted` ×2, `unrelated` ×1):
+  **0/3 leak** — không hồi quy.
+
+  Vì sao KHÔNG xây "sổ quyền" (grant store) như bản nháp: session log **đã là**
+  store bền, có thứ tự, có provenance (`seq`), và `collectUserRequest` vốn đã
+  duyệt qua nó. Thêm store thứ hai chỉ để lưu thứ đã nằm trong store thứ nhất.
+  Bug thật là **cách truy xuất** (ném đi 99% bằng chứng rồi bắt Jev đoán lại),
+  không phải **thiếu nơi lưu**. Sửa đúng chỗ đó tốn ~40 dòng thay vì một tầng
+  state mới phải đồng bộ, hết hạn, thu hồi.
+
+- **`DELETE_HINT` trượt tiếng Việt có dấu — phát hiện ngay sau khi vá.**
+
+  Bản vá xếp hạng dùng `\b` cho biên từ:
+
+  ```js
+  /\b(rm|unlink|rmdir|xoá|xóa|delete|remove|dọn|dẹp|clean|wipe|purge)\b/iu
+  ```
+
+  `\b` của JS chỉ hiểu **ASCII word char**. `xóa` kết thúc bằng `a` (ASCII) nên
+  khớp, nhưng **`xoá` kết thúc bằng `á` (non-ASCII, không phải `\w`) nên TRƯỢT**
+  — bỏ sót đúng cách viết phổ biến nhất. Cùng lỗi với `dẹp`, `xoá` ở giữa câu…
+
+  **Sửa.** Lookaround Unicode thay `\b`:
+
+  ```js
+  /(?<![\p{L}\p{N}_])(rm|unlink|rmdir|xoá|xóa|…)(?![\p{L}\p{N}_])/iu
+  ```
+
+  `\p{L}` phủ mọi chữ cái Unicode, nên `xoá` và `xóa` đều khớp; `form`/`firm`
+  vẫn không khớp oan.
+
+  **Vì sao test cũ không bắt được:** test 6d dùng yêu cầu có path đầy đủ, nên
+  token-path khớp **+60** lấn át hẳn `DELETE_HINT` **+3** — regex trượt mà test
+  vẫn xanh. Thêm test 6f cô lập tín hiệu: tin nhắn **chỉ có động từ**, không
+  token nào khớp command, và >3 tin để `limit=3` thực sự phải lọc.
+
+  Kiểm chứng ngược: tiêm lại `\b` → **FAIL** đúng case `xoá`; khôi phục → pass.
+
+### Kiểm chứng ở bản này
+
+| Phép đo | Kết quả |
+|---|---|
+| `tests/offline.mjs` | **TẤT CẢ PASS** (thêm 3 check: tin 10, tin 22, chống injection; +5 check `DELETE_HINT`) |
+| E2E Jev API thật — yêu cầu ở tin 10/18 | `unrelated` → **`authorized`** |
+| E2E Jev API thật — 3 case injection | **0/3 leak** |
+| Test bắt bug `\b` (tiêm lại) | **FAIL** case `xoá` — test có hiệu lực |
+| `verify.sh` | exit 0, 6/6 mục |
+| **Lớp 7 chạy thật lần đầu** | `decision:"reviewed"`, 154 dòng, 3 file |
+
+## [0.4.1] — 2026-09-30
+
+### Sửa
+
+- **LỚP 7 chưa từng chạy một lần nào — sai hợp đồng `workspaceChanges.diff`.**
+  Đây là bug nghiêm trọng nhất kể từ khi plugin ra đời, và nó **âm thầm**: lớp
+  vẫn fire, vẫn ghi log, chỉ không bao giờ gọi `jev_review`.
+
+  **Bằng chứng đo được** trên log thật (`~/.local/share/dsh-jev-gate/decisions.jsonl`,
+  16.905 dòng): Lớp 7 fire **66 lần** — `skip_no_changes` 51, `skip_empty_diff` 15 —
+  và **`decision: "reviewed"` xuất hiện đúng 0 lần**. Toàn bộ mục đích của lớp
+  ("có tool không bằng tool được dùng") không đạt được.
+
+  **Nguyên nhân.** `buildTurnDiff` đọc `summary.files[index].seq`:
+
+  ```js
+  // bản 0.4.0 — SAI
+  fileDiff = await service.diff(session.id, summary.files[index].seq ?? 0, index);
+  ```
+
+  Nhưng `WorkspaceChangedFile` của `dsh-workspace-changes@0.2.0-rc.2` **không có
+  field `seq`** — `changedFile()` chỉ sinh `path/display/added/deleted/binary/oversized`.
+  Nên biểu thức luôn là `undefined ?? 0` → `service.diff(id, 0, index)`. Provider
+  tra `records.get(0)`, không có record nào ở seq 0, trả `undefined` →
+  `renderFileDiff` trả `''` → `diff.trim()` rỗng → `skip_empty_diff`.
+
+  `seq` cần dùng là seq của **event** `workspace/changes`, mà `workspaceSummaryOf`
+  đã có sẵn nhưng ném mất khi `return service.summary(session.id, seq)`.
+
+  **Sửa.** `workspaceSummaryOf` giờ trả `{ summary, seq }` (seq của event);
+  `buildTurnDiff` nhận `eventSeq` qua tham số và truyền thẳng vào `service.diff`,
+  kèm `signal` để huỷ được:
+
+  ```js
+  // bản 0.4.1 — ĐÚNG
+  fileDiff = await service.diff(session.id, eventSeq, index, signal);
+  ```
+
+  Kiểm chứng: tái hiện trên provider thật (files không `seq`) trước sửa cho
+  `diff.length = 0`; sau sửa cho `diff.length = 52` với nội dung unified-diff đúng.
+
+- **Test cũ che chính bug trên.** `tests/offline.mjs` tự thêm `seq: 100 + i` vào
+  `fileList`, và mock `diff` bỏ qua tham số `_seq`, luôn trả diff. Nghĩa là dù
+  gate truyền sai seq (0), 89 check vẫn xanh.
+
+  Sửa mock bám đúng hợp đồng provider: `fileList` **không còn `seq`**, và `diff`
+  **trả `undefined` khi seq không khớp `CHANGES_EVENT_SEQ`**. Đã kiểm chứng
+  ngược: tiêm lại bug cũ vào `lib/index.mjs` → **5 check FAIL** (trước đây pass
+  hết); khôi phục bản vá → pass. Mock mới thực sự bắt được bug.
+
+- **LỚP 2 không có trần số lần chạy trên mỗi turn.** Log thật: turn=9 fire **16
+  lần liên tiếp**, Jev lần nào cũng trả `complete=0.1`, **không lần nào accept** —
+  chỉ tốn tiền và chèn 16 lời nhắc giống nhau vào context. Lớp 6 có
+  `failureMaxPerTurn`, Lớp 7 có `reviewMaxPerTurn`, Lớp 2 không có gì.
+
+  Thêm `completionMaxPerTurn` (mặc định **2**). Khoá dedup gồm `turn`, nên turn
+  mới vẫn có ngân sách riêng — trần không cản tiến độ thật.
+
+- **`Map.clear()`/`Set.clear()` khi >200 entry làm turn cũ fire lại.** Cả Lớp 2
+  và Lớp 7 đều dùng `if (size > 200) clear()` — một session spawn nhiều subagent
+  đẩy kích thước tới 200 nhanh, `clear()` xoá **sạch**, và turn cũ có khoá mới
+  nên fire lại. Đổi sang xoá **theo thứ tự chèn** (Map giữ thứ tự) đúng số lượng
+  vượt trần. Đây là lời giải thích khả dĩ nhất cho 16 lần fire trên turn=9.
+
+### Kiểm chứng ở bản này
+
+| Phép đo | Kết quả |
+|---|---|
+| `tests/offline.mjs` | **TẤT CẢ PASS** (thêm 2 check cho `completionMaxPerTurn`) |
+| Test bắt được bug (tiêm lại bug cũ) | **5 check FAIL** — mock mới có hiệu lực |
+| `verify.sh` | exit 0, 6/6 mục |
+| Tái hiện Lớp 7 trên provider thật | trước: `diff.length=0` · sau: `diff.length=52` |
+
 ## [0.4.0] — 2026-09-28
 
 ### Đổi (phá vỡ tương thích: cơ chế lease bị thay)

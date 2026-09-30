@@ -1,6 +1,6 @@
 {
   "name": "dsh-jev-gate",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "type": "module",
   "description": "Đưa Jev (TypeSafe System One) vào 7 khoảnh khắc đắt giá của DSH: gate tool nguy hiểm, kiểm hoàn thành, chọn reasoning effort, chọn hướng tiếp cận, chọn file nạp vào context, phục hồi khi tool lỗi, tự review chất lượng khi turn kết thúc.",
   "license": "MIT",

@@ -343,6 +343,7 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
     effortReuseConfidence: 0.6  # conf >= ngưỡng này thì giữ nguyên effort cho step kế
+    completionMaxPerTurn: 2     # trần số lần kiểm hoàn thành mỗi turn
     reviewMinChangedLines: 20   # diff nhỏ hơn thì không review
     reviewMaxPerTurn: 1         # trần số lần review mỗi turn
     reviewMaxDiffChars: 24000   # trần ký tự diff gửi cho review
@@ -418,6 +419,9 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Lớp 7 — `jev_review` được gọi bao nhiêu trong 110 session thật | **1 lần** (do tác giả test), 0 lần trong việc thật |
 | Lớp 7 — handler thật + MCP thật | gọi review 1 lần, steer điểm về agent |
 | Lớp 7 — độ trễ `jev_review` | ~100ms |
+| **Lớp 7 trên 16.905 dòng log thật (0.4.0)** | fire **66 lần**, `reviewed` **0 lần** — bug `seq`, sửa ở 0.4.1 |
+| **Lớp 7 sau 0.4.1 (tái hiện provider thật)** | trước `diff.length=0` → sau `diff.length=52` |
+| **Lớp 2 trên log thật (0.4.0)** | turn=9 fire **16 lần**, không lần nào `accept` — thêm trần ở 0.4.1 |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 | Độ trễ mỗi gate | median ~250ms (lớp 1b thêm ~250ms, chỉ khi lớp 1 đã chặn) |
 
