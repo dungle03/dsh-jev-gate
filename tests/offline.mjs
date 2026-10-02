@@ -2919,6 +2919,58 @@ console.log('\n16. Prefilter chỉ-đọc — bất biến AN TOÀN và trần p
   check('heredoc → không kết luận', isProvablyReadOnly("cat <<'EOF'\nx\nEOF") === false);
 }
 
+console.log('\n16b. Corpus TẤN CÔNG vòng for + cache (phản biện hai bản sửa opt2/compose, opt2/sink)');
+
+/**
+ * Corpus này cố tình PHÁ hai bản sửa đang làm trên nhánh riêng:
+ *   - `opt2/compose`: dạy `readonly.mjs` nhận vòng `for..do..done` chỉ-đọc
+ *   - `opt2/sink`: cache verdict gate theo `(tool, command, cwd)`
+ *
+ * Bất biến bảo vệ: KHÔNG lệnh phá dữ liệu nào (đặc biệt trong thân vòng `for`)
+ * được `isProvablyReadOnly` nhận là chỉ-đọc. Một lệnh lọt = lỗ hổng gate.
+ *
+ * Test này chạy trên `lib/readonly.mjs` của chính repo. Khi hai nhánh kia merge,
+ * corpus tự động đập vào code đã merge — không cần sửa test.
+ */
+{
+  const {
+    runDestructiveCorpus, formatReport,
+    FOR_LOOP_ATTACKS, CACHE_ALWAYS_DENY, CACHE_DISGUISE_PAIRS, CACHE_KEY_PAIRS,
+  } = await import(`${pathToFileURL(join(HERE, 'attack-corpus.mjs')).href}?ac=1`);
+
+  const result = await runDestructiveCorpus(join(HERE, '..', 'lib', 'readonly.mjs'));
+  check(
+    `CORPUS TẤN CÔNG: ${result.total} lệnh phá dữ liệu (vòng for + cache) — 0 được lọt`,
+    result.leaked === 0,
+    result.leaked === 0 ? 'không lệnh nào lọt' : `LỌT: ${JSON.stringify(result.leaks.slice(0, 5))}`,
+  );
+  check('corpus có đủ ca vòng for nguy hiểm (≥30)', FOR_LOOP_ATTACKS.length >= 30,
+    `for=${FOR_LOOP_ATTACKS.length}`);
+  check('corpus có đủ ca lệnh phá luôn-deny', CACHE_ALWAYS_DENY.length >= 10,
+    `always-deny=${CACHE_ALWAYS_DENY.length}`);
+
+  // Cặp ngụy trang: hai lệnh chỉ khác khoảng trắng/nháy phải là HAI chuỗi KHÁC
+  // nhau — nếu không, mọi cache theo chuỗi (hoặc chuẩn hoá) sẽ va khoá. Đây là
+  // điều kiện cần để test cache phía sau có nghĩa.
+  const collide = CACHE_KEY_PAIRS.filter((p) => p.a === p.b);
+  check('cặp "chỉ khác khoảng trắng/nháy" thực sự KHÁC chuỗi (không va khoá cache)',
+    collide.length === 0, collide.length ? `va: ${JSON.stringify(collide)}` : 'khác hết');
+  check('cặp ngụy trang safe/evil khác nhau về chuỗi',
+    CACHE_DISGUISE_PAIRS.every((p) => p.safe !== p.evil),
+    `số cặp=${CACHE_DISGUISE_PAIRS.length}`);
+
+  // Bất biến trực tiếp: các lệnh "evil" trong cặp ngụy trang PHẢI bị deny.
+  const { isProvablyReadOnly } = await import(
+    `${pathToFileURL(join(HERE, '..', 'lib', 'readonly.mjs')).href}?r=16b`
+  );
+  const evilLeaks = CACHE_DISGUISE_PAIRS.filter((p) => isProvablyReadOnly(p.evil));
+  check('mọi lệnh "evil" trong cặp ngụy trang bị deny',
+    evilLeaks.length === 0,
+    evilLeaks.length ? `LỌT: ${JSON.stringify(evilLeaks.map((p) => p.evil))}` : 'ok');
+
+  if (result.leaked !== 0) formatReport(result);
+}
+
 console.log('\n18. Chỉ số `gate_useful_ratio` — hàm thuần, không đọc file khi test');
 
 /**
