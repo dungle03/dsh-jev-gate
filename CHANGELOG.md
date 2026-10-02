@@ -3,7 +3,7 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
-## [Chưa phát hành]
+## [0.9.0] — 2026-10-02
 
 Đợt tối ưu sau khi 0.8.2 chạy thật. Ba việc: hai lỗi "lớp im lặng" ở Lớp 1b và
 prefilter chỉ-đọc, và bổ sung chỉ số quan sát cho gate — thứ trả lời được câu
@@ -26,27 +26,40 @@ tốn một round-trip API để nói "cho qua". Chỉ số này lộ ra ngay.
 - `parseJsonl` đếm `malformed` thay vì ném — log append-only có thể bị cắt giữa
   dòng, một dòng hỏng không được làm mất toàn bộ số đo.
 
-### Song song (CHƯA hợp nhất vào nhánh `opt/l3-effort`)
+### Lớp 1b — bỏ call LLM authorization, dùng provenance tất định (ĐÃ hợp nhất)
 
-Hai việc dưới đây do subagent khác thực hiện ở nhánh riêng. Ở thời điểm viết mục
-này chúng **chưa có trong cây làm việc này** (đã kiểm: `grep provenance lib/` = 0
-khớp; `authorizationQuestion` vẫn được gọi; `isProvablyReadOnly("node -e …")` và
-`("python3 -c …")` đều trả `false`). Ghi lại để khi hợp nhất không mất dấu.
+Bản cũ, khi Jev phán lệnh phá dữ liệu, hỏi thêm **một call LLM thứ hai**
+(`authorizationQuestion`) "user có yêu cầu xoá đúng thứ này không?". Đo trên log:
+lớp này fail-closed phần lớn thời gian và thêm một round-trip nằm TRÊN đường tới
+hạn của mọi lệnh bị chặn.
 
-- **Lớp 1b — bỏ call LLM authorization, dùng provenance.** Bản cũ, khi Jev phán
-  lệnh phá dữ liệu, hỏi thêm một call LLM "user có yêu cầu xoá đúng thứ này
-  không?". Đo trên log: lớp này fail-closed phần lớn thời gian và thêm một
-  round-trip nằm TRÊN đường tới hạn của mọi lệnh bị chặn. Hướng sửa: suy quyền từ
-  chính nguồn gốc lệnh (provenance tất định), không hỏi model. *Trạng thái: chưa
-  kiểm chứng được trong nhánh này.*
+**Sửa:** suy quyền từ chính nguồn gốc lệnh (provenance tất định), không hỏi
+model. Trích target của lệnh (đường dẫn/tên file của `rm`/`mv`/`truncate`/…),
+so khớp chuỗi con với tin nhắn THẬT của user (`source.kind === 'user'`). Có
+target → `allow_authorized`; không chứng minh được → **`deny` (fail-closed)**.
 
-- **Prefilter `python3 -c` / `node -e`.** ⚠️ **KHÔNG làm theo hướng "mở rộng".**
-  Mục 0.7.x của chính file này đã phân tích và **bác bỏ** ý tưởng coi one-liner
-  Python/Node tuỳ ý là chỉ-đọc: phân tích code động là không khả thi, và đoán bừa
-  ở đây là một lỗ hổng gate ("không thể chứng minh một one-liner Python/Node tuỳ ý
-  là chỉ-đọc"). Code hiện tại đúng như vậy: `node -e`/`python3 -c` trả `false` và
-  đi qua Jev. Nếu có bản sửa nào đó nới điều này, nó cần một bất biến an toàn
-  riêng và **không được** ghi vào changelog như một cải thiện hiển nhiên.
+**Bất biến an toàn giữ nguyên:** không chứng minh được thì CHẶN. Deny nhiều hơn
+chấp nhận được; allow nhầm thì không. Kiểm bằng test end-to-end chạy qua hook
+`tools/pre-execute` thật (mục 7b/7c): trước = 2 request Jev mỗi lần gate chặn
+(`destructive` + `authorized`), sau = **1** (`destructive`), và khi không chứng
+minh được thì **0** request bổ sung.
+
+### Prefilter `python3 -c` / `node -e` — BÁC BỎ, có bằng chứng lọt cụ thể
+
+⚠️ **KHÔNG mở rộng prefilter cho one-liner trình thông dịch.** Mục 0.7.x của
+chính file này đã bác bỏ ý tưởng đó. Một nhánh thử nghiệm đã viết blocklist
+token (`open`/`write`/`import`/`require`/…); kiểm trực tiếp cho thấy nó **LỌT**
+các lệnh ghi dữ liệu thật:
+
+```
+python3 -c "f=open;f('x','w')"                       → bị coi là chỉ-đọc (SAI)
+python3 -c "getattr(__builtins__,'open')('x','w')"    → bị coi là chỉ-đọc (SAI)
+python3 -c "__builtins__.__dict__['open']('x','w')"   → bị coi là chỉ-đọc (SAI)
+```
+
+Blocklist không thể đầy đủ với ngôn ngữ Turing-complete; đây đúng là "đoán bừa
+là lỗ hổng gate". **Nhánh đó đã bị loại bỏ, không hợp nhất.** Code hiện tại giữ
+đúng: `node -e`/`python3 -c` trả `false` và đi qua Jev.
 
 ### Test
 
