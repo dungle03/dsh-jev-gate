@@ -40,19 +40,32 @@ lần thử đầu — đo được **381/381** lần `fetch failed` đều bỏ
 - Lỗi cấu hình (401 key sai, 422 request sai) KHÔNG retry — vô ích, chỉ tốn ngân
   sách. Log ghi ĐÚNG MỘT `jev_error` cho cả chuỗi retry.
 
+### Sửa — `describeError`/`isTransientNetworkError` KHÔNG BAO GIỜ ném
+
+Cả hai chạy TRONG catch block của `evaluate`. Nếu bản thân chúng ném — getter
+`cause` độc hại, `code` là object có `toString` ném, hoặc chính error là `Proxy`
+trap ném — thì lỗi gốc bị thay bằng lỗi của bộ ghi log: `jev_error` không ghi
+được, và `fail-open` của caller biến thành lỗi ném ra hook.
+
+- `errorCauseChain` bọc từng bước truy cập; `describeError` bọc việc đọc
+  `name`/`message`; `isTransientNetworkError` bọc toàn thân (không phân loại được
+  → coi như KHÔNG transient, an toàn hơn retry mù).
+- Bất biến: lỗi độc hại → ném lại ĐÚNG lỗi gốc, vẫn ghi MỘT `jev_error`.
+
 ### Bằng chứng
 
 - Tái hiện nguyên nhân gốc: ép DNS chỉ trả AAAA → `fetch failed` / `cause.code:
   ENETUNREACH` trong 2–6 ms, khớp đúng profile `ms:4/5/6` của log thật.
-- 298 check offline PASS (thêm 26 check cho hai sửa này).
-- Live check API thật (`jev-1.13.0`): OK, 313 ms.
+- 305 check offline PASS (thêm 33 check cho các sửa này).
+- Live check API thật (`jev-1.13.0`): PASS.
 
 ### Kiểm định
-- 298 check offline PASS; corpus tấn công 83 lệnh — **0 lọt**.
+- 305 check offline PASS; corpus tấn công 83 lệnh — **0 lọt**.
 - Test hồi quy mới: (a) transient lần 1 → thành công lần 2, không `fail_open`;
   (b) hỏng liên tục → ném sau 3 lượt, đúng MỘT `jev_error`, giữ `ENETUNREACH`;
   (c) hook abort → không retry; (d) 401 → không retry; (e) 429 → vẫn retry;
-  (f) deadline ngắn chặn retry.
+  (f) deadline ngắn chặn retry; (g) lỗi độc hại → không ném, ghi log sạch;
+  (h) getter/Proxy/toString ném → `describeError` vẫn trả chuỗi.
 
 ## [0.10.1] — 2026-10-02
 

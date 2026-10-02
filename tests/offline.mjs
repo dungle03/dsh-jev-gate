@@ -2698,6 +2698,34 @@ console.log('\n17. Mô tả lỗi — không được im lặng thành "unknown"
   check('cause tự trỏ (vòng lặp) KHÔNG treo',
     (() => { const e = new Error('x'); e.cause = e; return describeError(e) === 'x'; })(),
     'cause vòng lặp phải bị chặn bởi `seen`');
+
+  /**
+   * Bất biến: `describeError` KHÔNG BAO GIỜ được ném.
+   *
+   * Nó chạy TRONG catch block của `evaluate`. Nếu bản thân nó ném (getter `cause`
+   * độc hại, `code` là object có `toString` ném, hay cả error là `Proxy` trap ném)
+   * thì lỗi gốc bị thay bằng lỗi của chính bộ ghi log — `jev_error` không được
+   * ghi, và `fail-open` của caller biến thành lỗi ném ra ngoài hook.
+   */
+  const neverThrows = (label, error) => {
+    let ok = true;
+    let detail = '';
+    try { describeError(error); } catch (e) { ok = false; detail = `threw ${e.message}`; }
+    check(label, ok, detail);
+  };
+  const getterBomb = new Error('x');
+  Object.defineProperty(getterBomb, 'cause', { get() { throw new Error('getter boom'); } });
+  neverThrows('describeError: getter `cause` ném → vẫn trả chuỗi', getterBomb);
+  const proxyCause = new Error('z');
+  proxyCause.cause = new Proxy({}, { get() { throw new Error('proxy boom'); } });
+  neverThrows('describeError: `cause` là Proxy trap ném → vẫn trả chuỗi', proxyCause);
+  const proxyError = new Proxy(new Error('q'), {
+    get(t, k) { if (k === 'name' || k === 'message') throw new Error('trap'); return Reflect.get(t, k); },
+  });
+  neverThrows('describeError: chính error là Proxy trap ném → vẫn trả chuỗi', proxyError);
+  const toStringBomb = new Error('y');
+  toStringBomb.cause = { code: { toString() { throw new Error('toString boom'); } } };
+  neverThrows('describeError: `code.toString` ném → vẫn trả chuỗi', toStringBomb);
 }
 
 console.log('\n17b. Lỗi mạng TẠM THỜI được thử lại (không fail_open ngay lần đầu)');
@@ -2844,6 +2872,32 @@ console.log('\n17b. Lỗi mạng TẠM THỜI được thử lại (không fail_
     const elapsed = Date.now() - t;
     check('deadline 100ms chặn retry (không vượt ngân sách)',
       threw && elapsed < 400, `threw=${threw} elapsed=${elapsed}ms calls=${calls}`);
+  }
+
+  // (g) Lỗi ĐỘC HẠI từ fetch: `describeError` chạy trong catch block KHÔNG được
+  //     ném ra ngoài — nếu ném, `jev_error` không ghi được và fail-open của caller
+  //     biến thành lỗi hook. Phải ghi jev_error SẠCH rồi mới ném lỗi GỐC.
+  {
+    let calls = 0;
+    const errors = [];
+    const hostile = new Error('hostile');
+    Object.defineProperty(hostile, 'cause', { get() { throw new Error('getter boom'); } });
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      record: (e) => errors.push(e),
+      // Lỗi này KHÔNG có mã transient lộ ra (getter ném) → không retry, ném thẳng.
+      fetchImpl: async () => { calls += 1; throw hostile; },
+    });
+    let caught;
+    try { await jev.evaluate({ state: 's', questions: question }); } catch (e) { caught = e; }
+    check('lỗi độc hại → ném lại ĐÚNG lỗi gốc (không bị thay)',
+      caught === hostile, `caught=${caught === hostile ? 'gốc' : String(caught)}`);
+    check('lỗi độc hại → vẫn ghi được jev_error (describeError không ném)',
+      errors.filter((e) => e.type === 'jev_error').length === 1,
+      `jev_error=${errors.filter((e) => e.type === 'jev_error').length} calls=${calls}`);
+    check('lỗi độc hại KHÔNG bị coi là transient → không retry',
+      calls === 1, `calls=${calls}`);
   }
 }
 
