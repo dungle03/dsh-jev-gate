@@ -3,6 +3,57 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.10.2] — 2026-10-02
+
+Sửa nguyên nhân gốc của **381 lỗi `TypeError: fetch failed`** (25% số call Jev
+ngày 02/10, tất cả đều `fail_open`): máy có bản ghi AAAA nhưng KHÔNG có route
+IPv6, `fetch` hỏng ngay ở tầng connect (đo được `ms: 2–7`) và mỗi lần hỏng là một
+lần gate im lặng bỏ qua lệnh.
+
+### Sửa — `describeError` giữ `error.cause` (nguyên nhân vô hình trong log)
+
+`fetch` của Node/undici bọc MỌI lỗi mạng trong `TypeError('fetch failed')` rồi
+giấu mã thật ở `error.cause`. Bản cũ chỉ đọc `error.message`, nên **381 bản ghi
+đều ghi giống hệt nhau `"TypeError: fetch failed"`** — không phân biệt được IPv6
+không route (`ENETUNREACH`), DNS hỏng (`ENOTFOUND`), TLS lỗi, hay connection
+reset. Sự cố thật trở nên vô hình.
+
+- `errorCauseChain` đi theo `cause` lồng nhau (trần độ sâu 5, chống vòng lặp tự
+  trỏ) và `AggregateError.errors`, gom `code`/`errno`/`syscall`, dedup.
+- Nay log ghi: `TypeError: fetch failed [ENETUNREACH]`.
+- Bỏ `code` SỐ của DOMException (mã legacy, `AbortError = 20`) để không làm nhiễu
+  `AbortError: aborted [20]`.
+
+### Thêm — thử lại lỗi mạng TẠM THỜI (trước đây chỉ retry 429/529)
+
+`evaluate` chỉ retry 429/529, nên mọi lỗi mạng transient thành `fail_open` ngay
+lần thử đầu — đo được **381/381** lần `fetch failed` đều bỏ qua chỉ sau 1 lần gọi.
+
+- `isTransientNetworkError`: nhận diện lỗi tầng connect (`ENETUNREACH`,
+  `EHOSTUNREACH`, `ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`,
+  `UND_ERR_*`...). KHÔNG tính abort/timeout do chính ta đặt — đó là quyết định có
+  chủ ý, thử lại là sai.
+- `MAX_ATTEMPTS = 3` (1 gốc + 2 lại) với backoff ngắn 50–150 ms.
+- **Trần độ trễ KHÔNG đổi:** mọi lần thử vẫn nằm dưới `combined` (deadline +
+  lifetime + hook signal); `sleep()` thoát ngay khi signal abort, hết ngân sách là
+  `throwIfAborted` cắt. Test (f): deadline 100 ms dừng ở 131 ms.
+- Lỗi cấu hình (401 key sai, 422 request sai) KHÔNG retry — vô ích, chỉ tốn ngân
+  sách. Log ghi ĐÚNG MỘT `jev_error` cho cả chuỗi retry.
+
+### Bằng chứng
+
+- Tái hiện nguyên nhân gốc: ép DNS chỉ trả AAAA → `fetch failed` / `cause.code:
+  ENETUNREACH` trong 2–6 ms, khớp đúng profile `ms:4/5/6` của log thật.
+- 298 check offline PASS (thêm 26 check cho hai sửa này).
+- Live check API thật (`jev-1.13.0`): OK, 313 ms.
+
+### Kiểm định
+- 298 check offline PASS; corpus tấn công 83 lệnh — **0 lọt**.
+- Test hồi quy mới: (a) transient lần 1 → thành công lần 2, không `fail_open`;
+  (b) hỏng liên tục → ném sau 3 lượt, đúng MỘT `jev_error`, giữ `ENETUNREACH`;
+  (c) hook abort → không retry; (d) 401 → không retry; (e) 429 → vẫn retry;
+  (f) deadline ngắn chặn retry.
+
 ## [0.10.1] — 2026-10-02
 
 Sửa hai lỗ hổng quan sát/an toàn do kiểm định phản biện và end-to-end phát hiện.

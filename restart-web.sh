@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nạp lại jev-gate v0.9.0 vào dsh web.
+# Nạp lại jev-gate v0.10.2 vào dsh web.
 #
 # Vì sao cần: Node giữ module trong bộ nhớ; process `dsh web` đang chạy đã nạp
 # code TRƯỚC đợt merge (boot 16:20, code mới 16:35). Không có supervisor và
@@ -63,7 +63,7 @@ sleep 3
 NEWPID="$(pgrep -f 'dsh web$' | head -1)"
 if [ -n "$NEWPID" ]; then
   echo "[restart] OK — dsh web mới PID=$NEWPID (log: /tmp/dsh-web-restart.log)"
-  echo "[restart] jev-gate v0.9.0 đã được nạp."
+  echo "[restart] jev-gate v0.10.2 đã được nạp."
 else
   echo "[restart] CẢNH BÁO: không thấy process mới. Xem /tmp/dsh-web-restart.log"
   exit 1

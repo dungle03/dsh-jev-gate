@@ -2664,6 +2664,193 @@ console.log('\n17. Mô tả lỗi — không được im lặng thành "unknown"
     [new Error('x'), 'str', { a: 1 }, undefined, null, 42]
       .every((v) => describeError(v) !== 'unknown'),
     `mẫu: ${JSON.stringify([new Error('x'), 'str', { a: 1 }, undefined, null, 42].map(describeError))}`);
+
+  /**
+   * Lỗi thật (02/10): 381 lỗi đều ghi GIỐNG HỆT NHAU `"TypeError: fetch failed"`.
+   *
+   * `fetch` bọc mọi lỗi mạng trong `TypeError('fetch failed')` rồi giấu mã thật
+   * ở `error.cause`. Bản cũ chỉ đọc `message`, nên IPv6 không route
+   * (`ENETUNREACH`) trông y hệt DNS hỏng (`ENOTFOUND`) trông y hệt TLS lỗi.
+   * Sự cố thật trở nên vô hình trong log.
+   */
+  const fetchFail = (cause) => {
+    const e = new TypeError('fetch failed');
+    e.cause = cause;
+    return e;
+  };
+  check('cause ENETUNREACH được giữ (chẩn đoán được IPv6 không route)',
+    describeError(fetchFail(Object.assign(new Error(''), { code: 'ENETUNREACH' }))) ===
+      'TypeError: fetch failed [ENETUNREACH]',
+    describeError(fetchFail(Object.assign(new Error(''), { code: 'ENETUNREACH' }))));
+  check('cause lồng + syscall được gom',
+    describeError(fetchFail(Object.assign(new Error(''), { code: 'ENOTFOUND', syscall: 'getaddrinfo' }))) ===
+      'TypeError: fetch failed [ENOTFOUND, getaddrinfo]',
+    describeError(fetchFail(Object.assign(new Error(''), { code: 'ENOTFOUND', syscall: 'getaddrinfo' }))));
+  check('AggregateError (mọi họ địa chỉ hỏng) đi vào từng phần tử',
+    describeError(fetchFail(new AggregateError(
+      [Object.assign(new Error(''), { code: 'ECONNREFUSED' }), Object.assign(new Error(''), { code: 'ENETUNREACH' })],
+      'all failed',
+    ))) === 'TypeError: fetch failed [ECONNREFUSED, ENETUNREACH]',
+    describeError(fetchFail(new AggregateError(
+      [Object.assign(new Error(''), { code: 'ECONNREFUSED' }), Object.assign(new Error(''), { code: 'ENETUNREACH' })],
+      'all failed',
+    ))));
+  check('cause tự trỏ (vòng lặp) KHÔNG treo',
+    (() => { const e = new Error('x'); e.cause = e; return describeError(e) === 'x'; })(),
+    'cause vòng lặp phải bị chặn bởi `seen`');
+}
+
+console.log('\n17b. Lỗi mạng TẠM THỜI được thử lại (không fail_open ngay lần đầu)');
+{
+  const { createJev, isTransientNetworkError } = await import(
+    `${pathToFileURL(join(HERE, '..', 'lib', 'jev-client.mjs')).href}?r=1`
+  );
+
+  /**
+   * Lỗi thật (02/10): `evaluate` CHỈ retry 429/529. Mọi lỗi mạng transient
+   * (ENETUNREACH khi IPv6 không route) đều thành `fail_open` ngay lần thử đầu —
+   * đo được **381/381** lần `fetch failed` đều bỏ qua chỉ sau 1 lần gọi.
+   */
+  check('ENETUNREACH là transient', isTransientNetworkError(fetchFailLike('ENETUNREACH')));
+  check('ENOTFOUND là transient', isTransientNetworkError(fetchFailLike('ENOTFOUND')));
+  check('AbortError KHÔNG phải transient (là quyết định có chủ ý)',
+    !isTransientNetworkError(new DOMException('aborted', 'AbortError')));
+  check('TimeoutError KHÔNG phải transient', !isTransientNetworkError(
+    Object.assign(new Error('timeout'), { name: 'TimeoutError' })));
+  check('HTTP 401 (key sai) KHÔNG phải transient',
+    !isTransientNetworkError(new Error('Jev API key invalid')));
+
+  const okBody = (questions) => JSON.stringify({
+    model: 'jev-stub',
+    answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+      if (q.type === 'noul') return [id, { type: 'noul', noul: 0.1 }];
+      const keys = Object.keys(q.criteria);
+      return [id, { type: 'choice', choice: keys[0], confidence: 0.9, probabilities: Object.fromEntries(keys.map((k) => [k, k === keys[0] ? 1 : 0])) }];
+    })),
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+
+  const question = { q: { type: 'noul', instructions: 'anything' } };
+
+  // (a) Lỗi mạng transient ở lần 1, thành công ở lần 2 → trả kết quả, KHÔNG ném.
+  {
+    let calls = 0;
+    const errors = [];
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      record: (e) => errors.push(e),
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        if (calls === 1) throw fetchFailLike('ENETUNREACH');
+        return new Response(okBody(JSON.parse(init.body).questions), { status: 200 });
+      },
+    });
+    const out = await jev.evaluate({ state: 's', questions: question });
+    check('transient lần 1 → thử lại lần 2 thành công (không fail_open)',
+      out.answers.q?.noul === 0.1 && calls === 2, `calls=${calls}`);
+    check('không ghi jev_error khi retry thành công',
+      !errors.some((e) => e.type === 'jev_error'), `errors=${JSON.stringify(errors.map((e) => e.type))}`);
+  }
+
+  // (b) Hỏng transient LIÊN TỤC → ném sau khi hết số lần thử, ghi MỘT jev_error.
+  {
+    let calls = 0;
+    const errors = [];
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      record: (e) => errors.push(e),
+      fetchImpl: async () => { calls += 1; throw fetchFailLike('ENETUNREACH'); },
+    });
+    let threw = false;
+    try { await jev.evaluate({ state: 's', questions: question }); } catch { threw = true; }
+    check('transient hỏng liên tục → ném ra (fail-open ở caller) sau khi hết lượt thử',
+      threw && calls === 3, `threw=${threw} calls=${calls}`);
+    check('ghi ĐÚNG MỘT jev_error cho cả chuỗi retry (không nhân bản log)',
+      errors.filter((e) => e.type === 'jev_error').length === 1,
+      `jev_error=${errors.filter((e) => e.type === 'jev_error').length}`);
+    check('jev_error giữ mã thật (không còn "fetch failed" trần)',
+      errors.find((e) => e.type === 'jev_error')?.message.includes('ENETUNREACH'),
+      errors.find((e) => e.type === 'jev_error')?.message);
+  }
+
+  // (c) Abort (hook signal) KHÔNG được thử lại — trần độ trễ phải giữ.
+  {
+    let calls = 0;
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        throw init.signal.reason ?? new DOMException('aborted', 'AbortError');
+      },
+    });
+    const ctrl = new AbortController();
+    ctrl.abort(new Error('hook aborted'));
+    let threw = false;
+    try { await jev.evaluate({ state: 's', questions: question }, { signal: ctrl.signal }); } catch { threw = true; }
+    check('hook signal đã abort → KHÔNG thử lại, ném ngay',
+      threw && calls === 0, `threw=${threw} calls=${calls}`);
+  }
+
+  // (d) 401 (key sai) KHÔNG thử lại — retry vô ích, chỉ tốn ngân sách.
+  {
+    let calls = 0;
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      fetchImpl: async () => { calls += 1; return new Response('nope', { status: 401 }); },
+    });
+    let threw = false;
+    try { await jev.evaluate({ state: 's', questions: question }); } catch { threw = true; }
+    check('HTTP 401 → KHÔNG thử lại (một lần gọi duy nhất)',
+      threw && calls === 1, `threw=${threw} calls=${calls}`);
+  }
+
+  // (e) 429 vẫn retry như cũ (hợp đồng cũ không bị phá).
+  {
+    let calls = 0;
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        if (calls === 1) return new Response('slow down', { status: 429 });
+        return new Response(okBody(JSON.parse(init.body).questions), { status: 200 });
+      },
+    });
+    const out = await jev.evaluate({ state: 's', questions: question });
+    check('HTTP 429 → vẫn thử lại và thành công', out.answers.q?.noul === 0.1 && calls === 2, `calls=${calls}`);
+  }
+
+  // (f) Retry KHÔNG vượt ngân sách: deadline rất ngắn → dừng đúng hạn.
+  {
+    let calls = 0;
+    const jev = createJev({
+      getApiKey: async () => 'k',
+      timeoutMs: 2_000,
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        // Giả lập mỗi lần thử tốn 40ms rồi hỏng transient.
+        await new Promise((r) => setTimeout(r, 40));
+        if (init.signal.aborted) throw init.signal.reason ?? new DOMException('aborted', 'AbortError');
+        throw fetchFailLike('ENETUNREACH');
+      },
+    });
+    const t = Date.now();
+    let threw = false;
+    try { await jev.evaluate({ state: 's', questions: question }, { timeoutOverrideMs: 100 }); } catch { threw = true; }
+    const elapsed = Date.now() - t;
+    check('deadline 100ms chặn retry (không vượt ngân sách)',
+      threw && elapsed < 400, `threw=${threw} elapsed=${elapsed}ms calls=${calls}`);
+  }
+}
+
+function fetchFailLike(code) {
+  const e = new TypeError('fetch failed');
+  e.cause = Object.assign(new Error(''), { code });
+  return e;
 }
 
 console.log('\n16. Prefilter chỉ-đọc — bất biến AN TOÀN và trần phủ sót');
