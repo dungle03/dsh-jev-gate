@@ -1571,6 +1571,66 @@ console.log('\n7. Câu hỏi authorization — hình dạng hợp lệ theo hợ
   check('user request rỗng vẫn hợp lệ', /no user request captured/i.test(q2.state.user_request));
 }
 
+console.log('\n7b. Provenance tất định — thay call LLM authorization (fail-closed)');
+
+/**
+ * Lớp 1b giờ KHÔNG gọi LLM: nó trích target của lệnh rồi kiểm target đó có xuất
+ * hiện trong yêu cầu THẬT của user không. Hàm thuần, tất định, offline.
+ *
+ * Bất biến an toàn kiểm ở đây: chỉ allow khi CHỨNG MINH được; mọi nghi ngờ
+ * (không có yêu cầu, không trích được target, target không xuất hiện, lệnh xoá
+ * nhiều hơn điều user nói) đều phải rơi về deny.
+ */
+{
+  const { commandTargetsInUserRequest } = await import(`${pathToFileURL(PLUGIN).href}?prov=1`);
+
+  // (a) target CÓ trong yêu cầu → allow
+  check('(a) target có trong yêu cầu → allow',
+    commandTargetsInUserRequest('xoá /tmp/gtest giúp tôi', 'rm -rf /tmp/gtest') === true);
+  check('(a) chuẩn hoá khoảng trắng + không phân biệt hoa thường',
+    commandTargetsInUserRequest('Xoá   /tmp/gtest\nGiúp tôi', 'rm -rf /tmp/gtest') === true);
+
+  // (b) target KHÔNG có trong yêu cầu → deny
+  check('(b) target không có trong yêu cầu → deny',
+    commandTargetsInUserRequest('sửa bug login giúp tôi', 'rm -rf /tmp/gtest') === false);
+  check('(b) user chỉ nói "dọn dẹp" chung chung → deny',
+    commandTargetsInUserRequest('dọn dẹp máy đi', 'rm -rf /tmp/gtest') === false);
+
+  // (c) command lạ / không trích được target → deny (fail-closed)
+  check('(c) lệnh lạ không trích được target → deny',
+    commandTargetsInUserRequest('chạy cái này đi', 'frobnicate --wipe /tmp/x') === false);
+  check('(c) lệnh chỉ có cờ, không có target → deny',
+    commandTargetsInUserRequest('chạy cái này đi', 'rm -rf') === false);
+  check('(c) user request rỗng → deny',
+    commandTargetsInUserRequest('', 'rm -rf /tmp/gtest') === false);
+  check('(c) command rỗng → deny',
+    commandTargetsInUserRequest('xoá /tmp/gtest', '') === false);
+
+  // Biên: target không được khớp khi chỉ là TIỀN TỐ của tên dài hơn
+  check('không khớp oan tiền tố: /tmp/gtest vs /tmp/gtest-other',
+    commandTargetsInUserRequest('xoá /tmp/gtest-other', 'rm -rf /tmp/gtest') === false);
+
+  // Nhiều target: user chỉ nêu MỘT phần → deny (lệnh xoá nhiều hơn điều họ nói)
+  check('nhiều target, user chỉ nêu một → deny',
+    commandTargetsInUserRequest('xoá /tmp/a', 'rm -rf /tmp/a /tmp/b') === false);
+  check('nhiều target, user nêu đủ → allow',
+    commandTargetsInUserRequest('xoá /tmp/a và /tmp/b', 'rm -rf /tmp/a /tmp/b') === true);
+
+  // Dạng lệnh khác: find -delete, dd of=, redirect `>` ghi đè (không tính `>>`)
+  check('find ... -delete trích được target',
+    commandTargetsInUserRequest('xoá /tmp/old', 'find /tmp/old -name "*.log" -delete') === true);
+  check('dd of= trích được target',
+    commandTargetsInUserRequest('ghi đè /tmp/img', 'dd if=/dev/zero of=/tmp/img bs=1M') === true);
+  check('redirect `>` ghi đè trích được target',
+    commandTargetsInUserRequest('ghi đè /tmp/out.txt', 'echo x > /tmp/out.txt') === true);
+  check('redirect `>>` append KHÔNG tính là target',
+    commandTargetsInUserRequest('ghi thêm /tmp/out.txt', 'echo x >> /tmp/out.txt') === false);
+
+  // Tiền tố trung tính: sudo rm vẫn trích được động từ thật
+  check('sudo rm vẫn trích được target',
+    commandTargetsInUserRequest('xoá /tmp/gtest', 'sudo rm -rf /tmp/gtest') === true);
+}
+
 console.log('\n13. Lớp 8 — leo thang jevgrep (parse, phát hiện, fail-open, trần)');
 
 /**
