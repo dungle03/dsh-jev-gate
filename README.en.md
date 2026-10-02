@@ -23,7 +23,9 @@ checkpoints**, not as a second brain.
 | Layer | Hook | Question | Type | Default |
 |---|---|---|---|---|
 | **1** · Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
-| **1b** · User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
+| **1₀** · Read-only prefilter | `tools/pre-execute` (before layer 1) | (local analysis — no Jev call) | — | **on** |
+| **1ᶜ** · Verdict cache | `tools/pre-execute` (before calling Jev) | (key `tool+command+cwd` — no Jev call) | — | **on** |
+| **1b** · User authorization | `tools/pre-execute` (only when layer 1 blocks) | (deterministic provenance — no Jev call) | — | **on** |
 | **2** · Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | **3** · Effort routing | `agent/request` | (deterministic rules — no Jev call) | — | **on** (sticky per turn) |
 | **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
@@ -197,36 +199,56 @@ at p=0.77, while `rm -rf <nonexistent path>` scored only 0.40 — so legitimate
 cleanup was blocked and had to be retried (one command was blocked **7 times in a
 row**).
 
-The new layer runs **only** when layer 1 has already judged the command
+The layer runs **only** when layer 1 has already judged the command
 destructive, and it answers one question: did the user themselves ask to delete
 exactly this? Blocking now requires **destructive AND not user-authorized**:
 
 ```
-p ≥ 0.7  ──► ask again "did the user authorize this?"
-              ├── authorized                  ──► ALLOW
-              └── narrower/unrelated/quoted   ──► DENY
+p ≥ 0.7  ──► check provenance: is the target in the user's REAL request?
+              ├── yes                              ──► ALLOW (allow_authorized)
+              └── no / cannot prove                ──► DENY (fail-closed)
 ```
 
-Four `choice` branches instead of `noul` because they are four situations
-different in kind, not four levels of one quantity — so there is no threshold to
-tune, and the `quoted` branch catches pasted content claiming authority.
-
-Measured on the real API (`jev-1.13.0`, 6–10 runs/case):
-
-| Group | Result |
-|---|---|
-| Pasted content claiming authority (web/README/log, translate/summarise requests, forged "the user approved this") | **0/66** returned `authorized` |
-| Destructive commands the user did not ask for (unrelated, vague, scope escalation) | **0/48** returned `authorized` |
-| Legitimate user-requested cleanup (exact path, glob, cache, session scratch) | **46/48** returned `authorized` |
+**v0.9.0 — dropped the second LLM call.** The old version asked Jev a `choice`
+question ("did the user authorize this?") — one more round-trip sitting ON the
+critical path of every blocked command. It now derives authorization from
+**deterministic provenance**: extract the command's target (path/name from
+`rm`/`mv`/`truncate`/…), then substring-match it against the user's **real**
+messages. Measured on the real hook: before = **2** Jev requests per blocked
+command (`destructive` + `authorized`), after = **1** (`destructive`), and when
+unprovable, **0** extra requests.
 
 The `user_request` evidence is taken **only** from genuine user messages
 (`source.kind === 'user'`). `notePrompt` used to join every `role=user` message —
 including background job output (`tool-jobs`) and the plugin's own injected hints
-— so untrusted content could leak into the "user request" field.
+— so untrusted content could leak into the "user request" field. Deterministic
+provenance uses exactly this source.
 
-This layer is **fail-closed**: on error/timeout it keeps blocking. Unlike layer 1
-(fail-open) — an error of Jev's must not become a silent allow in a defensive
-layer.
+This layer is **fail-closed**: if it cannot prove authorization, it DENIES.
+Unlike layer 1 (fail-open) — a defensive layer must lean toward safety when
+uncertain.
+
+### Why the "Verdict cache" layer exists (1ᶜ)
+
+The gate calls Jev for every `bash` command. Measured on the real log: **~6.4%**
+of `allow` commands are **byte-identical strings** (same tool + command + cwd) —
+a pure wasted round-trip, since the verdict for a byte-identical command is the
+same distribution.
+
+Cache key = `tool + command (verbatim) + cwd + declared workdir`. Only **clear**
+verdicts are cached: `allow` (p far from threshold) and `deny`. **`fail_open` is
+NEVER cached** — a transient error must not be frozen into a verdict.
+
+**v0.10.1 — do not cache near the threshold.** Jev is **non-deterministic**:
+measured on `jev-1.13.0`, `rm -f <file>` yields p straddling the 0.7 threshold
+(`0.67, 0.68, 0.69, 0.70`). If a sample `< threshold` (allow) is cached, every
+later call serves the old p, **skipping** samples `≥ threshold` that should have
+blocked — the cache turns deny into allow. So `gateVerdictCacheMargin` (default
+`0.1`) blocks caching when `|p − threshold| ≤ margin`; a verdict far enough from
+the threshold cannot flip under drift.
+
+Memory bound `gateVerdictCacheMax` (500) with FIFO eviction + LRU-touch on hit.
+Disable with `enableGateVerdictCache: false`.
 
 ## Architecture
 
@@ -241,10 +263,10 @@ dsh-jev-gate
 ├── LAYER 1 · destructive gate        hook: tools/pre-execute
 │   └── asks Jev (noul): "would this command destroy data irrecoverably?"
 │       ├── p < 0.7  ──► allow
-│       └── p ≥ 0.7  ──► ask LAYER 1b
+│       └── p ≥ 0.7  ──► check LAYER 1b
 │
 ├── LAYER 1b · user authorization     hook: tools/pre-execute (only when layer 1 denies)
-│   └── asks Jev (choice): "did the user ask to delete this exact thing?"
+│   └── DETERMINISTIC provenance (NO Jev call): is the target in the user's real request?
 │       ├── authorized ──► allow
 │       └── narrower/unrelated/quoted ──► DENY
 │
@@ -429,7 +451,6 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     contextMaxFiles: 3          # max files named in the hint
     failureMaxPerTurn: 2        # max recovery hints per turn
     gateTimeoutMs: 2000
-    authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
     spawnTimeoutMs: 6000
@@ -452,7 +473,12 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     jevGrepBackground: true     # run jg in the BACKGROUND, never blocking the turn
     jevGrepExcerptCap: 4000     # max excerpt characters injected into context
     enableDestructiveGate: true
-    enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour
+    enableReadOnlyPrefilter: true       # layer 1₀ — proven read-only skips Jev
+    enableCatastrophicFloor: true       # deterministic floor (root wipe, disk format) — hard deny, never fail-open
+    enableGateVerdictCache: true        # layer 1ᶜ — cache verdict by (tool, command, cwd)
+    gateVerdictCacheMax: 500            # max cache entries (FIFO + LRU-touch)
+    gateVerdictCacheMargin: 0.1         # do not cache when |p - threshold| <= margin (Jev is non-deterministic)
+    enableAuthorizationOverride: true   # layer 1b provenance — off restores block-everything behaviour
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
@@ -470,7 +496,8 @@ disables itself silently — no error, nothing blocked.
 
 ```bash
 bash verify.sh              # 7 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 159 checks, no secret needed
+node tests/offline.mjs      # 305 checks, no secret needed
+node tests/attack-corpus.mjs # independent attack corpus — requires 0 leaks
 node tests/live-check.mjs   # 24 checks, needs TYPESAFE_API_KEY + network
 ```
 
