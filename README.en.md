@@ -25,16 +25,24 @@ checkpoints**, not as a second brain.
 | **1** · Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
 | **1b** · User authorization | `tools/pre-execute` (only when layer 1 blocks) | Did the user actually ask to delete this exact thing? | `choice` | **on** |
 | **2** · Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
-| **3** · Effort routing | `agent/request` | Does the next step need deep thinking? | `choice` | **on** |
+| **3** · Effort routing | `agent/request` | (deterministic rules — no Jev call) | — | **on** (sticky per turn) |
 | **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
 | **6** · Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
 | **7** · Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
 | **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | (runs `jg` when the task is "where does X live?") | `jg` CLI | **on** |
 
-Layer 3 was enabled after measuring cache behaviour: changing reasoning effort
-does **not** evict the prompt cache of other efforts. Cache is kept per
-`(prefix, effort)`, so the only cost is the first touch of a new effort being
-cold — measured to cost exactly the same as a cold new prefix.
+Layer 3 does **not** call Jev. Default `low`; escalate to `high` only when the
+previous turn shows a measured failure signal (≥2 tool errors or ≥1 test
+failure). Sticky within a turn.
+
+**Why the per-request classifier was removed (2026-10-01).** Measured over 120
+consecutive requests: the old mechanism flipped effort `low↔high` on
+**113/120** of them, 54.5% of its decisions had confidence < 0.5, and it burned
+**55%** of all Jev tokens with a ~281 ms call sitting on the critical path. The
+most expensive layer was changing a near-random decision. Research: measured
+signals beat predicted difficulty (arXiv 2505.00127), and a per-step router only
+wins when it is a small *trained* model (<5 ms, arXiv 2603.07915) — not a
+1,180-token API classifier.
 
 ### Why the "Context choice" layer exists
 
@@ -246,7 +254,7 @@ dsh-jev-gate
 │       └── unfinished / no proof ──► steer to keep working
 │
 ├── LAYER 3 · effort routing          hook: agent/request
-│   └── asks Jev (choice): "does the next step need deep thinking?"
+│   └── deterministic: default low, escalate on measured failure signals
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
 │
 ├── LAYER 4+5 · approach + context    hook: agent/pre-step (step 1 only)
@@ -427,7 +435,10 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     spawnTimeoutMs: 6000
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
-    effortReuseConfidence: 0.6  # at or above this confidence, keep the effort for the next step
+    effortDefault: low          # effort when the previous turn was clean
+    effortEscalateTo: high      # raised when the previous turn shows failure signals
+    effortEscalateToolErrors: 2   # ≥2 tool errors in the previous turn escalates
+    effortEscalateTestFailures: 1 # ≥1 test failure in the previous turn escalates
     completionMaxPerTurn: 2     # max completion checks per turn
     reviewMinChangedLines: 20   # do not review diffs smaller than this
     reviewMaxPerTurn: 1         # max reviews per turn
@@ -436,7 +447,9 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     reviewReportToAgent: true   # report scores back to the agent via steer
     jevGrepSearchTaskThreshold: 3  # consecutive grep/find/rg commands before escalating; 0 disables branch B
     jevGrepMaxPerTurn: 1        # max jevgrep escalations per turn
-    jevGrepTimeoutMs: 12000     # budget for one `jg` run; on expiry, fail open
+    jevGrepTimeoutMs: 120000     # budget for one `jg` run (NEW query is cold for 66s–2m5s); on expiry, fail open
+    jevGrepFailureBreaker: 3    # disable layer 8 for the session after N consecutive jg failures
+    jevGrepBackground: true     # run jg in the BACKGROUND, never blocking the turn
     jevGrepExcerptCap: 4000     # max excerpt characters injected into context
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # user-authorization layer — off restores the old block-everything behaviour

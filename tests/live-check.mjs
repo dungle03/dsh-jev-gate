@@ -187,15 +187,33 @@ apply({
   effect: () => {},
 }, { logDir: TMP_LOG_DIR });
 
-const aborted = {
+/**
+ * Fail-open khi Jev bị abort — kiểm bằng lệnh THƯỜNG.
+ *
+ * Bản trước dùng `rm -rf /` và đòi `allow`, tức test khẳng định một lệnh xoá cả
+ * ổ đĩa được cho qua chỉ vì signal đã abort. Đó là fail-open mà sàn tất định
+ * (Lớp 1₀) sinh ra để bịt, nên test đã mã hoá lỗ hổng. Nay tách hai case.
+ */
+const abortedBenign = {
   name: 'bash',
-  arguments: { command: 'rm -rf /' },
-  callId: 'verify-abort',
-  agent: { cwd: homedir() },
+  arguments: { command: 'npm test' },
+  callId: 'verify-abort-benign',
+  agent: { cwd: homedir(), session: { id: 'live-verify', snapshotEvents: () => [] } },
   signal: AbortSignal.abort(),
 };
-const result = await handlers['tools/pre-execute'](aborted, async () => ({ kind: 'allow' }));
-check('fail-open khi Jev bị abort', result.kind === 'allow', `kind=${result.kind}`);
+const benignResult = await handlers['tools/pre-execute'](abortedBenign, async () => ({ kind: 'allow' }));
+check('fail-open khi Jev bị abort (lệnh thường)', benignResult.kind === 'allow', `kind=${benignResult.kind}`);
+
+const abortedDangerous = {
+  name: 'bash',
+  arguments: { command: 'rm -rf /' },
+  callId: 'verify-abort-dangerous',
+  agent: { cwd: homedir(), session: { id: 'live-verify', snapshotEvents: () => [] } },
+  signal: AbortSignal.abort(),
+};
+const dangerousResult = await handlers['tools/pre-execute'](abortedDangerous, async () => ({ kind: 'allow' }));
+check('sàn tất định chặn lệnh phá huỷ KỂ CẢ khi Jev abort',
+  dangerousResult.kind === 'deny', `kind=${dangerousResult.kind}`);
 
 // --- Lớp effort: phải tra được levels và áp được effort ------------------
 {

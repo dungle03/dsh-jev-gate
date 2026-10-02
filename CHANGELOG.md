@@ -3,6 +3,686 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.8.2] — 2026-10-01
+
+Sửa HỒI QUY do chính 0.8.1 tạo ra: nâng `jevGrepTimeoutMs` lên 70s biến Lớp 8
+thành thứ **chặn turn tới 210 giây** — đúng loại overhead mà cả dự án này sinh
+ra để tránh.
+
+### Sửa — Lớp 8 chạy NỀN, không còn chặn turn
+
+**Phát hiện quyết định: cache `jg` theo TỪNG TRUY VẤN, không theo repo.**
+
+Bản 0.8.1 tưởng "cold 64s một lần cho cả repo". Đo lại, sai:
+
+| Tình huống | Thời gian |
+|---|---|
+| truy vấn đã hỏi (cache ấm) | 7,5–10,2s |
+| **truy vấn MỚI (chưa từng hỏi)** | **66s – 2m5s** |
+
+Mỗi truy vấn mới đều cold. Nên bất kỳ timeout nào trong hook AWAIT cũng sai:
+thấp thì không bao giờ chạy được, cao thì treo turn. Với `jevGrepTimeoutMs: 70000`
+× `jevGrepFailureBreaker: 3` = **210s chặn turn**.
+
+**Sửa: `jg` chạy nền, kết quả chèn ở lần `pre-step` kế tiếp.** Turn không bao giờ
+chờ. `jevGrepBackground: true` là mặc định mới; đặt `false` để về hành vi await.
+
+Kết quả có thể "cũ" một nhịp (turn sau nhận gợi ý của turn trước). Chấp nhận:
+`jg` tìm theo repo, không theo turn, và gợi ý "đọc file X" hữu ích ở turn sau y
+như ở turn phát sinh.
+
+**Đo trên `jg` THẬT** (không phải giả):
+
+```
+1st call (khởi động nền):  5 ms     ← trước đây: chờ tới 2 phút
+2nd call (sau khi jg xong): 1 ms    ← chèn được gợi ý
+```
+
+Log có `decision: started_background` rồi `hinted` với `background: true` để đo
+được. `jevGrepTimeoutMs: 70000 → 120000` (không còn chặn turn nên để rộng được).
+
+### Test
+
+B1–B9 chuyển sang `jevGrepBackground: false` (chúng kiểm đường await). Thêm
+B9b/B9c cho chế độ nền: lời gọi đầu không chèn, lời gọi sau chèn, không chèn lặp,
+log có `started_background` + `hinted` với `background: true`.
+**Tổng 201 check pass**, 5/5 lần chạy ổn định. `verify.sh` TẤT CẢ MỤC PASS.
+
+## [0.8.1] — 2026-10-01
+
+Bốn lỗi thật tìm được khi **kiểm tra hiện trạng sau khi 0.8.0 chạy thật**, không
+phải bằng cách đọc code. Ba trong bốn là "lớp im lặng không làm gì" — loại lỗi
+nguy hiểm nhất vì test vẫn xanh.
+
+### Sửa — `jev_error` ghi `"unknown"`, không chẩn đoán được
+
+Đo trên log: **10 bản ghi `jev_error` có `message: 'unknown'` và `ms: 0`**.
+
+Nguyên nhân gốc: `AbortSignal.throwIfAborted()` ném ra **chính giá trị `reason`**
+truyền cho `abort(reason)`. Khi DSH abort với một chuỗi hoặc object (không phải
+`Error`), giá trị ném ra cũng không phải `Error`:
+
+```js
+const c = new AbortController();
+c.abort('some string reason');
+c.signal.throwIfAborted();   // ném ra chuỗi, KHÔNG phải Error
+```
+
+Bản cũ ghi `error instanceof Error ? error.message : 'unknown'` → `'unknown'`.
+
+Sửa: `describeError(error)` xử lý **mọi kiểu** — `Error` (giữ cả `name`, nên
+phân biệt được `AbortError` vs `TimeoutError`), chuỗi, object, `undefined`,
+`null`, số. Thay cả **7 chỗ** `'unknown'` trong `index.mjs` và 2 chỗ trong
+`jevgrep.mjs`. Test 17 kiểm 7 trường hợp.
+
+### Sửa — Lớp 8 chưa từng chạy được, và `jevGrepTimeoutMs: 12000` là số SAI
+
+Đo `jg` thật trên repo này:
+
+| Tình huống | Thời gian |
+|---|---|
+| cache lạnh (lần đầu cho một truy vấn) | **64 giây** |
+| cache ấm (cùng truy vấn) | 7,5–10,2 giây |
+
+Trần cũ 12s nghĩa là mọi lần cold **chắc chắn timeout**, mà vẫn trả giá 12s.
+Đo trên log: **41/41 lần leo thang đều `fail_open`** — chưa lần nào chạy được.
+Fix exit-code ở v0.7 chỉ chuyển lỗi từ `jg exited 2` sang `timeout`; bản chất
+vẫn là chưa từng hoạt động.
+
+Sửa: `jevGrepTimeoutMs: 12000 → 70000` (chịu được cold start).
+
+**Ghi chú trung thực về lần thành công đầu tiên.** Lúc 04:33:58Z có bản ghi
+`decision: "hinted"`, `ms: 7455`, 5 file — nhưng đó **không phải** bằng chứng cho
+fix timeout: process đang chạy boot lúc 04:22Z (trước khi fix ghi lúc 04:33Z), và
+7455ms vốn nằm DƯỚI ngưỡng cũ 12000ms. Thành công đó là do **cache `jg` đã ấm**
+từ lần chạy thủ công để đo. Giá trị của fix là ở **cold start 64s** — chưa xác
+nhận trên process thật, cần restart rồi đo lại.
+
+### Thêm — Circuit breaker cho Lớp 8
+
+`jg` cold mất 64s, và hook `agent/pre-step` **await** nó → turn treo 64s. Đó là
+overhead trên đường tới hạn — đúng thứ plugin này sinh ra để tránh. Đo được
+41/41 lần hỏng nghĩa là tới giờ Lớp 8 **chỉ tạo overhead, chưa từng trả gợi ý**.
+
+Thêm `jevGrepFailureBreaker: 3` — `jg` hỏng LIÊN TIẾP 3 lần thì tạm tắt Lớp 8
+cho phần còn lại của phiên. Lần thành công đầu tiên reset về 0. Log ghi
+`decision: skip_breaker` + `consecutiveFailures` để đo được. Test B6b/B6c.
+
+### Sửa — Lớp 2 là CODE CHẾT, không phải "fail 53%"
+
+Lớp 2 `return` khi thiếu `agent.goal.objective`. Nhưng operator gần như không
+dùng goal: đếm trên **162 session, chỉ 8 sự kiện `goal/change`** — và Lớp 2
+**không chạy lần nào từ 29/09** (im lặng 3 ngày).
+
+Sửa: dùng `taskOf(agent)` — goal ưu tiên, rồi tới prompt THẬT của user do
+`notePrompt` ghi lại từ `agent/pre-step`. Lớp 2 giờ thực sự chạy.
+
+### Sửa — ABORT bị đếm là tool error, làm Lớp 3 nâng effort vô cớ
+
+`turnSignals` đếm `data.error` là `toolErrors`. Nhưng `data.error` có mặt ở CẢ
+hai trường hợp: tool lỗi thật, VÀ tool bị **HUỶ** giữa đường (`AbortError`/
+`ABORTED`/`TimeoutError`). Abort không nói gì về độ khó bước sau — nó chỉ nói
+turn bị dừng. Đếm nó làm Lớp 3 nâng `high` sai.
+
+Quan sát trực tiếp sau khi 0.8.0 chạy: 4/5 quyết định effort là `high` với
+`reason: tool_errors:2`, phần lớn do abort.
+
+Sửa: loại `AbortError`/`ABORTED`/`TimeoutError` khỏi `toolErrors`. Test 11t/11u:
+3 lần abort → giữ `low`; 2 lỗi thật (ENOENT/EEXIST) → nâng `high`.
+
+### Test
+
+`tests/offline.mjs`: thêm section 17 (7 check cho `describeError`), B6b/B6c
+(breaker), test dương cho Lớp 2 không có goal, và 11t/11u (abort vs lỗi thật).
+Tổng **196 check pass**, 3/3 lần chạy ổn định. `verify.sh` TẤT CẢ MỤC PASS.
+
+## [0.8.0] — 2026-10-01
+
+Đổi CƠ CHẾ cho hai lớp nóng, sau khi đo lại trên log thật và corpus 11.349 lệnh
+bash. Mục tiêu: bớt "vẽ việc", tăng tốc vòng lặp.
+
+### Đổi — Lớp 3 bỏ classifier per-request, thay bằng luật tất định sticky theo turn
+
+**Vấn đề đo được** (120 request liên tiếp, 8 session thật):
+
+| | |
+|---|---|
+| Đổi mức `low↔high` | **113/120 lần** (dãy `low,high,low,high,…`) |
+| Quyết định `applied` có confidence < 0,5 | **54,5%** |
+| Chiếm token Jev | **55%**, mỗi call ~281ms TRÊN đường tới hạn |
+
+Tức lớp tốn kém nhất đang đổi một quyết định gần như ngẫu nhiên. Cả "lease"
+(Jev trả 1 ở 97% lần) lẫn ngưỡng confidence đều là máy móc che một tín hiệu
+không có thật.
+
+**Thiết kế mới.** Mặc định `effortDefault` (low); nâng `effortEscalateTo` (high)
+CHỈ khi turn trước có bằng chứng thất bại ĐO ĐƯỢC (`turnSignals`: ≥2 tool error
+hoặc ≥1 test fail). Sticky trong turn, sang turn mới mới tính lại. **KHÔNG gọi
+Jev** — hết 6.363 call/3,5 ngày.
+
+Research xác nhận: tín hiệu đo được thắng tín hiệu "đoán độ khó"
+(arXiv 2505.00127, 2608.13571); router per-step chỉ thắng khi là model nhỏ đã
+TRAIN (<5ms, arXiv 2603.07915), không phải API classifier 1.180 token.
+
+Bỏ hẳn: `effortReuseConfidence`, `effortMaxReuseSteps`, `recentToolCalls()`,
+`toolCallCount()`, `collectProgress()`, `effortQuestion`. Thêm config:
+`effortDefault`, `effortEscalateTo`, `effortEscalateToolErrors`,
+`effortEscalateTestFailures`. Log ghi `reason` + `signals` + `decision: sticky`.
+
+### Đổi — Lớp 1 prefilter nhận thêm `curl` GET / `node --check` / `dsh` đọc
+
+Phủ trên 11.349 lệnh thật: **39,2% → 42,1%** (+330 lệnh không cần gọi Jev).
+
+Ba luật mới, mỗi luật **chứng minh được** là chỉ-đọc:
+
+- `curl` — **allowlist** (xem mục "curl chuyển sang ALLOWLIST" bên dưới). Nhóm
+  lớn nhất: 220/835 lệnh `curl` thật được rút ngắn.
+- `node --check` — chỉ phân tích cú pháp; loại nếu kèm `-e`/`-p`/`-r`/`--import`.
+- `dsh plugin list` / `dsh --version` / `dsh --help` — loại mọi subcommand khác.
+
+**Một con số trong brief trước đã SAI và được sửa.** Brief nói prefilter có thể
+giành lại **−38%** call gate bằng cách xử lý `python3 -c`/`node -e`/vòng `for`.
+Sai: **không thể chứng minh** một one-liner Python/Node tuỳ ý là chỉ-đọc — phân
+tích code động là không khả thi và đoán bừa là lỗ hổng gate. Số đúng là **10,2%**
+nếu chỉ tính luật an toàn chứng minh được; phần lớn là `curl` GET.
+
+Corpus test mở rộng: **287 lệnh phá dữ liệu** (0 lọt) + **106 lệnh chỉ-đọc**
+(phải nhận ra), gồm cả các dạng vừa thêm (`curl -XPOST`, `curl -Tf`,
+`node --check --eval`, `dsh plugin add`).
+
+### Sửa — Lớp 2 truyền `signal` đã abort xuống Jev
+
+`agent/turn-stopping` chạy ĐÚNG LÚC turn đang dừng nên `signal` của nó đã abort.
+Truyền vào `AbortSignal.any` làm fetch bị huỷ tức thì. Đo log thật: **48/49** lần
+fail là `This operation was aborted` (cửa sổ 28/09 07:43→08:55). Bỏ `signal`
+khỏi lời gọi; lớp dùng ngân sách riêng `stopTimeoutMs`.
+
+### Thêm — Observability
+
+- Bản ghi `allow` của gate **ghi kèm `command`** (cắt 400 ký tự). Trước đây chỉ
+  có `{tool, decision, p}` nên không thể audit cái gì đã cho qua — chỉ đếm được
+  số lượng. Không có nó thì không đo được FNR thật của gate.
+- Ghi chú: `completion_check` không chạy lần nào từ 29/09 vì plugin yêu cầu
+  `agent.goal.objective`, mà operator gần như không dùng goal (8 lần
+  `goal/change` trong 162 session). Xem mục "Điểm yếu đã biết".
+
+### Test
+
+`tests/offline.mjs`: section 11 viết lại 16 check cho thiết kế mới (KHÔNG gọi
+Jev, mức đúng theo tín hiệu, sticky, tách session, log có `reason`/`signals`);
+section 16 thêm corpus cho ba luật prefilter mới. Tổng **176 check pass**, 8/8
+lần chạy ổn định (một test cũ kiểm thứ tự dòng log đã sửa thành kiểm theo tập
+hợp — recorder ghi fire-and-forget nên thứ tự không đảm bảo).
+
+`verify.sh`: TẤT CẢ MỤC PASS (gồm gate chấm đúng trên API thật).
+
+### Sửa — 7 dạng `curl` LỌT qua bản prefilter đầu tiên (lỗ hổng do bản vá tự tạo)
+
+Bản `curlIsReadOnly` đầu tiên so cờ dài bằng khớp TOÀN CHUỖI (`^--flag$`), nên
+không khớp dạng `--flag=value`. Tìm ra bằng cách **thử thật từng biến thể**, không
+phải bằng cách đọc code — đúng bài học đã ghi ở v0.6.0 ("bản viết bằng cách đọc
+code để lọt 12 dạng").
+
+Bảy dạng đã lọt, giờ đều bị chặn:
+
+```
+curl --output=/tmp/leak http://x     # dạng --flag=value
+curl --json {"a":1} http://x         # --json gửi POST
+curl --form-string f=@secret http://x
+curl --upload-file=f http://x
+curl --remote-name-all http://x/y
+curl --request=POST http://x
+curl --config=cfg http://x
+```
+
+Sửa: khớp TIỀN TỐ cho cờ dài (`^--(output|json|form|upload-file|request|config|
+trace|dump-header|output-dir|create-dirs|…)`), nên bắt cả `--flag` lẫn
+`--flag=value`; thêm `--trace-ascii`, `--dump-header`, `--output-dir`,
+`--create-dirs` vào danh sách. `-o /dev/null` và `--output /dev/null` vẫn được
+cho qua (vứt output, không ghi gì thật).
+
+Bảy dạng này đã vào corpus chống hồi quy của `tests/offline.mjs`.
+
+### Thêm — Cảnh báo khoá config đã bỏ
+
+`schemastery` bỏ qua khoá lạ một cách im lặng, nên người dùng còn đặt
+`effortReuseConfidence: 0.9` sẽ tưởng nó vẫn có tác dụng. Giờ plugin ghi một bản
+ghi `retired_config` + `logger.warn` một lần lúc nạp, nói rõ khoá nào bị bỏ và
+thay bằng gì. Test 8b kiểm điều này.
+
+### Sửa — hai lỗi thật trong chính Lớp 3 mới, tìm được ngay sau khi restart
+
+Cả hai đều thuộc loại "chạy thật mới lộ", và cả hai đều làm Lớp 3 **nâng effort
+vô cớ** — đúng thứ thiết kế này sinh ra để tránh.
+
+**1. Chữ `FAIL` trong nội dung file bị tính là test fail.**
+
+Bản đầu quét text của MỌI `tool/result` để tìm chữ `FAIL`, không kiểm LỆNH nào
+sinh ra output. Khi agent `cat` một file test, `grep` trong log, hay đọc output
+cũ, chữ `FAIL` trong NỘI DUNG bị tính là test fail.
+
+Đo trên 1.791 `tool/result` thật: **46 khớp, và 46/46 là false positive (100%)**
+— không lần nào là test fail thật. Quan sát trực tiếp sau restart: một turn đọc
+file test bị chấm `reason: test_failure:6` và đẩy lên `high`.
+
+Sửa: thêm `TEST_RUNNER_PATTERN` — CHỈ tính khi chính lệnh sinh ra output là
+trình chạy test (`node --test`, `npm test`, `pytest`, `go test`, `cargo test`, …).
+Chữ `FAIL` trong output của `cat`/`grep` không nói gì về việc code có đúng không.
+
+**2. Phép nối `tool/result` ↔ `tool/call` đọc SAI field — hỏng 100%.**
+
+`toolCallId` nằm trong `data.message.toolCallId`, KHÔNG phải `data.toolCallId`.
+Bản đầu đọc `data.toolCallId` nên luôn `undefined`: đo trên 1.791 `tool/result`
+thật, **0/1.791 nối được (0%)** → tính năng im lặng không làm gì cả.
+
+Đây đúng loại lỗi "đọc sai field thì thất bại im lặng" đã ghi ở đầu repo (xem
+mục "Ba API đã đoán sai"). Sửa: đọc `message.toolCallId`, dự phòng
+`message.source.callId`.
+
+Sau khi sửa: **1.791/1.791 nối được (100%)**, và 46 false positive → **0**.
+Trên dữ liệu thật của máy này hiện **0 true positive** — nghĩa là Lớp 3 hầu như
+sẽ giữ `low`, đúng như thiết kế (không nâng effort khi không có bằng chứng).
+
+Ba test chống hồi quy mới (11o/11p/11r/11s) dùng ĐÚNG shape thật của session,
+không phải shape thuận tiện — nếu ai đổi lại thành `data.toolCallId` thì FAIL.
+
+### Sửa — `curl` chuyển sang ALLOWLIST (lần sửa thứ ba, hai lần trước đều lọt)
+
+Hai bản trước liệt kê cờ NGUY HIỂM. Cả hai đều lọt, và mỗi lần chỉ thử thật mới thấy:
+
+| Bản | Cách làm | Lọt |
+|---|---|---|
+| 1 | so `^--flag$` | không khớp `--flag=value` → **7 dạng** |
+| 2 | khớp tiền tố | `-D` (ghi header file), `-c`/`--cookie-jar` (ghi cookie jar), `--libcurl` (ghi C source), `-w '%output{file}'` (ghi file), `--stderr`, `--etag-save` → **6 dạng nữa** |
+
+`curl` có **hơn 200 cờ** và mỗi phiên bản lại thêm. Denylist không bao giờ đầy.
+
+**Đảo thành allowlist.** Chỉ-đọc khi MỌI token là URL, hoặc cờ nằm trong allowlist
+(chỉ cờ đổi CÁCH GỬI/CÁCH IN, không cờ nào mở đường ghi), hoặc giá trị của cờ đó.
+Cờ LẠ → `false` → đi qua Jev.
+
+Kiểm chứng: **43 cờ nguy hiểm bị chặn, 15 dạng hợp lệ qua**. Corpus test:
+**306 lệnh phá dữ liệu (0 lọt)**, 111 lệnh chỉ-đọc (nhận hết).
+
+Đánh đổi đo được: phủ trên 11.349 lệnh thật **42,5% → 42,1%** (−0,4%). Mất 45
+lệnh để đổi lấy một luật không thể lọt thêm cờ mới — đúng hướng.
+
+`-o /dev/null` giờ KHÔNG qua: allowlist loại mọi `-o` cho đơn giản, thay vì thêm
+một nhánh đặc cách dễ sai. `-w` cũng bị loại (`%{json}` in stdout nhưng
+`%output{file}` ghi file — phân biệt hai dạng này đòi phân tích chuỗi, đúng kiểu
+phân tích dễ sai).
+
+**Bài học ghi lại:** đây là lần thứ ba trong repo này một bản vá viết bằng cách
+suy luận từ danh sách cờ để lọt dạng mới. Cách duy nhất tìm ra là **thử thật
+từng biến thể** — không phải đọc code.
+
+
+
+## [0.7.0] — 2026-10-01
+
+Hai lỗi thật tìm được bằng cách **đo log và chạy thử**, không phải đọc code. Cả
+hai đều thuộc loại "test xanh nhưng hành vi sai".
+
+### Sửa — Lớp 8 vứt bỏ kết quả của `jg` vì mã thoát 2
+
+**Lỗi.** `jg` dùng exit code để nói mức ĐẦY ĐỦ, không phải thành/bại. Đọc thẳng
+`dist/bin/index.js` của `jg@0.3.1`:
+
+```js
+process.exitCode = result.status === "interrupted" ? 130
+                 : result.status === "incomplete" ? 2 : 0;
+status: input.signal.aborted ? "interrupted"
+      : issues.size ? "incomplete" : "complete"
+```
+
+Exit **2 = `incomplete`** nghĩa là có `issues` (thường là `resource_limit`), chứ
+output vẫn được render **đầy đủ và hợp lệ**. Bản trước coi MỌI exit ≠ 0 là thất
+bại và vứt toàn bộ output.
+
+**Bằng chứng đo được.** Log thật ghi **4/4 lần leo thang đều `fail_open: jg
+exited 2`** — 100% thất bại. Tôi tái hiện lại trên thư mục thật: `jg` trả **421
+dòng / 23.448 bytes** (11 file liên quan + excerpt verbatim) rồi thoát 2. Đúng
+thứ Lớp 8 sinh ra để cung cấp, mà bị vứt đi chỉ vì mã thoát.
+
+**Tổng chi phí bị đốt:** 6 lần leo thang × 5–15s = **58,9 giây** không thu được gì.
+
+**Sửa.** Chấp nhận cả exit 0 và exit 2 miễn là có output; `interrupted` (130) và
+lỗi thật vẫn fail-open. Test B7b dựng `jg` giả thoát 2 kèm output đầy đủ và yêu
+cầu gợi ý ĐƯỢC chèn; tiêm lại bug → FAIL.
+
+### Sửa — Trạng thái "lần cuối thấy" là singleton toàn cục, rò giữa các agent
+
+**Lỗi.** `lastSeenSession` / `lastSeenGoal` / `lastSeenPrompt` là biến
+**module-level** (`let lastSeenSession`), tức một singleton dùng chung cho MỌI
+agent. DSH chạy nhiều agent cùng lúc — `dsh-experimental-agent-team` có trong
+profile và `subagent` được dùng thật — nên agent này ghi đè trạng thái của agent
+kia.
+
+**Bằng chứng đo được.** Trong dãy `effort_route` của log thật, `turn` **giảm 291
+lần** (14 → 1 → 14 → 1) — dấu hiệu hai agent xen kẽ nhau. Mỗi lần xen kẽ, hook
+của agent A có thể đọc `lastSeenPrompt`/`lastSeenGoal` do agent B ghi, tức hỏi
+Jev về **task của agent khác**.
+
+**Mức hại thật (đo, không phóng đại):**
+
+| Đường | Bị ảnh hưởng? | Bằng chứng |
+|---|---|---|
+| `workspaceRootOf` (root repo) | **Không** | ưu tiên `agent.session.header.cwd` trước → root vẫn đúng |
+| Lớp 3 tái dùng effort | **Không** | guard `prev.turn === turn` chặn: 0/291 lần reuse sai |
+| Task text gửi Jev | **CÓ** | `pre_step` / `failure_recovery` / `jevgrep_escalation` hỏi về task của agent khác |
+
+**Sửa.** State keyed theo session (`sessionKeyOf`), có fallback theo agent id rồi
+theo chính đối tượng session (WeakMap) cho đường không có id. Giữ trần
+`evictOldest`. Test 11j dựng hai agent, nạp task khác nhau, rồi đọc **thân
+request thật** gửi Jev và yêu cầu đúng task của agent gọi; tiêm lại bug (trả một
+khoá chung) → FAIL đúng thông điệp "LẪN task của agent B".
+
+### Sửa — lỗ hổng an toàn `>&`: prefilter bỏ qua lệnh GHI ĐÈ file
+
+**Lỗi (nghiêm trọng nhất trong bản này).** Bash cho `>&` hai nghĩa:
+
+```
+cmd >&2       — nhân bản fd 2 (an toàn)
+cmd >& file   — chuyển stdout+stderr tới FILE, GHI ĐÈ file đó
+```
+
+`splitSegments` cho `>&`/`<&` qua như "dup fd vô hại" **không kiểm token theo
+sau**, nên `echo new >& victim.txt` được coi là chỉ-đọc và **bỏ qua Jev hoàn
+toàn**. Đã tái hiện bằng shell: nội dung file bị xoá.
+
+**Vì sao test cũ không bắt.** Corpus có `'cmd >& out'` — nhưng `cmd` là lệnh lạ
+nên bị loại vì **lý do khác**, che mất lỗ hổng. Đây đúng ca "test xanh, logic
+sai". Corpus mới dùng lệnh chỉ-đọc thật (`echo`/`ls`/`cat`/`printf`).
+
+**Sửa.** `>&`/`<&` chỉ qua khi token theo sau là **số** (fd). `2>&1` vẫn qua
+đúng vì tokenizer gộp nó thành `>&` với target `1`. Corpus: 248 lệnh phá dữ liệu
+(0 lọt) + 87 lệnh chỉ-đọc, gồm 6 case `>&` ghi file và 5 case `>&` nhân bản fd.
+
+### Sửa — quyết định effort key theo `route`, dùng chung giữa các agent
+
+`lastDecision` key chỉ theo `route` (provider/model). Agent chính và subagent
+thường dùng CÙNG model ⇒ cùng route ⇒ dùng chung state, nên subagent đọc
+`prev.toolCallCount` của agent chính (con số thuộc session khác) và có thể tái
+dùng mức effort của agent kia. Sửa: key theo `sessionKey + route`. Test 11l; tiêm
+lại bug → FAIL.
+
+### Sửa — trần theo-turn dùng chung giữa agent chính và subagent
+
+`hintedTurns` (Set) và `failuresSeen` (Map) key theo `turn` TRẦN. Cả hai agent
+đều đánh số turn từ 1, nên `turn = 1` của subagent trùng agent chính: gợi ý của
+subagent bị nuốt, ngân sách phục hồi chia chung. Sửa: dùng `agentTurnKey()` chung
+(đã tách theo session). Test 11m; tiêm lại bug → FAIL.
+
+### Sửa — eviction là FIFO, đẩy ra session ĐANG hoạt động
+
+**Lỗi.** `evictOldest` xoá từ ĐẦU Map, mà Map giữ thứ tự chèn ⇒ chính sách là
+**FIFO**. Một session đang làm việc nhưng được chèn sớm vẫn bị đẩy ra trước một
+session đã chết vừa được chèn.
+
+**Bằng chứng đo được.** Tái hiện: agent A nạp task, 250 session khác đi qua xen
+kẽ với A. Với FIFO, task của A biến mất — request gửi Jev mang `task="Unknown
+task"`. Với LRU, task còn nguyên.
+
+**Sửa.** `seenFor()` chạm entry đang dùng (`delete` + `set` để đưa về cuối Map).
+Tách `seenEntryOf()` cho đường ĐỌC. `sessionOf()` đọc thẳng `agent.session` thay
+vì tra Map — engine luôn fuse session vào payload, tra Map chỉ thêm phụ thuộc mà
+không thêm thông tin. Test 11k; tiêm lại FIFO → FAIL.
+
+### Thêm — log ghi danh tính session (đo được per-agent)
+
+Audit trên **23.045 dòng log thật** cho thấy **không dòng nào có `sessionId`**,
+nên không thể trả lời "hook X hiệu quả với agent nào" hay xác minh rò state chéo
+agent — đúng câu hỏi quan trọng nhất. Mọi bản ghi quyết định nay kèm trường
+`session` (khoá rút gọn, không ghi nội dung session). Test 11n; tiêm lại bug
+(bỏ trường) → FAIL.
+
+### Sửa — 19/23 bản ghi thiếu danh tính session (lỗi do bản vá observability gây ra)
+
+**Lỗi.** Khi thêm tham số thứ hai cho `record()`, tôi chỉ vá **một phần** call
+site. Kiểm bằng script đếm: **19/23** bản ghi không truyền `agent` — trong đó có
+toàn bộ nhánh `deny`/`auth_fail_closed`/`allow_authorized` của gate, tức nhánh
+**quan trọng nhất** (lệnh phá dữ liệu bị chặn) lại không đo được per-agent.
+
+**Vì sao test đầu không bắt.** Test 11n chỉ chạy nhánh `applied` của
+`agent/request`. Nhánh deny cần **hai** lời gọi Jev (destructive → authorization),
+mà test không chạm tới.
+
+**Bài học phương pháp.** Đọc code đã bỏ sót 19 chỗ; phải **chạy nhánh thật rồi
+soi log**. Test 11o dựng đúng đường deny và yêu cầu mọi bản ghi có `session`.
+
+**Sửa.** Truyền `agent` cho mọi bản ghi có agent trong scope (gate, phục hồi,
+hoàn thành, effort, review). `jev_ok`/`jev_error` nằm trong `jev-client.mjs`
+(client dùng chung) nên thêm tham số `agent` tuỳ chọn cho `evaluate()`, và truyền
+từ cả 6 call site.
+
+**Một bẫy nữa bắt được khi viết test:** `createJev` **chụp**
+`globalThis.fetch` lúc được tạo, nên gán `fetch` sau `loadPlugin()` không có tác
+dụng — client vẫn dùng fetch thật và mọi lời gọi fail_open, khiến test "xanh" mà
+không chạm được nhánh cần kiểm. Phải cài `fetch` TRƯỚC `loadPlugin()`.
+
+`boot` là bản ghi mức plugin, không thuộc agent nào — miễn trừ có chủ ý.
+
+### Thêm — SÀN TẤT ĐỊNH cho lệnh phá huỷ toàn hệ thống (`lib/catastrophic.mjs`)
+
+**Lỗ hổng thiết kế.** Gate dựa hoàn toàn vào Jev, mà Jev **fail-open**: đo trên
+log thật, **252/6.442 lần (3,9%)** gọi Jev thất bại (144 timeout, 63 abort) và
+lệnh đi thẳng không được kiểm. Với một guard an toàn thì đó là lỗ hổng — API lỗi
+nghĩa là `rm -rf /` chạy.
+
+Tài liệu `jev-1.13` cũng nói state gửi vào có thể bị viết để lái câu trả lời, nên
+lớp phán đoán **không được** là thứ cuối cùng chắn giữa input không tin cậy và
+hành động không hoàn tác được. `dsh-jev-tools` và `dsh-jev-verify` đều áp dụng
+nguyên tắc này: blacklist tất định chạy TRƯỚC, Jev chỉ phán đoán phần còn lại.
+
+**Sàn.** `catastrophicMatch()` — thuần cú pháp, **không mạng, không Jev, không
+I/O**, nên không có đường fail-open. Chặn 7 nhóm: `rm` từ gốc filesystem, `mkfs`/
+`wipefs`/`blkdiscard`, `dd of=/dev/<block>`, redirect vào thiết bị khối, fork
+bomb, `chmod -R 777 /`, `mv /* /dev/null`.
+
+**Cố ý HẸP.** `rm -rf /tmp/x`, `rm -rf node_modules`, `rm -rf ./build`,
+`dd of=/tmp/x` vẫn qua bình thường — sàn không được thành chướng ngại cho việc
+hợp lệ.
+
+**Hai test cũ mã hoá chính lỗ hổng này.** Cả `offline.mjs` (1b) và
+`live-check.mjs` đều dùng `rm -rf /` để kiểm "abort → allow". Tức chúng khẳng
+định một lệnh xoá cả ổ đĩa được cho qua chỉ vì signal đã abort. Đã tách thành hai
+case: lệnh thường + abort → allow; lệnh phá huỷ + abort → **VẪN CHẶN**.
+
+**Kiểm chứng quan trọng nhất:** dựng Jev chết hoàn toàn (fetch ném lỗi + key store
+hỏng) → sàn **vẫn chặn** `rm -rf /`, `rm -rf /*`, `dd of=/dev/sda`, `mkfs`. Đây
+là bất biến chứng minh lỗ hổng fail-open đã đóng.
+
+Config: `enableCatastrophicFloor` (mặc định true).
+
+### Ghi nhận — kiểm chứng bên ngoài xác nhận nghi ngờ về lớp guard
+
+Khảo sát tài liệu công khai (không phải ý kiến): các failure mode của lớp
+guard/judge dùng LLM **đã được đo lặp lại nhiều lần** — ICLR 2025 (self-critique
+làm sập performance; chỉ verifier có ground-truth mới giúp), arXiv 2507.08794
+("master keys" lừa judge, FPR 60–90%), arXiv 2603.06621 (PRM chỉ là fluency
+detector: PRM >0.9 trong khi accuracy <4%), METR 2025-06-05 (30,4% run hack).
+
+Và A/B test công khai của `zhangxaochen/dsh-jev` trên 20 task DeepSWE: **2 thắng ·
+2 thua · 13 hoà, −1.10pp** — không phát hiện lợi ích, nhiễu cùng-arm tới 55pp.
+
+**Kết luận áp vào plugin này:** các lớp guard ở đây hoạt động ĐÚNG như thiết kế
+(đếm được, fail-open, không false-positive), nhưng **chưa có bằng chứng nào cho
+thấy chúng cải thiện kết quả cuối**. Điều đó không phủ nhận giá trị kỹ thuật —
+nó chỉ có nghĩa: đừng kỳ vọng điểm số tăng, và hãy đo trên task của chính mình.
+
+## [0.6.1] — 2026-10-01
+
+### Sửa — thêm trần chuỗi tái dùng effort (đo sau khi fix guard)
+
+Sau khi sửa guard mù, đo lại mới thấy fix đó **làm TĂNG chi phí**, không giảm:
+
+| | Token |
+|---|---|
+| P1 prefilter tiết kiệm | −1.549.688 |
+| P4 guard fix thêm | **+3.700.676** |
+| **NET** | **+2.150.988** |
+
+**Vì sao.** Bug cũ làm guard mù → 83% số lần reuse là "tái dùng mù" (miễn phí
+nhưng giữ effort sai 32–41% số lần). Fix làm guard tỉnh → hỏi Jev mỗi khi có
+tool call mới → +268ms/step, turn 50 step tốn thêm ~13s.
+
+**Cân bằng.** Thêm `effortMaxReuseSteps` (mặc định **20**): giữ độ chính xác ở
+đoạn đầu turn — nơi effort thật sự thay đổi — mà không hỏi lại ở đoạn cuối turn
+đã ổn định. Đo phân bố chuỗi tái dùng thật:
+
+| Chặn tối đa | Reuse giữ | Token thêm |
+|---|---|---|
+| Không trần | 2.212 | +3.700.676 |
+| **20** | **1.116** | **+1.833.608** |
+| 10 | 723 | +2.491.097 |
+
+Chọn 20: giữ 1.116 lần tái dùng hợp lệ, tiết kiệm ~1,8M token so với bỏ hẳn.
+Đặt 0 để tắt tái dùng hoàn toàn.
+
+**Bài học ghi lại:** một fix đúng về *logic* vẫn có thể sai về *chi phí*. Phải
+đo lại sau khi fix, không chỉ đo trước.
+
+### Thêm — `reuseSkipReason`: đo được vì sao KHÔNG tái dùng effort
+
+Trần `effortMaxReuseSteps` vừa thêm nhưng **không kiểm chứng được bằng log**:
+cả bốn nguyên nhân không tái dùng (turn mới, có tool call mới, chạm trần,
+confidence thấp) đều rơi vào cùng một dòng `applied`, không phân biệt được.
+Nghĩa là không thể trả lời "trần 20 có thật sự chặn gì không" trên máy thật.
+
+Thêm trường `reuseSkipReason` vào bản ghi `applied`, một trong:
+`no_prior_decision` · `new_turn` · `new_tool_call` · `reuse_cap_reached` ·
+`confidence_below_threshold` · `effort_unsupported`.
+
+Test 11i dựng 4 step (chấm đầu → tái dùng → chạm trần → turn mới) với trần 1 và
+đọc thẳng `decisions.jsonl`, yêu cầu phân biệt được cả ba lý do. Kiểm chứng
+ngược: bỏ trường này → test FAIL.
+
+## [0.6.0] — 2026-10-01
+
+### Thêm — prefilter chỉ-đọc cho Lớp 1 (cắt phần lớn call Jev của gate)
+
+**Vì sao.** Đo trên log thật `decisions.jsonl` (2026-09-27 → 09-30), phân bố
+theo lớp:
+
+| Lớp | call | input token | % token | avg/call | p50 |
+|---|---|---|---|---|---|
+| `effort_route` | 3.343 | 5.597.126 | **55%** | 1.674 | 268ms |
+| `destructive_gate` | 5.600 | 4.024.561 | **40%** | 718 | 289ms |
+| `pre_step` | 142 | 445.395 | 4,4% | 3.136 | 362ms |
+| còn lại | 123 | 79.130 | 0,8% | — | — |
+
+Trong 5.600 call của Lớp 1, **80,7%** có `p ≤ 0.02` — Jev trả "chắc chắn không
+phá gì". Tức phần lớn là round-trip API để nghe lại điều suy ra được bằng phân
+tích cú pháp cục bộ.
+
+**Cách làm.** `lib/readonly.mjs` — tokenizer có ghi nhớ nháy, trả `true` chỉ khi
+**chứng minh được** lệnh không thể ghi. Trần phủ sót đo trên **3.197 lệnh bash
+thật** của máy này: **37,4%**.
+
+Ba lần đo liên tiếp cho thấy quét regex sai theo cả hai hướng, nên bản cuối là
+tokenizer thật:
+
+| Bản | Cách làm | Phủ sót | Lỗi |
+|---|---|---|---|
+| 1 | quét chuỗi thô | 2,3% | `\bdsh\b` khớp đường dẫn `~/.dsh/` → giết oan 2.100 lệnh |
+| 2 | tách theo vị trí | 13,7% | `>` trong nháy (`sed 's/x/=<set>/'`) tính là redirect |
+| 3 | **tokenizer** | **37,4%** | — |
+
+**Bất biến an toàn.** `tests/offline.mjs` chạy **242 lệnh phá dữ liệu** và yêu
+cầu **0 lệnh được phép lọt**, cộng 384 biến thể fuzz đột biến.
+
+### Sửa — 12 dạng lọt qua bản 0.6.0 đầu tiên
+
+Bản đầu tiên được viết bằng cách **đọc code và suy luận**, và nó để lọt 12 dạng
+lệnh. Tìm ra bằng cách chạy `--help` thật trên từng lệnh trong danh sách trắng
+rồi **thử ghi file trong sandbox**, không phải bằng cách đọc lại code:
+
+| Dạng lọt | Cơ chế |
+|---|---|
+| `trap "rm -f victim" EXIT` | `trap` **chạy lệnh tuỳ ý**; payload nằm trong nháy nên phép kiểm `$(...)` không bắt được |
+| `hostname NEWNAME` | đối số vị trí **đặt** tên máy |
+| `date 010112002026` | đối số vị trí **đặt** lại đồng hồ hệ thống |
+| `xxd in out`, `uniq in out` | đối số thứ hai là file **GHI** |
+| `file -C -m f` | `-C` ghi `magic.mgc` |
+| `less -o f`, `more -o f` | `-o` ghi file |
+| `history -w f` | `-w` ghi file history |
+| `rg --pre CMD` | chạy CMD trên mỗi file |
+| `fd -x CMD` | chạy chương trình tuỳ ý |
+| `sort --compress-program=PROG` | chạy chương trình tuỳ ý |
+| `git --ext-diff` | gọi diff ngoài |
+| `set -- $(rm f)` | `$(...)` **vẫn chạy trong nháy kép** |
+
+Ba cơ chế sửa, mỗi cái là một lớp khác nhau của cùng vấn đề:
+
+1. **Bỏ khỏi danh sách trắng**: `trap`, `history`, `hostname`, `xxd`, `uniq`,
+   `split`, `csplit`, `tee`. Đo trên 3.197 lệnh thật: nhóm này xuất hiện **0–2
+   lần** mỗi cái, nên chi phí phủ sót gần bằng không.
+2. **`POSITIONAL_OUTPUT_COMMANDS`**: lệnh mà đối số vị trí thứ N là file ghi
+   (`uniq in out`, `xxd in out`, `hostname NEW`). Phải **đếm đối số**, không thể
+   phân biệt bằng tên cờ vì cả hai dạng đều hợp lệ.
+3. **`CONDITIONAL_COMMANDS.rejectFlags` theo từng lệnh**: cờ phải gắn với lệnh
+   cụ thể, không kiểm chung toàn câu. `-o` ghi file với `sort`/`less` nhưng chỉ
+   là "in phần khớp" với `grep -o`; `-x` chạy lệnh với `fd` nhưng là "file thực
+   thi được" với `test -x`. Kiểm chung từng loại oan 68 lần dùng `export` và 36
+   lần dùng `read`.
+
+**Một hồi quy do chính bản sửa gây ra, bắt được ngay:** đưa `git` vào
+`CONDITIONAL_COMMANDS` khiến `git reset --hard` được coi là chỉ-đọc, vì bảng cờ
+chạy trước `gitIsReadOnly` và trả "không có cờ ghi" mà không hề xét `reset` là
+nhánh ghi. Sửa bằng cách cho các lệnh có logic riêng (`git`/`sed`/`find`/`awk`/
+`env`/`command`) chạy **trước** bảng cờ.
+
+**Kiểm chứng ngược:** tiêm lại từng nhóm lỗi → test FAIL đúng nhóm đó
+(`trap` → bất biến an toàn; `--output`/`-C`/`--pre` → bất biến an toàn;
+bỏ đếm đối số → bất biến phủ báo sót `hostname`).
+
+**Ba lệnh được giữ lại sau khi kiểm chứng là an toàn thật**: `od`, `strings`,
+`hexdump` (mọi cách gọi chỉ ghi stdout; `strings -o` là alias của `--radix`), và
+nhóm builtin `export`/`set`/`read`/`alias` (mọi đường chạy lệnh của chúng đều đi
+qua `$(...)`/backtick, đã bị chặn ở tầng tokenize).
+
+Config mới: `enableReadOnlyPrefilter` (true). Tắt để quay lại hành vi cũ.
+
+### Sửa — guard "có thông tin mới" của Lớp 3 bị mù sau 6 tool call
+
+**Lỗi.** `recentToolCalls()` cắt `.slice(-6)` để giới hạn payload gửi Jev, nhưng
+guard tái dùng effort lại so `.length` của chính mảng đã cắt đó:
+
+```js
+const hasNewToolCall = !prev || history.length !== prev.toolCallCount;
+```
+
+Sau khi một turn vượt 6 tool call, `history.length` đứng nguyên ở **6 mãi mãi**,
+nên guard không bao giờ thấy "có gì mới" nữa và tái dùng vô hạn.
+
+**Bằng chứng trên log thật:**
+
+- 1.700/2.080 lần `reuse_high_confidence` có `reusedFor ≥ 5` (đã qua mốc 6)
+- một mức effort bị giữ **150 step liên tiếp**
+- 37/40 turn (92%) có hơn 6 step
+
+Tức **82% số lần tái dùng** diễn ra trong trạng thái guard đã mù.
+
+**Sửa.** Thêm `toolCallCount(session)` đếm **không cắt trần**, tách khỏi
+`recentToolCalls()` (vẫn cắt 6 để giới hạn payload). Test 11g dựng đúng 8 tool
+call rồi thêm 1; kiểm chứng ngược bằng cách tiêm lại lỗi cũ → test FAIL.
+
+### Ghi nhận — ba đề xuất tối ưu bị dữ liệu bác bỏ
+
+Giữ lại để lần sau không đề xuất lại:
+
+1. **"completionCheck fail_open 53% → tinh chỉnh"** — SAI. Cả 49 lần `fail_open`
+   đều thuộc **duy nhất ngày 2026-09-28** (sự cố key/timeout). Từ 09-29 đến nay:
+   **0 lần**. Không phải lỗi hệ thống, không cần đổi gì.
+2. **"nâng `effortReuseConfidence` để tái dùng nhiều hơn"** — SAI. Đo lại trên
+   log: `conf ≥ 0.6 → step sau giữ nguyên 59–68%`, tức 32–41% **sai**. Guard hiện
+   tại đã tái dùng **mọi** step `conf ≥ 0.6` mà không có tool call mới; những lần
+   `applied` ở mức conf cao chính là lúc có output mới → hỏi lại là ĐÚNG.
+3. **"Lớp 5 lãng phí, cắt `contextCandidateLimit`"** — SAI. A/B thật: 12 → 6
+   candidate tiết kiệm 42,5% token nhưng **mất một file migration anh em cần thiết**
+   trong 1/3 case. Lớp 5 chỉ chiếm 4,4% chi phí — không đáng đổi.
+
+
 ## [0.5.0] — 2026-09-30
 
 ### Thêm — Lớp 8: leo thang tìm nguồn bằng `jg` (skill `jevgrep`)

@@ -22,18 +22,28 @@ phải làm bộ não thứ hai.
 | Lớp | Hook | Câu hỏi | Kiểu | Mặc định |
 |---|---|---|---|---|
 | **1** · Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
+| **1₀** · Prefilter chỉ-đọc | `tools/pre-execute` (trước lớp 1) | (phân tích cục bộ — không gọi Jev) | — | **bật** |
 | **1b** · Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
 | **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
-| **3** · Chọn effort | `agent/request` | Bước tới cần nghĩ nhiều không? | `choice` | **bật** |
+| **3** · Chọn effort | `agent/request` | (luật tất định — không gọi Jev) | — | **bật** (sticky theo turn) |
 | **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
 | **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | (chạy `jg` khi việc là "tìm X nằm ở đâu") | CLI `jg` | **bật** |
 
-Lớp 3 bật sau khi đo cache thật: đổi reasoning effort **không** xoá prompt cache
-của các effort khác. Cache giữ riêng theo `(prefix, effort)`, nên chi phí duy
-nhất là lần đầu chạm một effort mới thì cold — đo được tốn đúng bằng cold của
-một prefix mới.
+Lớp 3 KHÔNG gọi Jev. Mặc định `low`; nâng `high` chỉ khi turn trước có bằng chứng
+thất bại ĐO ĐƯỢC (≥2 tool error hoặc ≥1 test fail). Sticky trong turn.
+
+**Vì sao bỏ classifier per-request (2026-10-01).** Đo trên 120 request liên tiếp:
+cơ chế cũ đổi mức `low↔high` **113/120 lần**, 54,5% quyết định có confidence
+< 0,5, và chiếm **55%** token Jev với mỗi call ~281ms nằm TRÊN đường tới hạn. Đó
+là lớp tốn kém nhất để đổi một quyết định gần như ngẫu nhiên. Research: tín hiệu
+đo được thắng tín hiệu đoán độ khó (arXiv 2505.00127), và router per-step chỉ
+thắng khi là model nhỏ đã TRAIN (<5ms, arXiv 2603.07915) — không phải API
+classifier 1.180 token.
+
+Ghi chú cache (vẫn đúng, nhưng không còn là lý do chính): trên router này đổi
+effort **không** xoá prompt cache — đo được 96% cache hit sau khi đổi.
 
 ### Vì sao có lớp "Chọn file nạp vào context"
 
@@ -173,6 +183,43 @@ giữ một nguồn hướng dẫn duy nhất là MCP server, cộng Lớp 7 t�
 Tool `jev_review` vẫn nguyên: đăng ký qua `mcp-jev-review`, agent vẫn gọi được,
 hướng dẫn vẫn vào prompt.
 
+### Vì sao có lớp "Prefilter chỉ-đọc"
+
+Lớp 1 gọi Jev cho **mọi** lệnh `bash`. Đo trên log thật (2026-09-27 → 09-30):
+5.600 call, trong đó **80,7%** có `p ≤ 0.02` — tức phần lớn là round-trip API để
+nghe lại điều suy ra được bằng phân tích cú pháp cục bộ rẻ hơn hàng nghìn lần.
+Ở p50 289ms và 718 token/call, đó là khoản chi lớn nhất của gate.
+
+`lib/readonly.mjs` trả `true` chỉ khi **chứng minh được** lệnh không thể ghi.
+Trần phủ sót đo trên **3.197 lệnh bash thật** của chính máy này: **37,4%**.
+
+Ba lần đo liên tiếp cho thấy quét regex sai theo cả hai hướng — bản đầu dùng
+`\bdsh\b` để chặn lệnh `dsh` nhưng khớp luôn đường dẫn `~/.dsh/` và giết oan
+2.100 lệnh (phủ sót tụt còn 2,3%); bản hai tính `>` trong nháy
+(`sed 's/x/=<set>/'`) là redirect ghi. Bản cuối là **tokenizer có ghi nhớ nháy**,
+xét tên lệnh theo **vị trí** thay vì khớp chuỗi.
+
+Đây KHÔNG phải nới lỏng bảo vệ. Mọi nghi ngờ — heredoc, backtick, redirect ghi,
+`$()` (kể cả trong nháy kép), `find -delete`, `sed -i`, `git reset`, trình thông
+dịch, lệnh lạ — đều rơi xuống đường Jev như cũ. `tests/offline.mjs` chạy **242
+lệnh phá dữ liệu** và yêu cầu **0 lệnh được phép lọt**, cộng **384 biến thể fuzz
+đột biến**.
+
+**Danh sách trắng hẹp hơn trực giác, và đó là kết quả của đo đạc.** Bản đầu viết
+theo suy luận đã để lọt **12 dạng**, tìm ra bằng cách chạy `--help` thật rồi thử
+ghi file trong sandbox: `trap "rm -f victim" EXIT` (chạy lệnh tuỳ ý),
+`hostname NEW` (đặt tên máy), `date 010112002026` (đặt đồng hồ), `xxd in out` và
+`uniq in out` (đối số thứ hai là file ghi), `file -C`, `less -o`, `history -w`,
+`rg --pre CMD`, `fd -x CMD`, `sort --compress-program`, `git --ext-diff`.
+
+Ba cơ chế bù lại, mỗi cái cho một lớp vấn đề khác nhau:
+
+| Cơ chế | Xử lý |
+|---|---|
+| Bỏ khỏi danh sách trắng | `trap`, `history`, `hostname`, `xxd`, `uniq`, `split`, `tee` — đo được chỉ dùng 0–2 lần/3.197 lệnh |
+| `POSITIONAL_OUTPUT_COMMANDS` | `uniq in out`, `xxd in out`, `hostname NEW` — phải đếm đối số vị trí |
+| `CONDITIONAL_COMMANDS` theo lệnh | `sort -o`, `date -s`, `less -o`, `rg --pre`, `fd -x` — cờ phải gắn với lệnh cụ thể, vì `-o` khác nghĩa ở `grep` và `sort` |
+
 ### Vì sao có lớp "Quyền của user"
 
 Gate phá dữ liệu cũ **không phân biệt được rác session với dữ liệu thật**. Log
@@ -221,7 +268,9 @@ sinh nội dung, không giữ transcript.
 dsh-jev-gate
 │
 ├── LỚP 1 · gate phá dữ liệu          hook: tools/pre-execute
-│   └── hỏi Jev (noul): "lệnh này có phá dữ liệu không thể khôi phục?"
+│   ├── LỚP 1₀ · prefilter chỉ-đọc (phân tích cục bộ, KHÔNG gọi Jev)
+│   │   └── chứng minh được chỉ-đọc ──► cho chạy ngay (37,4% lệnh thật)
+│   └── còn lại ──► hỏi Jev (noul): "lệnh này có phá dữ liệu không thể khôi phục?"
 │       ├── p < 0.7  ──► cho chạy
 │       └── p ≥ 0.7  ──► hỏi tiếp LỚP 1b
 │
@@ -409,7 +458,10 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     spawnTimeoutMs: 6000
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
-    effortReuseConfidence: 0.6  # conf >= ngưỡng này thì giữ nguyên effort cho step kế
+    effortDefault: low          # mức effort khi turn trước sạch
+    effortEscalateTo: high      # mức nâng lên khi turn trước có tín hiệu thất bại
+    effortEscalateToolErrors: 2   # ≥2 tool error trong turn trước thì nâng
+    effortEscalateTestFailures: 1 # ≥1 test fail trong turn trước thì nâng
     completionMaxPerTurn: 2     # trần số lần kiểm hoàn thành mỗi turn
     reviewMinChangedLines: 20   # diff nhỏ hơn thì không review
     reviewMaxPerTurn: 1         # trần số lần review mỗi turn
@@ -418,7 +470,9 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     reviewReportToAgent: true   # báo điểm lại cho agent qua steer
     jevGrepSearchTaskThreshold: 3  # số lệnh grep/find/rg LIÊN TIẾP thì leo thang; 0 = tắt nhánh B
     jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
-    jevGrepTimeoutMs: 12000     # ngân sách một lần `jg`; quá hạn thì fail-open
+    jevGrepTimeoutMs: 120000     # ngân sách một lần `jg` (truy vấn MỚI cold 66s–2m5s); quá hạn thì fail-open
+    jevGrepFailureBreaker: 3    # jg hỏng liên tiếp N lần thì tắt Lớp 8 cho hết phiên
+    jevGrepBackground: true     # chạy jg NỀN, không chặn turn (cold ~2 phút/truy vấn mới)
     jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
     enableDestructiveGate: true
     enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
@@ -488,10 +542,11 @@ Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md).
 | Lớp 5+6 end-to-end (handler thật + Jev thật) | 12/12 đúng, Lớp 1 không hồi quy (p=0.95) |
 | Độ trễ Lớp 5 (13 câu gộp 1 request) | median 271ms — bằng một câu đơn |
 | Độ trễ Lớp 6 (1 câu) | median 267ms |
-| Lớp 3 — chi phí Jev theo lớp | **65%** (3.238.650 / 4.958.494 token) |
-| Lớp 3 — lease cũ thực tế | `lease=1` ở **1.777/1.830 lần (97%)** → cơ chế coi như chết |
-| Lớp 3 — confidence ↔ độ ổn định | conf 0.6 → step sau giữ nguyên 88%; conf 0.9 → 95% |
-| Lớp 3 — tái dùng bỏ được bao nhiêu | **32%** số lần gọi, đoán sai 8% (bỏ sót TĂNG 4,3%) |
+| Lớp 3 — chi phí cũ (classifier per-request) | **55%** token Jev, ~281ms/call TRÊN đường tới hạn |
+| **Lớp 3 — dao động của cơ chế cũ (0.7.0)** | đổi `low↔high` **113/120** request; **54,5%** quyết định conf < 0,5 |
+| **Lớp 3 — thiết kế mới (0.8.0)** | **0 call Jev**; mặc định low, nâng high khi ≥2 tool error / ≥1 test fail |
+| **Prefilter phủ (0.8.0, 11.349 lệnh thật)** | **42,1%** (0.7.0: 39,2%) — thêm `curl` GET (allowlist) / `node --check` / `dsh` đọc |
+| **Lớp 2 — fail thật (0.7.0)** | **48/49** lần là `This operation was aborted` → bỏ `signal` ở 0.8.0 |
 | Bỏ câu `lease` | tiết kiệm **148 input + 43 output** token mỗi lần gọi |
 | Lớp 7 — `jev_review` được gọi bao nhiêu trong 110 session thật | **1 lần** (do tác giả test, handler thật + MCP thật, steer điểm về agent), 0 lần trong việc thật |
 | Lớp 7 — độ trễ `jev_review` | ~100ms |
