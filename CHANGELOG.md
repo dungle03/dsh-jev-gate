@@ -3,6 +3,28 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.10.3] — 2026-10-02
+
+### Sửa — test không để lại rác `/tmp`
+
+Các `mkdtempSync` trong `tests/offline.mjs` phần lớn tạo mà **không dọn** — đo
+được **595 thư mục `jev-gate-*`** rác trong `/tmp` sau nhiều lần chạy (kể cả khi
+tiến trình bị kill giữa đường). Gom mọi chỗ tạo temp qua một helper `tmpDir()`
+đăng ký vào một registry, dọn sạch khi `exit`. Chạy test nhiều lần giờ không
+sinh thêm thư mục nào.
+
+### Sửa — README khớp code
+
+- Bảng lớp + sơ đồ kiến trúc: Lớp **1b** là **provenance tất định** (không gọi
+  Jev), không còn `choice`; thêm lớp **1ᶜ** (cache verdict) và **1₀**.
+- Mục "Quyền của user": mô tả đúng cơ chế provenance + số call thật (2 → 1).
+- Thêm mục "Cache verdict": khoá, bất biến (`fail_open` không cache), và lý do
+  không cache sát ngưỡng.
+- Bảng cấu hình: thêm `enableReadOnlyPrefilter`, `enableCatastrophicFloor`,
+  `enableGateVerdictCache`, `gateVerdictCacheMax`, `gateVerdictCacheMargin`;
+  xoá `authorizationTimeoutMs` (config chết sau khi bỏ call LLM thứ hai).
+- Số liệu cập nhật: prefilter 37,4% → **14,0%**; test **305 check** + corpus 83 lệnh.
+
 ## [0.10.2] — 2026-10-02
 
 Sửa nguyên nhân gốc của **381 lỗi `TypeError: fetch failed`** (25% số call Jev

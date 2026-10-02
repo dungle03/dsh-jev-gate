@@ -23,13 +23,19 @@ phải làm bộ não thứ hai.
 |---|---|---|---|---|
 | **1** · Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
 | **1₀** · Prefilter chỉ-đọc | `tools/pre-execute` (trước lớp 1) | (phân tích cục bộ — không gọi Jev) | — | **bật** |
-| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | User có thật sự yêu cầu xoá đúng thứ này không? | `choice` | **bật** |
+| **1ᶜ** · Cache verdict | `tools/pre-execute` (trước khi gọi Jev) | (khoá `tool+command+cwd` — không gọi Jev) | — | **bật** |
+| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi lớp 1 chặn) | (provenance tất định — không gọi Jev) | — | **bật** |
 | **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | **3** · Chọn effort | `agent/request` | (luật tất định — không gọi Jev) | — | **bật** (sticky theo turn) |
 | **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Tool vừa lỗi — retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | (tự gọi `jev_review` khi turn xong và diff đủ lớn) | tool MCP | **bật** |
 | **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | (chạy `jg` khi việc là "tìm X nằm ở đâu") | CLI `jg` | **bật** |
+
+Ba lớp **không gọi Jev**: **1₀** (prefilter chỉ-đọc), **1ᶜ** (cache verdict), **1b**
+(provenance quyền user) và **3** (chọn effort). Đây là các quyết định suy ra được
+từ cú pháp lệnh / exit code / nguồn gốc — nguyên tắc: cái gì code suy ra được thì
+đừng gọi model.
 
 Lớp 3 KHÔNG gọi Jev. Mặc định `low`; nâng `high` chỉ khi turn trước có bằng chứng
 thất bại ĐO ĐƯỢC (≥2 tool error hoặc ≥1 test fail). Sticky trong turn.
@@ -191,7 +197,15 @@ nghe lại điều suy ra được bằng phân tích cú pháp cục bộ rẻ 
 Ở p50 289ms và 718 token/call, đó là khoản chi lớn nhất của gate.
 
 `lib/readonly.mjs` trả `true` chỉ khi **chứng minh được** lệnh không thể ghi.
-Trần phủ sót đo trên **3.197 lệnh bash thật** của chính máy này: **37,4%**.
+
+**v0.10.0 — thêm vòng `for..do..done`.** Phân tích ở tầng token: một vòng
+`for VAR in <list literal>; do <body>; done` được coi là chỉ-đọc khi thân — sau
+khi thay `$VAR` bằng placeholder **không phải lệnh** (`__LOOPVAR__`) — chứng minh
+được là chỉ-đọc. Mọi nghi ngờ (`$()`/backtick/heredoc/redirect ghi/`$VAR` ở vị trí
+lệnh/for lồng) → `false`.
+
+Đo trên log thật (3.260 lệnh `allow` của gate): prefilter phủ **0,03%** trước
+v0.10.0 → **14,0%** sau (457 lệnh nhận, 455 trong đó chứa token `for`).
 
 Ba lần đo liên tiếp cho thấy quét regex sai theo cả hai hướng — bản đầu dùng
 `\bdsh\b` để chặn lệnh `dsh` nhưng khớp luôn đường dẫn `~/.dsh/` và giết oan
@@ -201,9 +215,10 @@ xét tên lệnh theo **vị trí** thay vì khớp chuỗi.
 
 Đây KHÔNG phải nới lỏng bảo vệ. Mọi nghi ngờ — heredoc, backtick, redirect ghi,
 `$()` (kể cả trong nháy kép), `find -delete`, `sed -i`, `git reset`, trình thông
-dịch, lệnh lạ — đều rơi xuống đường Jev như cũ. `tests/offline.mjs` chạy **242
-lệnh phá dữ liệu** và yêu cầu **0 lệnh được phép lọt**, cộng **384 biến thể fuzz
-đột biến**.
+dịch, lệnh lạ — đều rơi xuống đường Jev như cũ. `tests/offline.mjs` chạy **329
+lệnh phá dữ liệu** và yêu cầu **0 lệnh được phép lọt**, cộng **384 + 39 biến thể
+fuzz**. `tests/attack-corpus.mjs` chạy thêm **83 lệnh tấn công** độc lập (56 vòng
+for nguy hiểm + 16 luôn-deny + 11 cặp ngụy trang) — yêu cầu **0 lọt**.
 
 **Danh sách trắng hẹp hơn trực giác, và đó là kết quả của đo đạc.** Bản đầu viết
 theo suy luận đã để lọt **12 dạng**, tìm ra bằng cách chạy `--help` thật rồi thử
@@ -227,36 +242,51 @@ thật cho thấy `rm -rf /tmp/gtest` (thư mục test do chính session tạo) 
 p=0.77, trong khi `rm -rf <path không tồn tại>` chỉ 0.40 — nên dọn rác hợp lệ bị
 chặn oan và phải thử lại nhiều lần (một lệnh bị chặn **7 lần** liên tiếp).
 
-Lớp mới chỉ chạy **khi** lớp 1 đã kết luận lệnh là phá dữ liệu, và chỉ để trả
+Lớp này chỉ chạy **khi** lớp 1 đã kết luận lệnh là phá dữ liệu, và chỉ để trả
 lời một câu: user có tự tay yêu cầu xoá đúng thứ đó không. Chặn chỉ xảy ra khi
 hội đủ hai điều — **phá dữ liệu VÀ không được user yêu cầu**:
 
 ```
-p ≥ 0.7  ──► hỏi tiếp "user có yêu cầu không?"
-              ├── authorized        ──► CHO CHẠY
-              └── narrower/unrelated/quoted ──► CHẶN
+p ≥ 0.7  ──► kiểm provenance: target có trong yêu cầu THẬT của user?
+              ├── có    ──► CHO CHẠY  (allow_authorized)
+              └── không / không chứng minh được ──► CHẶN (deny)
 ```
 
-Bốn nhánh `choice` thay vì `noul` vì chúng là bốn tình huống khác nhau về bản
-chất, không phải bốn mức của một đại lượng — nên không phải chọn ngưỡng, và
-nhánh `quoted` chặn được nội dung dán vào tự nhận quyền.
-
-Đo trên API thật (`jev-1.13.0`, 6–10 lần/case):
-
-| Nhóm | Kết quả |
-|---|---|
-| Nội dung dán vào tự nhận quyền (web/README/log, nhờ dịch/tóm tắt, giả mạo "user đã phê duyệt") | **0/66** ra `authorized` |
-| Lệnh nguy hiểm không được yêu cầu (không liên quan, mơ hồ, mở rộng phạm vi) | **0/48** ra `authorized` |
-| Dọn dẹp hợp lệ user yêu cầu (đúng path, glob, cache, session scratch) | **46/48** ra `authorized` |
+**v0.9.0 — bỏ call LLM thứ hai.** Bản cũ hỏi Jev một câu `choice` ("user có yêu
+cầu không?") — một round-trip nữa nằm TRÊN đường tới hạn của mọi lệnh bị chặn.
+Nay suy quyền từ **provenance tất định**: trích target của lệnh (đường dẫn/tên
+file của `rm`/`mv`/`truncate`/…) rồi so khớp chuỗi con với tin nhắn **thật** của
+user. Đo trên hook thật: trước = **2** request Jev mỗi lần gate chặn
+(`destructive` + `authorized`), sau = **1** (`destructive`), và khi không chứng
+minh được thì **0** request bổ sung.
 
 Bằng chứng `user_request` **chỉ** lấy tin nhắn thật của user (`source.kind ===
 'user'`). Trước đây `notePrompt` gộp mọi message `role=user` — kể cả output job
 nền (`tool-jobs`) và gợi ý do chính plugin chèn — nên nội dung không tin cậy có
-thể lọt vào trường "yêu cầu của user".
+thể lọt vào trường "yêu cầu của user". Provenance tất định dùng đúng nguồn này.
 
-Lớp này **fail-closed**: hỏi lỗi/timeout thì giữ nguyên hành vi chặn. Khác lớp 1
-(fail-open) — vì đây là lớp phòng thủ, lỗi của Jev không được biến thành "cho qua".
+Lớp này **fail-closed**: không chứng minh được thì CHẶN. Khác lớp 1 (fail-open) —
+vì đây là lớp phòng thủ, "không biết" phải nghiêng về phía an toàn.
 
+### Vì sao có lớp "Cache verdict" (1ᶜ)
+
+Gate gọi Jev cho mỗi lệnh `bash`. Đo trên log thật: **~6,4%** lệnh `allow` là
+**chuỗi trùng y hệt** (cùng tool + command + cwd) — round-trip thuần lãng phí,
+vì verdict cho một lệnh byte-identical là cùng một phân phối.
+
+Khoá cache = `tool + command (nguyên văn) + cwd + declared workdir`. Chỉ cache
+verdict **rõ ràng**: `allow` (p cách ngưỡng xa) và `deny`. **`fail_open` KHÔNG
+bao giờ cache** — lỗi tạm thời không được đóng băng thành verdict.
+
+**v0.10.1 — không cache sát ngưỡng.** Jev **không tất định**: đo trên `jev-1.13.0`,
+`rm -f <file>` cho p vắt qua ngưỡng 0,7 (`0.67, 0.68, 0.69, 0.70`). Nếu cache một
+lần rơi mẫu `< ngưỡng` (allow) thì mọi lần sau phục vụ p cũ, **bỏ qua** các mẫu
+`≥ ngưỡng` lẽ ra phải chặn — cache biến deny thành allow. Nên `gateVerdictCacheMargin`
+(mặc định `0.1`) chặn cache khi `|p − threshold| ≤ margin`; verdict cách ngưỡng
+đủ xa thì dao động không đổi kết quả.
+
+Trần bộ nhớ `gateVerdictCacheMax` (500) với eviction FIFO + LRU-touch khi hit.
+Tắt bằng `enableGateVerdictCache: false`.
 
 ## Kiến trúc
 
@@ -269,15 +299,17 @@ dsh-jev-gate
 │
 ├── LỚP 1 · gate phá dữ liệu          hook: tools/pre-execute
 │   ├── LỚP 1₀ · prefilter chỉ-đọc (phân tích cục bộ, KHÔNG gọi Jev)
-│   │   └── chứng minh được chỉ-đọc ──► cho chạy ngay (37,4% lệnh thật)
+│   │   └── chứng minh được chỉ-đọc ──► cho chạy ngay (14,0% lệnh thật)
+│   ├── LỚP 1ᶜ · cache verdict (khoá tool+command+cwd, KHÔNG gọi Jev)
+│   │   └── trùng khoá + p cách ngưỡng xa ──► dùng lại verdict cũ (6,4%)
 │   └── còn lại ──► hỏi Jev (noul): "lệnh này có phá dữ liệu không thể khôi phục?"
 │       ├── p < 0.7  ──► cho chạy
-│       └── p ≥ 0.7  ──► hỏi tiếp LỚP 1b
+│       └── p ≥ 0.7  ──► xét tiếp LỚP 1b
 │
 ├── LỚP 1b · quyền của user            hook: tools/pre-execute (chỉ khi lớp 1 chặn)
-│   └── hỏi Jev (choice): "user có yêu cầu xoá đúng thứ này không?"
-│       ├── authorized ──► cho chạy
-│       └── narrower/unrelated/quoted ──► CHẶN
+│   └── provenance TẤT ĐỊNH (KHÔNG gọi Jev): target có trong yêu cầu THẬT của user?
+│       ├── có ──► cho chạy (allow_authorized)
+│       └── không / không chứng minh được ──► CHẶN (fail-closed)
 │
 ├── LỚP 2 · kiểm hoàn thành           hook: agent/turn-stopping
 │   └── hỏi Jev (noul ×3): "xong chưa? có bằng chứng chưa? có cần thi hành không?"
@@ -285,7 +317,8 @@ dsh-jev-gate
 │       └── chưa xong / thiếu bằng chứng ──► đẩy làm tiếp
 │
 ├── LỚP 3 · chọn mức suy nghĩ         hook: agent/request
-│   └── hỏi Jev (choice): "bước tới cần nghĩ nhiều không?"
+│   └── LUẬT TẤT ĐỊNH (KHÔNG gọi Jev): mặc định low; nâng high khi turn
+│       trước có ≥2 tool error hoặc ≥1 test fail; sticky trong cùng turn
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
 │
 ├── LỚP 4+5 · chọn hướng + chọn file  hook: agent/pre-step (chỉ step 1)
@@ -340,14 +373,16 @@ LỚP 4+5 · agent/pre-step   chỉ step 1, MỘT request Jev:
 LỚP 8 · agent/pre-step     chỉ step 1, chỉ khi task là "tìm X ở đâu":
       │                    → chạy `jg`, chèn trích nguồn verbatim (không sửa gì)
       ▼
-LỚP 3 · agent/request      mỗi lần gọi model: bước tới cần nghĩ nhiều không?
+LỚP 3 · agent/request      mỗi lần gọi model: chọn reasoningEffort (luật tất định)
       │                    → ghi reasoningEffort, provider và model GIỮ NGUYÊN
       ▼
 LLM sinh phản hồi hoặc gọi tool
       │
       ▼
 LỚP 1 · tools/pre-execute  chỉ với bash/pwsh: lệnh này có phá dữ liệu không?
-      │                    → p ≥ 0.7 thì CHẶN (qua LỚP 1b xét quyền user)
+      │                    1₀ prefilter chỉ-đọc → cho chạy (không gọi Jev)
+      │                    1ᶜ cache trùng khoá  → dùng lại verdict (không gọi Jev)
+      │                    còn lại → hỏi Jev; p ≥ 0.7 thì qua LỚP 1b xét provenance
       ▼
 LỚP 6 · tools/post-execute tool vừa lỗi: retry / đổi cách / điều tra / báo user
       │                    → chèn gợi ý cho step kế tiếp
@@ -452,7 +487,6 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     contextMaxFiles: 3          # số file tối đa nêu trong gợi ý
     failureMaxPerTurn: 2        # số lần gợi ý phục hồi tối đa mỗi turn
     gateTimeoutMs: 2000
-    authorizationTimeoutMs: 4000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
     spawnTimeoutMs: 6000
@@ -475,7 +509,12 @@ Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Pl
     jevGrepBackground: true     # chạy jg NỀN, không chặn turn (cold ~2 phút/truy vấn mới)
     jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
     enableDestructiveGate: true
-    enableAuthorizationOverride: true   # lớp "quyền của user" — tắt thì chặn mọi lệnh phá dữ liệu
+    enableReadOnlyPrefilter: true       # lớp 1₀ — chứng minh chỉ-đọc thì bỏ qua Jev
+    enableCatastrophicFloor: true       # sàn tất định (rm -rf /, mkfs…) — deny cứng, không fail-open
+    enableGateVerdictCache: true        # lớp 1ᶜ — cache verdict theo (tool, command, cwd)
+    gateVerdictCacheMax: 500            # trần số entry cache (FIFO + LRU-touch)
+    gateVerdictCacheMargin: 0.1         # không cache khi |p − threshold| ≤ margin (Jev không tất định)
+    enableAuthorizationOverride: true   # lớp 1b provenance — tắt thì chặn mọi lệnh phá dữ liệu
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
@@ -492,7 +531,8 @@ Thiếu nó thì lớp này tự tắt im lặng — không có lỗi, không ch
 
 ```bash
 bash verify.sh              # 7 mục, cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs      # 159 check, không cần secret
+node tests/offline.mjs      # 305 check, không cần secret
+node tests/attack-corpus.mjs # corpus tấn công độc lập — yêu cầu 0 lọt
 node tests/live-check.mjs   # 24 check, chỉ cần TYPESAFE_API_KEY + mạng
 ```
 
@@ -501,8 +541,13 @@ node tests/live-check.mjs   # 24 check, chỉ cần TYPESAFE_API_KEY + mạng
 - `tests/offline.mjs` — kiểm không cần secret: fail-open, bất biến model, chỉ
   gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export, và
   Lớp 8 (parse output `jg`, nhận diện task tìm-kiếm / lệnh dò tìm thô, trần mỗi
-  turn, fail-open). Test Lớp 8 dùng một script `jg` **giả** trên PATH — không bao
-  giờ gọi `jg` thật, nên chạy được trong CI không có mạng lẫn không có `jg`.
+  turn, fail-open), prefilter vòng `for`, cache verdict (bất biến an toàn, không
+  cache sát ngưỡng), provenance 1b end-to-end qua hook thật. Test Lớp 8 dùng một
+  script `jg` **giả** trên PATH — không bao giờ gọi `jg` thật, nên chạy được
+  trong CI không có mạng lẫn không có `jg`.
+- `tests/attack-corpus.mjs` — corpus tấn công độc lập (56 vòng `for` nguy hiểm +
+  16 lệnh phá luôn-deny + 11 cặp ngụy trang). Mutation test chứng minh corpus có
+  răng: tiêm lỗi giả → 12–16/83 lọt, corpus báo LỖ HỔNG.
 - `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
 - `tools/repair-session-source.mjs` — vá session log cũ bị hỏng do bản < 0.3.1 ghi
   `source` dạng chuỗi trần (xem CHANGELOG 0.3.1). Chạy khi dsh đã tắt:

@@ -22,14 +22,34 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN = join(HERE, '..', 'lib', 'index.mjs');
 
 /**
+ * Tạo thư mục tạm VÀ đăng ký dọn khi tiến trình thoát.
+ *
+ * Mọi `mkdtempSync` trong file này phải đi qua đây. Trước đây chỉ `TMP_LOG_DIR`
+ * và `makeWorkspace` tự dọn; ~10 chỗ khác (`effort`, `cache`, `breaker`, `bg`,
+ * `logpath`…) tạo mà không xoá — đo được **595 thư mục `jev-gate-*` rác** trong
+ * /tmp sau các lần chạy test (kể cả khi bị kill giữa đường). Dùng chung một
+ * registry thì không chỗ nào quên được nữa.
+ */
+const TEMP_DIRS = [];
+const tmpDir = (prefix) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TEMP_DIRS.push(dir);
+  return dir;
+};
+process.on('exit', () => {
+  for (const dir of TEMP_DIRS) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
+
+/**
  * Log kiểm định đi vào thư mục tạm, KHÔNG vào `~/.local/share/dsh-jev-gate`.
  *
  * Trước đây test và DSH thật ghi chung một `decisions.jsonl`, nên log quyết định
  * thật bị trộn 575 dòng `boot` và hàng trăm `jev_error` giả (key test) — mọi số
  * đo trên log phải lọc tay. Giờ `apply()` nhận `logDir`, test trỏ vào đây.
  */
-const TMP_LOG_DIR = mkdtempSync(join(tmpdir(), 'jev-gate-test-'));
-process.on('exit', () => { try { rmSync(TMP_LOG_DIR, { recursive: true, force: true }); } catch { /* best effort */ } });
+const TMP_LOG_DIR = tmpDir('jev-gate-test-');
 
 let failed = 0;
 const check = (label, ok, detail) => {
@@ -404,15 +424,8 @@ async function withStubJev(answers, run) {
  * nội dung thư mục thật của máy chạy.
  */
 async function makeWorkspace(files) {
-  const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const root = await mkdtemp(join(tmpdir(), 'jev-gate-test-'));
-  /**
-   * Đăng ký dọn khi tiến trình thoát. Trước đây hàm này chỉ tạo mà không xoá,
-   * nên mỗi lần chạy test để lại một thư mục `jev-gate-test-*` trong /tmp —
-   * đo được 42 thư mục rác sau vài lần chạy. Test tự dọn phần nó tạo.
-   */
-  TEMP_DIRS.push(root);
+  const { writeFile, mkdir } = await import('node:fs/promises');
+  const root = tmpDir('jev-gate-test-');
   for (const file of files) {
     const target = join(root, file);
     await mkdir(dirname(target), { recursive: true });
@@ -420,14 +433,6 @@ async function makeWorkspace(files) {
   }
   return root;
 }
-
-/** Thư mục tạm do test tạo, được xoá khi tiến trình thoát. */
-const TEMP_DIRS = [];
-process.on('exit', () => {
-  for (const dir of TEMP_DIRS) {
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
-  }
-});
 
 {
   const { preStepQuestion } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?ctx=1`);
@@ -936,7 +941,7 @@ async function withCountingJev(answers, run) {
    */
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
     const { readFileSync } = await import('node:fs');
-    const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-effort-'));
+    const logDir = tmpDir('jev-gate-effort-');
     const events = [
       { type: 'tool/result', data: { turn: 1, message: { isError: true } } },
       { type: 'tool/result', data: { turn: 1, message: { isError: true } } },
@@ -980,7 +985,7 @@ async function withCountingJev(answers, run) {
    */
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
     const { readFileSync } = await import('node:fs');
-    const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-effort-sess-'));
+    const logDir = tmpDir('jev-gate-effort-sess-');
     const { handlers } = await loadPlugin({
       llm,
       config: {
@@ -1775,7 +1780,7 @@ console.log('\n12e. Observability — mọi nhánh gate phải ghi `command` đ�
  * khẳng định bản ghi có `command` đúng nội dung.
  */
 {
-  const obsDir = mkdtempSync(join(tmpdir(), 'jev-gate-obs-'));
+  const obsDir = tmpDir('jev-gate-obs-');
   try {
     const { handlers } = await loadPlugin({
       config: {
@@ -1888,7 +1893,7 @@ console.log('\n13. Lớp 8 — leo thang jevgrep (parse, phát hiện, fail-open
 
   // ── B. Đường hook với `jg` giả trên PATH ────────────────────────────────────
   const { mkdirSync, writeFileSync, chmodSync } = await import('node:fs');
-  const fakeBin = mkdtempSync(join(tmpdir(), 'jevgate-jg-'));
+  const fakeBin = tmpDir('jevgate-jg-');
   const fakeJg = join(fakeBin, 'jg');
   // Script đọc biến môi trường để test điều khiển hành vi: thành công / lỗi /
   // output rỗng. Không phụ thuộc `jg` thật.
@@ -2117,7 +2122,7 @@ OUT
     {
       process.env.JEVRGATE_FAKE = 'fail';
       const { readFileSync } = await import('node:fs');
-      const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-breaker-'));
+      const logDir = tmpDir('jev-gate-breaker-');
       const { handlers } = await loadPlugin({
         config: { ...cfgJg, logDir, jevGrepFailureBreaker: 3 },
       });
@@ -2359,7 +2364,7 @@ OUT
     {
       process.env.JEVRGATE_FAKE = 'ok';
       const { readFileSync } = await import('node:fs');
-      const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-bg-'));
+      const logDir = tmpDir('jev-gate-bg-');
       const { handlers } = await loadPlugin({
         config: { ...cfgJg, jevGrepBackground: true, logDir },
       });
@@ -2396,7 +2401,7 @@ OUT
       process.env.JEVRGATE_FAKE = 'ok';
       const { handlers } = await loadPlugin({ config: cfgJg });
       jg.resetAvailabilityCache();
-      const emptyBin = mkdtempSync(join(tmpdir(), 'jevgate-nopath-'));
+      const emptyBin = tmpDir('jevgate-nopath-');
       const savedPath = process.env.PATH;
       process.env.PATH = emptyBin; // không có `jg`
       try {
@@ -2477,7 +2482,7 @@ console.log('\n14. Hợp đồng log quyết định — mọi nhánh Lớp 8 đ
   // đây mới đúng module instance mà plugin đang dùng. (Import kèm `?query` sẽ tạo
   // instance riêng, và `resetAvailabilityCache()` trên đó không chạm tới plugin.)
   const jgMod = await import(pathToFileURL(join(HERE, '..', 'lib', 'jevgrep.mjs')).href);
-  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-log-'));
+  const logDir = tmpDir('jev-gate-log-');
   const { handlers } = await loadPlugin({
     config: {
       logDir,
@@ -2492,7 +2497,7 @@ console.log('\n14. Hợp đồng log quyết định — mọi nhánh Lớp 8 đ
 
   // Nhánh `skip_unavailable`: không có `jg` trên PATH.
   const savedPath = process.env.PATH;
-  const emptyBin = mkdtempSync(join(tmpdir(), 'jev-gate-logpath-'));
+  const emptyBin = tmpDir('jev-gate-logpath-');
   process.env.PATH = emptyBin;
   // `isJevgrepAvailable` nhớ kết quả ở scope module, nên các section trước đã làm
   // cache ấm với `jg` giả. Phải xoá cache thì PATH rỗng mới có tác dụng.
@@ -3585,7 +3590,7 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // (a) HIT ALLOW: hai lần cùng lệnh → allow cả hai, Jev chỉ gọi một lần.
 {
-  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-'));
+  const logDir = tmpDir('jev-gate-cache-');
   await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
     const { handlers } = await loadPlugin({
       config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
@@ -3605,7 +3610,7 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // (b) HIT DENY: chặn rồi chạy lại cùng lệnh → vẫn chặn, Jev chỉ gọi một lần.
 {
-  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-deny-'));
+  const logDir = tmpDir('jev-gate-cache-deny-');
   await withGateCacheJev({ answers: { destructive: 0.9 } }, async (calls) => {
     const { handlers } = await loadPlugin({
       config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
@@ -3688,7 +3693,7 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // (e) fail_open KHÔNG được cache — Jev lỗi hai lần → hai lần gọi, không đóng băng.
 {
-  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-fail-'));
+  const logDir = tmpDir('jev-gate-cache-fail-');
   await withGateCacheJev({ fail: true }, async (calls) => {
     const { handlers } = await loadPlugin({
       config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
