@@ -3,6 +3,40 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.10.0] — 2026-10-02
+
+Giảm call Jev của Lớp 1 (gate phá dữ liệu) — điểm nóng chiếm **68% call** (4.363/6.387
+trong 2 ngày). Hai cơ chế, cả hai đều chứng minh được an toàn.
+
+### Thêm — prefilter nhận vòng `for..do..done` chỉ-đọc
+
+Prefilter cũ phủ **0,03%** lệnh tới Jev (nó bỏ cuộc với mọi lệnh ghép). Nay nó phân tích
+tầng token: một vòng `for VAR in <list literal>; do <body>; done` được coi là chỉ-đọc khi
+thân — sau khi thay `$VAR` bằng placeholder không-phải-lệnh — chứng minh được là chỉ-đọc.
+Mọi nghi ngờ (`$()`/backtick/heredoc/redirect ghi/`$VAR` ở vị trí lệnh/for lồng) → `false`.
+
+- Yield thật: **1 → 457 lệnh allow nhận** (0,03% → **14,0%**).
+- Bất biến an toàn: corpus **329 lệnh phá dữ liệu — 0 lọt**; fuzz 384+39 biến thể — 0 lọt.
+- Bằng chứng thực thi: chạy **bash thật trong sandbox**, chụp hash cây thư mục trước/sau →
+  **0 lỗ hổng** (không lệnh nào vừa được nhận vừa gây hư hại).
+
+### Thêm — cache verdict gate theo `(tool, command, cwd)`
+
+Lệnh trùng y hệt (byte-identical) + cùng cwd là CÙNG một hành động → cache verdict.
+
+- Yield thật: **~6,4%** call gate (lệnh trùng y hệt).
+- **Chỉ cache verdict rõ ràng:** `allow` (p < ngưỡng) và `deny` (đã qua Lớp 1b).
+  **`fail_open` KHÔNG bao giờ cache** — lỗi tạm thời không được đóng băng.
+- Khoá dùng chuỗi command byte-identical (không chuẩn hoá) + cwd. Trần bộ nhớ có eviction.
+- Cờ `enableGateVerdictCache` (mặc định `true`).
+- Bất biến: cache `deny` → lần sau vẫn `deny`; cache `allow` → vẫn `allow`; khác 1 ký tự
+  hoặc khác cwd → miss. Kiểm bằng probe độc lập chạy qua hook thật `tools/pre-execute`.
+
+### Tổng yield
+
+**~20,5% call Jev của gate** (457 prefilter + 210 cache trên 3.260 lệnh allow) — không
+đánh đổi an toàn: 0 lệnh phá dữ liệu nào lọt qua 83-lệnh corpus tấn công độc lập.
+
 ## [0.9.0] — 2026-10-02
 
 Đợt tối ưu sau khi 0.8.2 chạy thật. Ba việc: hai lỗi "lớp im lặng" ở Lớp 1b và
