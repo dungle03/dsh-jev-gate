@@ -1631,6 +1631,139 @@ console.log('\n7b. Provenance tất định — thay call LLM authorization (fai
     commandTargetsInUserRequest('xoá /tmp/gtest', 'sudo rm -rf /tmp/gtest') === true);
 }
 
+console.log('\n7c. Lớp 1b end-to-end — hook thật, KHÔNG còn call LLM thứ hai');
+
+/**
+ * Kiểm tích hợp ĐẦU-CUỐI: chạy handler `tools/pre-execute` thật với Jev stub,
+ * để chứng minh đường quyết định mới hoạt động trong chính hook — không chỉ
+ * hàm thuần. Đồng thời đếm SỐ REQUEST tới Jev: gate chặn phải chỉ còn ĐÚNG MỘT
+ * (câu hỏi destructive), không còn request `authorized` thứ hai.
+ *
+ * Stub ghi lại mọi `questions` id đã thấy; nếu Lớp 1b còn gọi LLM thì sẽ thấy
+ * id `authorized` — test sẽ FAIL.
+ */
+{
+  const gateRun = async ({ command, userText, answers = { destructive: 0.9 } }) => {
+    let seenIds = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const ids = Object.keys(body.questions);
+      seenIds.push(...ids);
+      const payload = {
+        model: 'jev-stub',
+        answers: Object.fromEntries(ids.map((id) => {
+          const value = answers[id];
+          if (value === undefined) throw new Error(`stub has no answer for "${id}"`);
+          const question = body.questions[id];
+          if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+          return [id, { type: 'choice', choice: value, confidence: 0.9 }];
+        })),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    try {
+      const { handlers } = await loadPlugin({
+        config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+      });
+      const session = {
+        snapshotEvents: () => [{
+          type: 'user/message',
+          data: { message: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } },
+        }],
+      };
+      const out = await handlers['tools/pre-execute'][0](
+        { name: 'bash', arguments: { command }, agent: { cwd: '/tmp', session }, signal: new AbortController().signal },
+        async () => ({ kind: 'allow' }),
+      );
+      return { out, seenIds };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  // (a) user nêu đúng target → hook cho qua, và CHỈ MỘT request tới Jev.
+  {
+    const { out, seenIds } = await gateRun({ command: 'rm -rf /tmp/gtest', userText: 'xoá /tmp/gtest giúp tôi' });
+    check('(a) hook: target có trong yêu cầu → allow', out.kind === 'allow', `kind=${out.kind}`);
+    check('(a) chỉ MỘT request Jev, KHÔNG có câu `authorized`',
+      seenIds.length === 1 && seenIds[0] === 'destructive',
+      `ids=${seenIds.join(',')}`);
+  }
+
+  // (b) user KHÔNG nêu target → hook chặn.
+  {
+    const { out, seenIds } = await gateRun({ command: 'rm -rf /tmp/gtest', userText: 'sửa bug login giúp tôi' });
+    check('(b) hook: target không có trong yêu cầu → deny', out.kind === 'deny', `kind=${out.kind}`);
+    check('(b) vẫn chỉ MỘT request Jev', seenIds.length === 1 && seenIds[0] === 'destructive',
+      `ids=${seenIds.join(',')}`);
+  }
+
+  // (c) không có tin nhắn user thật (chỉ tool-jobs) → deny (fail-closed).
+  {
+    let seenIds = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const ids = Object.keys(body.questions);
+      seenIds.push(...ids);
+      const payload = {
+        model: 'jev-stub',
+        answers: Object.fromEntries(ids.map((id) => [id, { type: 'noul', noul: 0.9 }])),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    try {
+      const { handlers } = await loadPlugin({
+        config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+      });
+      const session = { snapshotEvents: () => [
+        { type: 'user/message', data: { message: { role: 'user', source: { kind: 'tool-jobs' }, content: [{ type: 'text', text: 'rm -rf /tmp/gtest' }] } } },
+      ] };
+      const out = await handlers['tools/pre-execute'][0](
+        { name: 'bash', arguments: { command: 'rm -rf /tmp/gtest' }, agent: { cwd: '/tmp', session }, signal: new AbortController().signal },
+        async () => ({ kind: 'allow' }),
+      );
+      check('(c) hook: không có user thật → deny (fail-closed)', out.kind === 'deny', `kind=${out.kind}`);
+      check('(c) nội dung tool-jobs không tự cấp quyền', seenIds.length === 1, `ids=${seenIds.join(',')}`);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // (d) enableAuthorizationOverride:false → deny cứng, không đọc session.
+  {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const ids = Object.keys(body.questions);
+      const payload = {
+        model: 'jev-stub',
+        answers: Object.fromEntries(ids.map((id) => [id, { type: 'noul', noul: 0.9 }])),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    try {
+      const { handlers } = await loadPlugin({
+        config: { enableDestructiveGate: true, enableAuthorizationOverride: false, enableCompletionCheck: false, enableEffortRouting: false },
+      });
+      const session = { snapshotEvents: () => [
+        { type: 'user/message', data: { message: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'xoá /tmp/gtest' }] } } },
+      ] };
+      const out = await handlers['tools/pre-execute'][0](
+        { name: 'bash', arguments: { command: 'rm -rf /tmp/gtest' }, agent: { cwd: '/tmp', session }, signal: new AbortController().signal },
+        async () => ({ kind: 'allow' }),
+      );
+      check('(d) tắt override → deny cứng dù user có yêu cầu', out.kind === 'deny', `kind=${out.kind}`);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+}
+
 console.log('\n13. Lớp 8 — leo thang jevgrep (parse, phát hiện, fail-open, trần)');
 
 /**
