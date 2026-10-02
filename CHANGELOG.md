@@ -3,6 +3,31 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.10.1] — 2026-10-02
+
+Sửa hai lỗ hổng quan sát/an toàn do kiểm định phản biện và end-to-end phát hiện.
+
+### Sửa — cache verdict KHÔNG đóng băng `allow` sát ngưỡng
+
+**Lỗ hổng thật** (đo trên Jev thật jev-1.13.0): Jev KHÔNG tất định — `rm -f <file>`
+cho p vắt qua ngưỡng 0,7 (`0.67, 0.68, 0.69, 0.70`). Cache một lần rơi mẫu
+`< ngưỡng` (allow) thì mọi lần sau phục vụ p cũ, **bỏ qua** các mẫu `≥ ngưỡng`
+lẽ ra phải chặn — biến 2 quyết định deny thành allow.
+
+- Thêm `gateVerdictCacheMargin` (mặc định `0.1`): **không cache** khi
+  `|p − threshold| ≤ margin`. Verdict cách ngưỡng đủ xa thì dao động không đổi
+  kết quả, nên cache an toàn; vùng sát ngưỡng luôn hỏi lại Jev.
+- Test hồi quy (i): dãy p `[0.68, 0.72, 0.70]` → lần 2 phải DENY (không đóng băng
+  allow); lệnh xa ngưỡng (0.1) vẫn cache.
+
+### Sửa — bản ghi `allow_readonly` ghi kèm `command`
+
+Bản ghi prefilter chỉ có `{tool, decision}` → không audit được cái gì đã được cho
+qua. Nay ghi `command` (cắt 400 ký tự) như `allow`/`deny`. Test (12e) khoá bất biến.
+
+### Kiểm định
+- 280 check offline PASS; corpus tấn công 83 lệnh — **0 lọt**.
+
 ## [0.10.0] — 2026-10-02
 
 Giảm call Jev của Lớp 1 (gate phá dữ liệu) — điểm nóng chiếm **68% call** (4.363/6.387

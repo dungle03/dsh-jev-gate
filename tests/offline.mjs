@@ -1764,6 +1764,44 @@ console.log('\n7c. Lớp 1b end-to-end — hook thật, KHÔNG còn call LLM th�
   }
 }
 
+console.log('\n12e. Observability — mọi nhánh gate phải ghi `command` để audit');
+
+/**
+ * Bản ghi `destructive_gate` phải kèm `command` ở MỌI nhánh quyết định, kể cả
+ * `allow_readonly` (prefilter). Không có `command` thì không trả lời được "gate
+ * đã cho qua cái gì" — đúng lỗ hổng quan sát đã gặp ở bản ghi `allow` cũ.
+ *
+ * Kiểm trực tiếp: chạy handler thật với một lệnh prefilter nhận (chỉ-đọc) và
+ * khẳng định bản ghi có `command` đúng nội dung.
+ */
+{
+  const obsDir = mkdtempSync(join(tmpdir(), 'jev-gate-obs-'));
+  try {
+    const { handlers } = await loadPlugin({
+      config: {
+        logDir: obsDir,
+        enableDestructiveGate: true, enableReadOnlyPrefilter: true,
+        enableCompletionCheck: false, enableEffortRouting: false,
+      },
+    });
+    const cmd = 'for f in a.txt b.txt; do cat "$f"; done';
+    await handlers['tools/pre-execute'][0](
+      { name: 'bash', arguments: { command: cmd }, agent: { cwd: '/tmp', session: { snapshotEvents: () => [] } }, signal: new AbortController().signal },
+      async () => ({ kind: 'allow' }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const { readFileSync } = await import('node:fs');
+    const rows = readFileSync(join(obsDir, 'decisions.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const rec = rows.find((r) => r.type === 'destructive_gate' && r.decision === 'allow_readonly');
+    check('prefilter hit ghi `allow_readonly`', Boolean(rec), `rec=${JSON.stringify(rec)}`);
+    check('bản ghi `allow_readonly` có `command` (audit được)', Boolean(rec && rec.command), `command=${rec && rec.command}`);
+    check('`command` đúng nội dung lệnh', Boolean(rec && rec.command === cmd), `got=${rec && rec.command}`);
+  } finally {
+    try { rmSync(obsDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
 console.log('\n13. Lớp 8 — leo thang jevgrep (parse, phát hiện, fail-open, trần)');
 
 /**
@@ -3471,6 +3509,46 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-off' });
     await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-off' });
     check('(h) enableGateVerdictCache:false → không cache, gọi Jev 2 lần', calls() === 2, `calls=${calls()}`);
+  });
+}
+
+/**
+ * (i) HỒI QUY — KHÔNG cache verdict sát ngưỡng.
+ *
+ * Lỗ hổng thật (do subagent phản biện đo trên Jev thật): `rm -f <file>` cho p vắt
+ * qua ngưỡng 0,7 (`0.67, 0.68, 0.69, 0.70`). Cache một lần rơi mẫu `< ngưỡng`
+ * (allow) thì mọi lần sau phục vụ p cũ, BỎ QUA các mẫu `≥ ngưỡng` lẽ ra phải
+ * chặn. Test mô phỏng đúng dãy p đó và khẳng định:
+ *   - lệnh SÁT ngưỡng (0.68, |p−0.7|=0.02 ≤ 0.1) KHÔNG được cache → lần 2 gọi
+ *     Jev lại và theo mẫu mới (0.72) → DENY (không bị đóng băng thành allow);
+ *   - lệnh XA ngưỡng (0.1) VẪN cache → lần 2 không gọi Jev.
+ */
+{
+  // Dãy p mô phỏng dao động thật của Jev quanh ngưỡng cho cùng một lệnh.
+  let n = 0;
+  const drift = [0.68, 0.72, 0.70];
+  await withGateCacheJev({ answers: { destructive: () => drift[Math.min(n++, drift.length - 1)] } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const out1 = await callGate(handlers, { command: 'rm -f /tmp/gate-near-threshold' });
+    const callsAfter1 = calls();
+    const out2 = await callGate(handlers, { command: 'rm -f /tmp/gate-near-threshold' });
+    const callsAfter2 = calls();
+    check('(i) p sát ngưỡng (0.68) → lần 1 cho qua', out1.kind === 'allow', `kind=${out1.kind}`);
+    check('(i) KHÔNG cache sát ngưỡng → lần 2 gọi Jev lại', callsAfter2 === callsAfter1 + 1, `calls ${callsAfter1}→${callsAfter2}`);
+    check('(i) lần 2 theo mẫu mới (0.72) → DENY (không đóng băng allow)', out2.kind === 'deny', `kind=${out2.kind}`);
+  });
+}
+{
+  // Lệnh xa ngưỡng vẫn phải cache (giữ lợi ích).
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-far-threshold' });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-far-threshold' });
+    check('(i) p xa ngưỡng (0.1) VẪN cache → Jev gọi 1 lần', calls() === 1, `calls=${calls()}`);
   });
 }
 
