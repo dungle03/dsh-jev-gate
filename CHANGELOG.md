@@ -3,6 +3,63 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [Chưa phát hành]
+
+Đợt tối ưu sau khi 0.8.2 chạy thật. Ba việc: hai lỗi "lớp im lặng" ở Lớp 1b và
+prefilter chỉ-đọc, và bổ sung chỉ số quan sát cho gate — thứ trả lời được câu
+hỏi mà việc đếm thuần không trả lời được.
+
+### Thêm — `gate_useful_ratio` (module `lib/metrics.mjs`)
+
+Gate chạy **11.657 lần** trên log thật (02/10) nhưng chỉ **113 lần `deny`** —
+`useful_ratio ≈ 0,0097`. Đếm số lần chạy không lộ ra điều đó: gate gần như chỉ
+tốn một round-trip API để nói "cho qua". Chỉ số này lộ ra ngay.
+
+- `lib/metrics.mjs` (mới): `summarize(records)` là hàm **thuần** nhận mảng bản
+  ghi đã parse → trả `{ total, allow, deny, fail_open, other, useful_ratio,
+  decisions }`. Không đọc file, không I/O ⇒ test offline được.
+- CLI độc lập, **không hook vào vòng chạy**: `node lib/metrics.mjs [đường-dẫn]`
+  in một dòng JSON. Mặc định đọc `~/.local/share/dsh-jev-gate/decisions.jsonl`.
+- `deny` gộp `deny` / `deny_catastrophic` / `auth_fail_closed` (đều là CHẶN
+  thật); `fail_open` tách riêng vì "Jev lỗi" khác "gate nhạy". Bất biến
+  `allow + deny + fail_open + other == total`.
+- `parseJsonl` đếm `malformed` thay vì ném — log append-only có thể bị cắt giữa
+  dòng, một dòng hỏng không được làm mất toàn bộ số đo.
+
+### Song song (CHƯA hợp nhất vào nhánh `opt/l3-effort`)
+
+Hai việc dưới đây do subagent khác thực hiện ở nhánh riêng. Ở thời điểm viết mục
+này chúng **chưa có trong cây làm việc này** (đã kiểm: `grep provenance lib/` = 0
+khớp; `authorizationQuestion` vẫn được gọi; `isProvablyReadOnly("node -e …")` và
+`("python3 -c …")` đều trả `false`). Ghi lại để khi hợp nhất không mất dấu.
+
+- **Lớp 1b — bỏ call LLM authorization, dùng provenance.** Bản cũ, khi Jev phán
+  lệnh phá dữ liệu, hỏi thêm một call LLM "user có yêu cầu xoá đúng thứ này
+  không?". Đo trên log: lớp này fail-closed phần lớn thời gian và thêm một
+  round-trip nằm TRÊN đường tới hạn của mọi lệnh bị chặn. Hướng sửa: suy quyền từ
+  chính nguồn gốc lệnh (provenance tất định), không hỏi model. *Trạng thái: chưa
+  kiểm chứng được trong nhánh này.*
+
+- **Prefilter `python3 -c` / `node -e`.** ⚠️ **KHÔNG làm theo hướng "mở rộng".**
+  Mục 0.7.x của chính file này đã phân tích và **bác bỏ** ý tưởng coi one-liner
+  Python/Node tuỳ ý là chỉ-đọc: phân tích code động là không khả thi, và đoán bừa
+  ở đây là một lỗ hổng gate ("không thể chứng minh một one-liner Python/Node tuỳ ý
+  là chỉ-đọc"). Code hiện tại đúng như vậy: `node -e`/`python3 -c` trả `false` và
+  đi qua Jev. Nếu có bản sửa nào đó nới điều này, nó cần một bất biến an toàn
+  riêng và **không được** ghi vào changelog như một cải thiện hiển nhiên.
+
+### Test
+
+- **Mục 18** — `summarize`/`parseJsonl`: phân loại từng nhánh, bất biến tổng,
+  mẫu rỗng → `0` (không `NaN`), đầu vào rác không ném, dòng hỏng giữ dòng tốt.
+  Không đọc log thật (dữ liệu sống ⇒ khẳng định sẽ giòn).
+- **Mục 19** — hồi quy Lớp 2: vá `fetch`, khẳng định `signal` đã abort của hook
+  `agent/turn-stopping` **KHÔNG** được truyền xuống Jev. Nếu truyền, `AbortSignal.any`
+  abort ngay và fetch không chạy (`throwIfAborted` ném trước lời gọi) — test bắt được.
+- **Mục 20** — hồi quy Lớp 3: ngưỡng nâng effort đọc từ **config**, không hard-code.
+  Đổi `effortEscalateToolErrors` xuống 3 thì 2 tool error không đủ để nâng; đồng thời
+  khoá hằng số DEFAULTS (2 tool error / 1 test fail / `stopTimeoutMs > 0`).
+
 ## [0.8.2] — 2026-10-01
 
 Sửa HỒI QUY do chính 0.8.1 tạo ra: nâng `jevGrepTimeoutMs` lên 70s biến Lớp 8

@@ -2726,6 +2726,200 @@ console.log('\n16. Prefilter chỉ-đọc — bất biến AN TOÀN và trần p
   check('heredoc → không kết luận', isProvablyReadOnly("cat <<'EOF'\nx\nEOF") === false);
 }
 
+console.log('\n18. Chỉ số `gate_useful_ratio` — hàm thuần, không đọc file khi test');
+
+/**
+ * `summarize` là hàm THUẦN nhận mảng bản ghi đã parse. Test không đọc
+ * `~/.local/share/dsh-jev-gate/decisions.jsonl` thật: log máy chạy là dữ liệu
+ * sống, đổi mỗi lần DSH chạy, nên mọi khẳng định trên nó sẽ giòn. Ở đây chỉ
+ * kiểm HỢP ĐỒNG của hàm — phân loại nhánh, biên, và các trường hợp suy biến.
+ */
+{
+  const { summarize, parseJsonl } = await import(
+    `${pathToFileURL(join(HERE, '..', 'lib', 'metrics.mjs')).href}?m=1`
+  );
+
+  // Phân loại đúng từng nhánh quyết định của `destructive_gate`.
+  const stats = summarize([
+    { type: 'destructive_gate', decision: 'allow' },
+    { type: 'destructive_gate', decision: 'allow' },
+    { type: 'destructive_gate', decision: 'allow_readonly' },
+    { type: 'destructive_gate', decision: 'allow_authorized' },
+    { type: 'destructive_gate', decision: 'deny' },
+    { type: 'destructive_gate', decision: 'deny_catastrophic' },
+    { type: 'destructive_gate', decision: 'auth_fail_closed' },
+    { type: 'destructive_gate', decision: 'fail_open' },
+    // Loại khác KHÔNG được tính vào mẫu.
+    { type: 'effort_route', decision: 'applied' },
+    { type: 'jev_ok' },
+  ]);
+  check('total chỉ đếm destructive_gate', stats.total === 8, `total=${stats.total}`);
+  check('allow gộp allow/allow_readonly/allow_authorized',
+    stats.allow === 4, `allow=${stats.allow}`);
+  check('deny gộp deny/deny_catastrophic/auth_fail_closed (đều là CHẶN thật)',
+    stats.deny === 3, `deny=${stats.deny}`);
+  check('fail_open tách riêng (Jev lỗi ≠ gate nhạy)', stats.fail_open === 1, `fail_open=${stats.fail_open}`);
+  check('useful_ratio = deny/total', stats.useful_ratio === 0.375, `ratio=${stats.useful_ratio}`);
+  check('trường `gate_useful_ratio` là bí danh của useful_ratio',
+    stats.gate_useful_ratio === stats.useful_ratio, `${stats.gate_useful_ratio}`);
+  check('allow + deny + fail_open + other == total',
+    stats.allow + stats.deny + stats.fail_open + stats.other === stats.total,
+    `${stats.allow}+${stats.deny}+${stats.fail_open}+${stats.other} vs ${stats.total}`);
+
+  /**
+   * Trường hợp SUY BIẾN — đúng trạng thái hiện tại của gate: rất nhiều allow,
+   * rất ít deny. Đây là lý do chỉ số này tồn tại, nên nó phải cho ra số nhỏ
+   * chứ không phải NaN.
+   */
+  const mostlyAllow = summarize(
+    Array.from({ length: 5890 }, () => ({ type: 'destructive_gate', decision: 'allow' }))
+      .concat(Array.from({ length: 113 }, () => ({ type: 'destructive_gate', decision: 'deny' }))),
+  );
+  check('mẫu lệch allow: ratio rất nhỏ, không NaN',
+    mostlyAllow.useful_ratio > 0 && mostlyAllow.useful_ratio < 0.02,
+    `ratio=${mostlyAllow.useful_ratio} total=${mostlyAllow.total}`);
+
+  // Mẫu RỖNG → 0, KHÔNG NaN (một chỉ số không có mẫu phải đọc được).
+  const empty = summarize([]);
+  check('mẫu rỗng → useful_ratio = 0, không NaN',
+    empty.useful_ratio === 0 && empty.total === 0, JSON.stringify(empty));
+
+  // Đầu vào không phải mảng / phần tử rác → không ném.
+  check('đầu vào không phải mảng → không ném',
+    summarize(null).total === 0 && summarize('x').total === 0);
+  check('phần tử null/rác bị bỏ qua, không ném',
+    summarize([null, 42, 'x', { type: 'destructive_gate' }]).total === 1,
+    `total=${summarize([null, 42, 'x', { type: 'destructive_gate' }]).total}`);
+
+  // `parseJsonl` phải chịu được dòng hỏng (log bị cắt giữa dòng) mà không mất mẫu.
+  const parsed = parseJsonl('{"type":"destructive_gate","decision":"deny"}\n\n{ hỏng\n{"type":"destructive_gate","decision":"allow"}\n');
+  check('parseJsonl: bỏ dòng trống, đếm dòng hỏng, giữ dòng tốt',
+    parsed.records.length === 2 && parsed.malformed === 1,
+    `records=${parsed.records.length} malformed=${parsed.malformed}`);
+  check('parseJsonl + summarize: chỉ số đúng trên mẫu đã parse',
+    summarize(parsed.records).useful_ratio === 0.5,
+    `ratio=${summarize(parsed.records).useful_ratio}`);
+}
+
+console.log('\n19. Hồi quy Lớp 2 — KHÔNG truyền `signal` đã abort của hook xuống Jev');
+
+/**
+ * Lỗi thật: `agent/turn-stopping` chạy ĐÚNG LÚC turn đang dừng, nên `signal` của
+ * hook đã abort. Truyền nó vào `AbortSignal.any` làm fetch bị huỷ tức thì —
+ * đo trên log thật: **48/49** lần `completion_check` fail là
+ * `This operation was aborted`. Sửa: dùng `stopTimeoutMs` riêng, KHÔNG truyền
+ * signal của hook.
+ *
+ * Cách kiểm: vá `globalThis.fetch` và đọc `init.signal`. `createJev` gộp
+ * `lifetime` + timeout (+ signal nếu có) vào `AbortSignal.any`. Nếu plugin lỡ
+ * truyền signal đã abort của hook, signal gộp sẽ abort NGAY: `combined.throwIfAborted()`
+ * ném TRƯỚC fetch, nên fetch không được gọi và log ghi `fail_open`. Ngược lại
+ * fetch được gọi với `signal.aborted === false`.
+ */
+{
+  const realFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  let signalAborted = null;
+  globalThis.fetch = async (_url, init) => {
+    fetchCalls += 1;
+    signalAborted = init.signal?.aborted ?? null;
+    const body = JSON.parse(init.body);
+    const ids = Object.keys(body.questions);
+    const payload = {
+      model: 'jev-stub',
+      answers: Object.fromEntries(ids.map((id) => {
+        const question = body.questions[id];
+        // complete=0.1 (chưa xong) để chắc chắn đi hết đường, kể cả nhánh steer.
+        const value = id === 'needs_execution' ? 0.9 : 0.1;
+        if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+        const keys = Object.keys(question.criteria);
+        return [id, { type: 'choice', choice: keys[0], confidence: 0.9, probabilities: Object.fromEntries(keys.map((k) => [k, k === keys[0] ? 1 : 0])) }];
+      })),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false },
+    });
+    const live = {
+      id: 'a-l2-signal',
+      goal: { objective: 'Sửa bug và chạy test' },
+      session: { snapshotEvents: () => [] },
+      steered: [],
+      steer(m) { this.steered.push(m); },
+    };
+    // Signal của hook đã abort — đúng thực tế `agent/turn-stopping`.
+    await handlers['agent/turn-stopping'][0]({ agent: live, turn: 1, signal: AbortSignal.abort() });
+    check('hook signal đã abort KHÔNG được truyền xuống Jev (fetch vẫn chạy)',
+      fetchCalls === 1, `fetchCalls=${fetchCalls}`);
+    check('signal gộp gửi tới Jev KHÔNG ở trạng thái aborted',
+      signalAborted === false, `aborted=${signalAborted}`);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+console.log('\n20. Hồi quy Lớp 3 — ngưỡng nâng effort đọc từ CONFIG, không hard-code');
+
+/**
+ * Bổ sung cho mục 11 (kiểm bằng giá trị mặc định). Ở đây cố định HỢP ĐỒNG:
+ * ngưỡng nâng effort phải lấy từ config, không phải hằng số nằm trong code.
+ * Nếu ai đó hard-code `>= 2`, test đổi ngưỡng xuống 3 sẽ bắt được.
+ */
+{
+  const llm = {
+    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }),
+  };
+  const sessionWith = (results, id) => ({ id, snapshotEvents: () => results });
+  const twoErrors = [
+    { type: 'tool/result', data: { turn: 1, message: { isError: true } } },
+    { type: 'tool/result', data: { turn: 1, message: { isError: true } } },
+  ];
+  const callEffort = async (events, config, id) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, ...config },
+    });
+    const out = await handlers['agent/request'][0](
+      { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(events, id) } },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    return out.reasoningEffort;
+  };
+
+  // Ngưỡng nâng lên 3: 2 lỗi KHÔNG đủ → giữ mặc định.
+  const under = await callEffort(twoErrors, { effortEscalateToolErrors: 3 }, 'sess-under');
+  check('config ngưỡng=3, mới 2 tool error → chưa nâng (đọc config, không hard-code)',
+    under === 'low', `effort=${under}`);
+
+  // Đúng ngưỡng 3 → nâng.
+  const atThreshold = await callEffort(
+    [...twoErrors, { type: 'tool/result', data: { turn: 1, message: { isError: true } } }],
+    { effortEscalateToolErrors: 3 },
+    'sess-at',
+  );
+  check('config ngưỡng=3, đủ 3 tool error → nâng', atThreshold === 'high', `effort=${atThreshold}`);
+
+  // Mức mặc định / mức nâng cũng lấy từ config.
+  const customDefault = await callEffort([], { effortDefault: 'medium' }, 'sess-default');
+  check('effortDefault lấy từ config (medium)', customDefault === 'medium', `effort=${customDefault}`);
+
+  // Hằng số mặc định phải khớp thiết kế (2 tool error / 1 test fail).
+  const mod = await import(`${pathToFileURL(PLUGIN).href}?l3cfg=1`);
+  const validated = mod.Config['~standard'].validate({});
+  const cfg = validated.value ?? validated;
+  check('DEFAULTS: effortDefault=low, effortEscalateTo=high',
+    cfg.effortDefault === 'low' && cfg.effortEscalateTo === 'high',
+    `default=${cfg.effortDefault} to=${cfg.effortEscalateTo}`);
+  check('DEFAULTS: ngưỡng 2 tool error / 1 test fail',
+    cfg.effortEscalateToolErrors === 2 && cfg.effortEscalateTestFailures === 1,
+    `toolErrors=${cfg.effortEscalateToolErrors} testFailures=${cfg.effortEscalateTestFailures}`);
+  check('DEFAULTS: stopTimeoutMs > 0 (ngân sách riêng cho Lớp 2)',
+    Number.isFinite(cfg.stopTimeoutMs) && cfg.stopTimeoutMs > 0, `stopTimeoutMs=${cfg.stopTimeoutMs}`);
+}
+
 console.log(`\n${'─'.repeat(56)}`);
 console.log(failed === 0 ? 'OFFLINE: TẤT CẢ PASS' : `OFFLINE: ${failed} MỤC HỎNG`);
 process.exit(failed === 0 ? 0 : 1);
