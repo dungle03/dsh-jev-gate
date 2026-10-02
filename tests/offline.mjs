@@ -3113,6 +3113,243 @@ console.log('\n20. Hồi quy Lớp 3 — ngưỡng nâng effort đọc từ CONF
     Number.isFinite(cfg.stopTimeoutMs) && cfg.stopTimeoutMs > 0, `stopTimeoutMs=${cfg.stopTimeoutMs}`);
 }
 
+console.log('\n21. Lớp 1 — cache verdict tất định theo (tool, command, cwd, workdir)');
+
+/**
+ * Cache verdict của gate: cùng một lệnh byte-identical trong cùng cwd (và cùng
+ * declared workdir) chỉ hỏi Jev MỘT lần. Đo trên log thật, ~7,6% call Jev-eligible
+ * là chuỗi trùng y hệt, nên đây là round-trip thuần lãng phí.
+ *
+ * Bất biến an toàn tối thượng được kiểm ở đây: cache KHÔNG được làm một lệnh
+ * nguy hiểm chạy mà không cache thì bị chặn. Vì cache chỉ lưu `p` (phán đoán độc
+ * lập hội thoại), nhánh `p >= threshold` vẫn chạy lại Lớp 1b provenance trên mỗi
+ * lần gọi — test (g) chứng minh điều đó.
+ *
+ * Stub đếm số request tới Jev và có thể ném lỗi (để kiểm fail_open không cache).
+ */
+async function withGateCacheJev({ answers = { destructive: 0.1 }, fail = false }, run) {
+  const realFetch = globalThis.fetch;
+  let count = 0;
+  globalThis.fetch = async (_url, init) => {
+    count += 1;
+    if (fail) throw new Error('jev down (stub)');
+    const body = JSON.parse(init.body);
+    const ids = Object.keys(body.questions);
+    const payload = {
+      model: 'jev-stub',
+      answers: Object.fromEntries(ids.map((id) => {
+        const question = body.questions[id];
+        const spec = answers[id] ?? answers['*'];
+        const value = typeof spec === 'function' ? spec(id, count) : spec;
+        if (value === undefined) throw new Error(`stub has no answer for "${id}"`);
+        if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+        const keys = Object.keys(question.criteria);
+        return [id, { type: 'choice', choice: value, confidence: 0.9, probabilities: Object.fromEntries(keys.map((key) => [key, key === value ? 1 : 0])) }];
+      })),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try { return await run(() => count); } finally { globalThis.fetch = realFetch; }
+}
+
+/** Chạy handler `tools/pre-execute` thật với một lệnh/cwd/session cho trước. */
+function callGate(handlers, { command, cwd = '/tmp', agentId = 'a1', sessionId = 'sess-cache', userText } = {}) {
+  const events = userText === undefined ? [] : [{
+    type: 'user/message',
+    data: { message: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } },
+  }];
+  return handlers['tools/pre-execute'][0](
+    {
+      name: 'bash',
+      arguments: { command },
+      agent: { id: agentId, cwd, session: { id: sessionId, snapshotEvents: () => events } },
+      signal: new AbortController().signal,
+    },
+    async () => ({ kind: 'allow' }),
+  );
+}
+
+/** Đọc các dòng `destructive_gate` đã ghi vào logDir tạm. */
+async function gateRows(logDir) {
+  const { readFileSync } = await import('node:fs');
+  return readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((row) => row.type === 'destructive_gate');
+}
+
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// (a) HIT ALLOW: hai lần cùng lệnh → allow cả hai, Jev chỉ gọi một lần.
+{
+  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-'));
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const first = await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-allow' });
+    const second = await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-allow' });
+    check('(a) allow hit: cả hai lần đều allow',
+      first.kind === 'allow' && second.kind === 'allow', `kinds=${first.kind}/${second.kind}`);
+    check('(a) allow hit: Jev chỉ gọi MỘT lần cho lệnh trùng', calls() === 1, `calls=${calls()}`);
+    await sleepMs(250);
+    const rows = await gateRows(logDir);
+    check('(a) log: đúng một dòng allow có `cached:true`',
+      rows.length === 2 && rows.filter((r) => r.cached === true).length === 1,
+      JSON.stringify(rows.map((r) => ({ d: r.decision, c: r.cached }))));
+  });
+}
+
+// (b) HIT DENY: chặn rồi chạy lại cùng lệnh → vẫn chặn, Jev chỉ gọi một lần.
+{
+  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-deny-'));
+  await withGateCacheJev({ answers: { destructive: 0.9 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const first = await callGate(handlers, { command: 'rm -rf /tmp/gate-cache-deny' });
+    const second = await callGate(handlers, { command: 'rm -rf /tmp/gate-cache-deny' });
+    check('(b) deny hit: cả hai lần đều deny',
+      first.kind === 'deny' && second.kind === 'deny', `kinds=${first.kind}/${second.kind}`);
+    check('(b) deny hit: Jev chỉ gọi MỘT lần', calls() === 1, `calls=${calls()}`);
+    await sleepMs(250);
+    const rows = await gateRows(logDir);
+    check('(b) log: dòng deny thứ hai có `cached:true`',
+      rows.length === 2 && rows.filter((r) => r.cached === true).length === 1,
+      JSON.stringify(rows.map((r) => ({ d: r.decision, c: r.cached }))));
+  });
+}
+
+// (c) MISS khi command KHÁC — dù chỉ 1 ký tự / khoảng trắng thừa (byte-identical).
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-x' });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-y' });
+    check('(c) command khác 1 ký tự → miss (gọi Jev lại)', calls() === 2, `calls=${calls()}`);
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-y ' }); // thêm 1 khoảng trắng cuối
+    check('(c) command thêm khoảng trắng cuối → miss (KHÔNG chuẩn hoá)', calls() === 3, `calls=${calls()}`);
+  });
+}
+
+// (d) MISS khi cwd khác — cùng lệnh, cùng session, khác thư mục làm việc.
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-cwd', cwd: '/tmp/a' });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-cwd', cwd: '/tmp/b' });
+    check('(d) cwd khác → miss (gọi Jev lại)', calls() === 2, `calls=${calls()}`);
+  });
+}
+
+// (d2) Cache TOÀN CỤC theo hành động: cùng (tool,command,cwd) khác session → HIT.
+//      `p` là phán đoán về hành động, không phụ thuộc hội thoại; phần phụ thuộc
+//      session (Lớp 1b) KHÔNG được cache nên không rò state giữa các phiên.
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-sess', sessionId: 'sess-A' });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-sess', sessionId: 'sess-B' });
+    check('(d2) cùng (tool,command,cwd) khác session → HIT (cache toàn cục theo hành động)', calls() === 1, `calls=${calls()}`);
+  });
+}
+
+// (d3) MISS khi declared workdir khác — `workdir` nằm trong câu hỏi Jev nên phải
+//      nằm trong khoá; hai workdir khác nhau là hai hành động khác nhau.
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const run = (workdir) => handlers['tools/pre-execute'][0](
+      {
+        name: 'bash', arguments: { command: 'echo hi > /tmp/gate-cache-wd', workdir },
+        agent: { id: 'a1', cwd: '/tmp', session: { id: 's1', snapshotEvents: () => [] } },
+        signal: new AbortController().signal,
+      },
+      async () => ({ kind: 'allow' }),
+    );
+    await run('/tmp/one');
+    await run('/tmp/two');
+    check('(d3) declared workdir khác → miss (workdir nằm trong khoá)', calls() === 2, `calls=${calls()}`);
+    await run('/tmp/one');
+    check('(d3) lặp lại workdir đầu → HIT', calls() === 2, `calls=${calls()}`);
+  });
+}
+
+// (e) fail_open KHÔNG được cache — Jev lỗi hai lần → hai lần gọi, không đóng băng.
+{
+  const logDir = mkdtempSync(join(tmpdir(), 'jev-gate-cache-fail-'));
+  await withGateCacheJev({ fail: true }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const first = await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-failopen' });
+    const second = await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-failopen' });
+    check('(e) Jev lỗi → fail_open (allow), không chặn oan',
+      first.kind === 'allow' && second.kind === 'allow', `kinds=${first.kind}/${second.kind}`);
+    check('(e) fail_open KHÔNG cache → Jev được gọi LẠI', calls() === 2, `calls=${calls()}`);
+    await sleepMs(250);
+    const rows = await gateRows(logDir);
+    check('(e) log: hai dòng fail_open, KHÔNG dòng nào `cached:true`',
+      rows.length === 2 && rows.every((r) => r.decision === 'fail_open' && r.cached === undefined),
+      JSON.stringify(rows.map((r) => ({ d: r.decision, c: r.cached }))));
+  });
+}
+
+// (f) TRẦN BỘ NHỚ — đẩy quá trần thì entry cũ bị evict, không phình.
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false, gateVerdictCacheMax: 5 },
+    });
+    const cmd = (i) => `echo hi > /tmp/gate-cache-lru-${i}`;
+    for (let i = 0; i < 8; i += 1) await callGate(handlers, { command: cmd(i) });
+    check('(f) 8 lệnh khác nhau → 8 lần gọi Jev (chưa hit)', calls() === 8, `calls=${calls()}`);
+    // Khoá #0 đã bị evict (trần 5, FIFO) → phải miss và gọi Jev lại.
+    await callGate(handlers, { command: cmd(0) });
+    check('(f) entry cũ bị evict → lệnh #0 miss, gọi Jev lại', calls() === 9, `calls=${calls()}`);
+    // Khoá mới nhất còn trong cache → hit, KHÔNG gọi thêm.
+    await callGate(handlers, { command: cmd(7) });
+    check('(f) entry mới nhất còn trong cache → hit, không gọi thêm', calls() === 9, `calls=${calls()}`);
+  });
+}
+
+// (g) BẤT BIẾN AN TOÀN: cache `p` KHÔNG đóng băng quyết định deny của Lớp 1b.
+{
+  await withGateCacheJev({ answers: { destructive: 0.9 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    const command = 'rm -rf /tmp/gate-cache-prov';
+    // Lần 1: user KHÔNG nêu target → deny.
+    const first = await callGate(handlers, { command });
+    // Lần 2: CÙNG lệnh (p hit cache) nhưng user nay xác nhận đúng target → phải allow.
+    const second = await callGate(handlers, { command, userText: 'xoá /tmp/gate-cache-prov giúp tôi' });
+    check('(g) cache `p` nhưng Lớp 1b vẫn chạy lại: user xác nhận → allow (không đóng băng deny)',
+      first.kind === 'deny' && second.kind === 'allow', `kinds=${first.kind}/${second.kind}`);
+    check('(g) chỉ MỘT request Jev (p lấy từ cache, Lớp 1b không gọi LLM)', calls() === 1, `calls=${calls()}`);
+  });
+}
+
+// (h) TẮT ĐƯỢC — `enableGateVerdictCache:false` → luôn gọi Jev.
+{
+  await withGateCacheJev({ answers: { destructive: 0.1 } }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      config: { enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false, enableGateVerdictCache: false },
+    });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-off' });
+    await callGate(handlers, { command: 'echo hi > /tmp/gate-cache-off' });
+    check('(h) enableGateVerdictCache:false → không cache, gọi Jev 2 lần', calls() === 2, `calls=${calls()}`);
+  });
+}
+
 console.log(`\n${'─'.repeat(56)}`);
 console.log(failed === 0 ? 'OFFLINE: TẤT CẢ PASS' : `OFFLINE: ${failed} MỤC HỎNG`);
 process.exit(failed === 0 ? 0 : 1);
