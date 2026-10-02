@@ -2635,6 +2635,25 @@ console.log('\n8. Đóng gói — export đúng hợp đồng plugin');
   check('config cũ bị bỏ → log cảnh báo (không im lặng)',
     warns.length === 1 && /effortReuseConfidence/.test(warns[0]),
     `warns=${warns.length} first=${JSON.stringify(warns[0]?.slice(0, 80))}`);
+
+  /**
+   * `authorizationTimeoutMs` đã ngừng dùng ở v0.9.0 (Lớp 1b bỏ call LLM thứ hai).
+   * Người dùng còn khoá này phải được cảnh báo, không bị bỏ im lặng — đây là
+   * bất biến tương thích ngược: xoá config mà không nói gì là cái bẫy.
+   */
+  const warns2 = [];
+  const modC = await import(`${pathToFileURL(PLUGIN).href}?e=3`);
+  const ctxC = {
+    on() {}, effect: (fn) => fn,
+    logger: { info() {}, warn: (m) => warns2.push(m), error() {} },
+    credentials: { resolve: async () => ({ value: 'k' }) },
+    llm: { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }] } }) },
+    get: () => undefined,
+  };
+  await modC.apply(ctxC, { logDir: TMP_LOG_DIR, authorizationTimeoutMs: 4000 });
+  check('authorizationTimeoutMs (đã ngừng dùng) → log cảnh báo',
+    warns2.length === 1 && /authorizationTimeoutMs/.test(warns2[0]),
+    `warns=${warns2.length} first=${JSON.stringify(warns2[0]?.slice(0, 80))}`);
 }
 
 console.log('\n17. Mô tả lỗi — không được im lặng thành "unknown"');

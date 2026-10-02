@@ -5,6 +5,14 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [0.10.3] — 2026-10-02
 
+### Sửa — cảnh báo config đã ngừng dùng (tương thích ngược)
+
+`authorizationTimeoutMs` đã bị xoá khỏi schema (Lớp 1b không còn gọi LLM), nhưng
+nếu người dùng còn đặt khoá này trong `cordis.patch.yml`, `schemastery` bỏ qua
+**im lặng** — họ tưởng nó vẫn tác dụng. Thêm nó vào `RETIRED_CONFIG` để log cảnh
+báo rõ ràng (như đã làm cho `effortReuseConfidence`/`effortMaxReuseSteps`).
+Tổng quát hoá cơ chế để mỗi khoá retired có thông báo riêng.
+
 ### Sửa — test không để lại rác `/tmp`
 
 Các `mkdtempSync` trong `tests/offline.mjs` phần lớn tạo mà **không dọn** — đo
