@@ -5,6 +5,16 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [0.10.3] — 2026-10-02
 
+### Sửa — vẽ lại sơ đồ kiến trúc cho khớp v0.10.3
+
+`assets/architecture.json/.html/.png` còn là bản cũ (30/09): không có lớp **1₀**
+prefilter, **1ᶜ** cache, và mô tả **1b** như hỏi LLM `choice`. Sơ đồ đầu trang
+mâu thuẫn với chính phần chữ của README.
+
+Vẽ lại: gộp 1₀+1ᶜ+1b thành một nút "tất định — KHÔNG gọi Jev", bỏ hai cạnh
+`l2-jev`/`l4-jev` (hai lớp này không gọi Jev), cập nhật card + nhãn. Validate
+`--quality showcase` PASS (0 lỗi, 0 cảnh báo).
+
 ### Sửa — viết lại README cho khớp code
 
 Viết lại `README.md` và `README.en.md` từ code + số đo thật, sửa các sai lệch:

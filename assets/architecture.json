@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "dsh-jev-gate — Jev làm tám chốt chặn cho DSH",
+    "title": "dsh-jev-gate — Jev tại các khoảnh khắc đắt giá của DSH",
     "output": "architecture.html",
     "quality_profile": "showcase"
   },
@@ -11,7 +11,7 @@
       "id": "l1",
       "type": "security",
       "label": "LỚP 1 · gate phá dữ liệu",
-      "sublabel": "tools/pre-execute",
+      "sublabel": "tools/pre-execute · noul",
       "pos": [
         500,
         50
@@ -24,8 +24,8 @@
     {
       "id": "l2",
       "type": "security",
-      "label": "LỚP 1b · quyền của user",
-      "sublabel": "tools/pre-execute (khi lớp 1 chặn)",
+      "label": "LỚP 1₀+1ᶜ+1b · tất định",
+      "sublabel": "prefilter + cache + provenance — KHÔNG gọi Jev",
       "pos": [
         500,
         120
@@ -39,7 +39,7 @@
       "id": "l3",
       "type": "backend",
       "label": "LỚP 2 · kiểm hoàn thành",
-      "sublabel": "agent/turn-stopping",
+      "sublabel": "agent/turn-stopping · noul ×3",
       "pos": [
         500,
         190
@@ -53,7 +53,7 @@
       "id": "l4",
       "type": "backend",
       "label": "LỚP 3 · chọn effort",
-      "sublabel": "agent/request",
+      "sublabel": "luật tất định — KHÔNG gọi Jev",
       "pos": [
         500,
         260
@@ -67,7 +67,7 @@
       "id": "l5",
       "type": "backend",
       "label": "LỚP 4+5 · hướng + file",
-      "sublabel": "agent/pre-step (step 1)",
+      "sublabel": "agent/pre-step · choice + noul ×N",
       "pos": [
         500,
         330
@@ -81,7 +81,7 @@
       "id": "l6",
       "type": "backend",
       "label": "LỚP 6 · phục hồi tool lỗi",
-      "sublabel": "tools/post-execute",
+      "sublabel": "tools/post-execute · choice",
       "pos": [
         500,
         400
@@ -95,7 +95,7 @@
       "id": "l7",
       "type": "backend",
       "label": "LỚP 7 · review chất lượng",
-      "sublabel": "agent/turn-stopping",
+      "sublabel": "turn-stopping · MCP jev_review",
       "pos": [
         500,
         470
@@ -109,7 +109,7 @@
       "id": "l8",
       "type": "backend",
       "label": "LỚP 8 · leo thang tìm nguồn",
-      "sublabel": "agent/pre-step + tools/post-execute",
+      "sublabel": "pre-step + post-execute · CLI jg",
       "pos": [
         500,
         540
@@ -249,18 +249,8 @@
       "to": "jev"
     },
     {
-      "id": "l2-jev",
-      "from": "l2",
-      "to": "jev"
-    },
-    {
       "id": "l3-jev",
       "from": "l3",
-      "to": "jev"
-    },
-    {
-      "id": "l4-jev",
-      "from": "l4",
       "to": "jev"
     },
     {
@@ -302,7 +292,8 @@
       "title": "Chốt chặn an toàn",
       "items": [
         "LỚP 1 · lệnh này có phá dữ liệu không khôi phục được? p ≥ 0.7 → chặn",
-        "LỚP 1b · user có thật sự yêu cầu xoá đúng thứ này? authorized → cho chạy",
+        "LỚP 1₀+1ᶜ · prefilter chỉ-đọc + cache verdict — tất định, bỏ qua Jev",
+        "LỚP 1b · provenance: target có trong yêu cầu THẬT của user? không chứng minh được → chặn",
         "LỚP 2 · xong chưa, có bằng chứng chưa, có cần thi hành không"
       ]
     },
@@ -310,7 +301,7 @@
       "dot": "cyan",
       "title": "Tối ưu vận hành",
       "items": [
-        "LỚP 3 · bước tới cần nghĩ nhiều không; chỉ ghi reasoningEffort",
+        "LỚP 3 · chọn effort bằng luật tất định (low → high khi turn trước lỗi) — không gọi Jev",
         "LỚP 4+5 · hướng nào tối ưu, file nào cần đọc trước",
         "LỚP 6 · tool vừa lỗi: retry / đổi cách / điều tra / báo user",
         "LỚP 7 · turn xong và diff ≥ 20 dòng → tự gọi jev_review",
