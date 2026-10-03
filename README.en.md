@@ -4,233 +4,93 @@
 
 ![dsh-jev-gate architecture](assets/architecture.png)
 
-*Interactive version (pan/zoom, light/dark theme, search): open
+*Interactive diagram (pan/zoom, light/dark theme, search): open
 [`assets/architecture.html`](assets/architecture.html) in a browser.*
 
-Puts [Jev](https://typesafe.ai/) (TypeSafe System One) into **eight high-value
-moments** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), following
-one principle:
+Put [Jev](https://typesafe.ai/) (TypeSafe System One) into the **moments that
+matter** of [DeepSeek Harness](https://github.com/deepseek-ai/dsh), by one rule:
 
-> **The LLM understands and does the work. Jev only answers CLOSED questions at
-> the moments where a wrong decision is expensive.**
+> **The LLM understands and does. Jev only answers a CLOSED question at the
+> moment a wrong decision is expensive.**
+>
+> **If code can derive it, do not call a model.**
 
-Jev does not generate text, does not plan, does not write code. It only scores a
-closed question and returns a probability. This plugin uses Jev as **eight
-checkpoints**, not as a second brain.
+Jev does not generate text, plan, or write code. It grades one closed question
+and returns a probability. This plugin uses Jev as a **checkpoint**, not a second
+brain.
 
-## Eight layers
+## The layers
 
-| Layer | Hook | Question | Type | Default |
+Eight moments where Jev is asked, plus four **deterministic mechanisms that never
+call Jev** (marked `—` in the Type column). Defaults are read straight from
+`DEFAULTS` in `lib/index.mjs`.
+
+| Layer | Hook | Question / mechanism | Type | Default |
 |---|---|---|---|---|
 | **1** · Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
-| **1₀** · Read-only prefilter | `tools/pre-execute` (before layer 1) | (local analysis — no Jev call) | — | **on** |
-| **1ᶜ** · Verdict cache | `tools/pre-execute` (before calling Jev) | (key `tool+command+cwd` — no Jev call) | — | **on** |
-| **1b** · User authorization | `tools/pre-execute` (only when layer 1 blocks) | (deterministic provenance — no Jev call) | — | **on** |
+| **1₀** · Read-only prefilter | `tools/pre-execute` (before 1) | Prove locally the command cannot write → skip Jev | — | **on** |
+| **1ᶜ** · Verdict cache | `tools/pre-execute` (before calling Jev) | Same key `tool+command+cwd` → reuse verdict | — | **on** |
+| **1b** · User authorization | `tools/pre-execute` (only when 1 blocks) | Provenance: is the target in the user's REAL request? | — | **on** |
 | **2** · Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
-| **3** · Effort routing | `agent/request` | (deterministic rules — no Jev call) | — | **on** (sticky per turn) |
-| **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files must be read first? | `choice` + `noul` ×N | **on** |
-| **6** · Tool-failure recovery | `tools/post-execute` | The tool failed — retry, change approach, diagnose, or report? | `choice` | **on** |
-| **7** · Quality review | `agent/turn-stopping` | (auto-calls `jev_review` when the turn ends and the diff is large enough) | MCP tool | **on** |
-| **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | (runs `jg` when the task is "where does X live?") | `jg` CLI | **on** |
+| **3** · Effort routing | `agent/request` | Deterministic rules from the previous turn's signals | — | **on** |
+| **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files to read first? | `choice` + `noul` ×N | **on** |
+| **6** · Tool-failure recovery | `tools/post-execute` | Retry, change approach, diagnose, or report? | `choice` | **on** |
+| **7** · Quality review | `agent/turn-stopping` | Auto-calls `jev_review` when the turn ends and the diff is large | MCP tool | **on** |
+| **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | Runs `jg` when the task is "where does X live?" | `jg` CLI | **on** |
 
-Layer 3 does **not** call Jev. Default `low`; escalate to `high` only when the
-previous turn shows a measured failure signal (≥2 tool errors or ≥1 test
-failure). Sticky within a turn.
+Four mechanisms **never call Jev** — **1₀** prefilter, **1ᶜ** cache, **1b**
+provenance, **3** effort routing. These decisions are derivable from command
+syntax / exit code / message provenance.
 
-**Why the per-request classifier was removed (2026-10-01).** Measured over 120
-consecutive requests: the old mechanism flipped effort `low↔high` on
-**113/120** of them, 54.5% of its decisions had confidence < 0.5, and it burned
-**55%** of all Jev tokens with a ~281 ms call sitting on the critical path. The
-most expensive layer was changing a near-random decision. Research: measured
-signals beat predicted difficulty (arXiv 2505.00127), and a per-step router only
-wins when it is a small *trained* model (<5 ms, arXiv 2603.07915) — not a
-1,180-token API classifier.
+### Why the "Read-only prefilter" layer exists (1₀)
 
-### Why the "Context choice" layer exists
+Layer 1 calls Jev for **every** `bash` command. Measured on the real log
+(2026-09-27 → 09-30): 5,600 calls, **80.7%** of them with `p ≤ 0.02` — mostly API
+round-trips to hear back something derivable by local syntax analysis. At p50
+~289ms and ~718 tokens/call, this is the gate's largest cost.
 
-This is the clearest cost target. Most input tokens are burned by the model
-hunting for the relevant files itself through a chain of tool calls (`glob` →
-`grep` → `read` → read again), when most of those tokens only answer the question
-"which file is worth reading".
+`lib/readonly.mjs` returns `true` only when it can **prove** the command cannot
+write.
 
-The plugin lists candidates by **file name** (one breadth-first `readdir`, ranked
-by tokens matching the task), then asks Jev one `noul` question **per** candidate.
-All questions ride in **one request**, so 13 batched questions cost 271ms — the
-same as a single question. The host applies `contextFileThreshold` (0.6), sorts
-by probability, and truncates to `contextMaxFiles` (3).
+**v0.10.0 — added the `for..do..done` loop.** Token-level analysis: a
+`for VAR in <literal list>; do <body>; done` loop counts as read-only when the
+body — after replacing `$VAR` with a placeholder that is **not a command**
+(`__LOOPVAR__`) — is proven read-only. Any doubt (`$()`/backtick/heredoc/write
+redirect/`$VAR` in command position/nested for) → `false`.
 
-Why N `noul` questions instead of one multi-branch `choice`: the file list is
-generated per repository, while `choice.criteria` must be fixed in code — criteria
-cannot be built from a runtime list.
+Measured on the real log (3,369 `allow` commands, snapshot 2026-10-02): prefilter
+coverage **13.6%** (459 commands) — before v0.10.0 it was **0.03%** (1 command).
+The 455 newly-covered commands all contain the `for` token (no leakage outside
+scope).
 
-Measured on the real API (`jev-1.13.0`), after the 0.3.2 prompt fix:
+This is NOT a weakening of protection. Every doubt — heredoc, backtick, write
+redirect, `$()` (even inside double quotes), `find -delete`, `sed -i`,
+`git reset`, interpreters, unknown commands — falls through to Jev as before.
+`tests/offline.mjs` runs **329 destructive commands** and requires **0 to leak**,
+plus **384 + 39 fuzz variants**. `tests/attack-corpus.mjs` runs **83 independent
+attack commands** (56 dangerous `for` loops + 16 always-deny + 11 disguise
+pairs) — requiring **0 leaks**.
 
-| Case | File it should pick | p | Unrelated files |
-|---|---|---|---|
-| Login-session bug | `src/auth/session.ts` | **0.88–0.90** | `README.md` 0.06, `assets/logo.svg` 0.02 |
-| Recolour the logo | `assets/logo.svg` | **0.94** | every other file 0.02–0.03 |
-| Add a migration | `src/db/migrations/0012.sql` | **0.87** | `src/auth/session.ts` 0.10 |
-| Write onboarding docs | `docs/onboarding.md` | **0.65** | `package.json` 0.07 |
+**The allowlist is narrower than intuition suggests, and that is a result of
+measurement.** The first version, written from reasoning, let **12 forms**
+through — found by running real `--help` then trying to write a file in a
+sandbox: `trap "rm -f victim" EXIT` (arbitrary command execution),
+`hostname NEW` (sets the hostname), `date 010112002026` (sets the clock),
+`xxd in out` and `uniq in out` (second argument is a write file), `file -C`,
+`less -o`, `history -w`, `rg --pre CMD`, `fd -x CMD`,
+`sort --compress-program`, `git --ext-diff`.
 
-Before 0.3.2 the two "creates a new artifact" cases scored only **0.39** and
-**0.34** — below the 0.6 threshold. The prompt was missing the "a sibling of the
-same kind defines the format for the new artifact" branch. See the 0.3.2
-CHANGELOG entry for the before/after table and the three validation suites.
+Three compensating mechanisms, each for a different class of problem:
 
-### Why the "Source-search escalation" layer exists (Layer 8)
-
-Layer 5 lists candidate files by **name**. Measured on a real session
-(`777a1746`, 2026-09-30), it hinted `weknora-dsh-setup-guide.md` across **four
-consecutive turns** and the agent **never opened it** (0/4). The same session
-ran **152** raw `grep`/`find`/`rg` commands and used the `jevgrep` skill
-**zero** times, despite it being in the catalog. A filename is not enough for
-the model to trust; it would rather grep.
-
-Layer 8 fills exactly that gap with the `jg` CLI (the `jevgrep` skill): it asks
-Jev "where does this behaviour live?" and returns **file list + line ranges +
-verbatim source excerpts** in one run. That is content, not a name — it answers
-the question the model actually has.
-
-It escalates at two moments, both with the same single action:
-
-- **A. `agent/pre-step` (step 1)** — when the user's task reads as "where does X
-  live" (`chỗ nào xử lý`, `tìm file nào`, `where is X handled`, `which file
-  implements`, `trace this bug`). Runs before the agent spends a single command.
-- **B. `tools/post-execute`** — after `jevGrepSearchTaskThreshold` raw
-  search commands **in a row** within the same turn. Catches the case where the
-  task does not announce itself as a search but the agent is in fact digging.
-
-The threshold of 3 is not a guess. Measuring the longest consecutive raw-search
-run per turn on the real session: search turns (1, 3, 4, 5, 7, 8) all reached
-**≥3**; short answer turns (2, 9, 10) only **1**. A non-search command resets the
-run — the spiral is *consecutive* commands.
-
-Why not replace Layer 5 outright: `jg` measures **~0.9s warm / ~2.6s cold**,
-added to step 1 of *every* turn including turns that are not searches.
-Conditional escalation keeps ordinary turns cheap.
-
-Like every other layer: **absolute fail-open**. `jg` missing from PATH, exiting
-non-zero, timing out, or returning nothing → stay silent and continue. It only
-**injects a hint** with an escape clause, never edits files, never runs anything
-else.
-
-### Why the "Tool-failure recovery" layer exists
-
-A failed tool usually makes the model retry the same call a few times before
-changing approach — each attempt is a full generation. A 250ms question answers
-instead. The four branches are four situations different in kind, so there is no
-threshold to tune: `retry` (transient), `alternate` (wrong approach), `diagnose`
-(cause unknown), and `stop-and-report` (cannot be resolved alone).
-
-This layer **skips** commands blocked by layer 1 itself: that is not a tool
-failure but a gate decision, and layer 1 already has its own message. It is
-recognised by `error.info.code === 'JEV_DESTRUCTIVE'`. A `failureMaxPerTurn` cap
-stops a repeatedly failing command from generating endless hints.
-
-Measured (`jev-1.13.0`, 6 runs/case, stable 6/6 per case):
-
-| Error | Branch Jev picks | Expected |
-|---|---|---|
-| `request timed out after 30000ms` | `retry` | retry ✓ |
-| `cat: ... No such file or directory` | `alternate` 0.81 | alternate ✓ |
-| test failure, cause unknown | `diagnose` 0.95 | diagnose ✓ |
-| `AWS_ACCESS_KEY_ID not set` | `stop-and-report` 0.93 | stop-and-report ✓ |
-| `ECONNREFUSED 127.0.0.1:5432` | `diagnose` | diagnose ✓ (retrying a dead DB is pointless) |
-
-### Why the "Quality review" layer exists
-
-Measured across 110 real sessions: the `mcp__jev-review__jev_review` tool is
-**registered and present in the prompt** (the `mcp:jev-review` section is injected
-by `dsh-mcp-client`), yet it was called **once** — and that was the plugin author
-testing it. In real work: **zero times**.
-
-So "the tool exists" does not mean "the tool gets used". Every Jev channel except
-`dsh-jev-gate` is **passive**: MCP tools, skills, and CLIs all wait for the agent
-to decide to call them. Only an engine hook runs by itself. This layer hooks
-`jev_review` into `turn-stopping`.
-
-Four abuse gates, because this hook blocks the turn:
-
-| Gate | Condition | Why |
-|---|---|---|
-| 1 | Only when the turn truly ends | Reviewing half-finished code is meaningless |
-| 2 | Main turn only (`delegationDepth === 0`) | Subagents do not own the workspace change; reviewing there multiplies calls by worker count |
-| 3 | Diff ≥ `reviewMinChangedLines` (20 lines) | Reviewing an empty diff or a typo fix burns money for nothing |
-| 4 | Cap `reviewMaxPerTurn` (1) | Without it, every turn-stopping pass is another call |
-
-Scores are returned via `agent.steer` as a **report**, not an instruction: scores
-are evidence, not an objective to optimise.
-
-Latency: `jev_review` takes ~100ms on a healthy API, ~0.7–2.5s when the API is
-slow. A missing tool, missing service, or a failed review all **fail open** — the
-turn ends normally.
-
-### Why the `jev-review` skill is no longer needed
-
-Two things used to teach the agent to use `jev_review` in parallel: a **skill**
-named `jev-review`, and the **MCP server's own instructions** (1,242 characters,
-injected into the system prompt by `dsh-mcp-client` via `systemPrompt.section`).
-
-Measured across 115 real sessions: the MCP instructions are present in **26
-sessions**. They reach the model **independently of the skill**. Comparing the
-content shows most of the skill duplicates them — the score→improve→rescore loop,
-the baseline, `previousEvaluation`, not repeating identical calls, not gaming
-scores.
-
-And the skill **never led to a single review call in real work**. Of the four times
-`jev_review` was ever called:
-
-| Session | Skill called first? | Who called it |
-|---|---|---|
-| `f5a2e8a7` | yes | the author testing (`Add a clamp helper`) |
-| `6865243e` | **no** | an MCP integration test (`Smoke-test the DSH MCP integration`) |
-
-All four were tests, not real work. So the skill was **deleted** — one instruction
-source remains, the MCP server, plus layer 7 calling it automatically at turn end.
-
-The `jev_review` tool itself is unchanged: registered through `mcp-jev-review`, the
-agent can still call it, and its instructions still reach the prompt.
-
-### Why the "User authorization" layer exists
-
-The old destructive gate **could not tell session scratch from real data**. Real
-log: `rm -rf /tmp/gtest` (a test directory this very session created) was blocked
-at p=0.77, while `rm -rf <nonexistent path>` scored only 0.40 — so legitimate
-cleanup was blocked and had to be retried (one command was blocked **7 times in a
-row**).
-
-The layer runs **only** when layer 1 has already judged the command
-destructive, and it answers one question: did the user themselves ask to delete
-exactly this? Blocking now requires **destructive AND not user-authorized**:
-
-```
-p ≥ 0.7  ──► check provenance: is the target in the user's REAL request?
-              ├── yes                              ──► ALLOW (allow_authorized)
-              └── no / cannot prove                ──► DENY (fail-closed)
-```
-
-**v0.9.0 — dropped the second LLM call.** The old version asked Jev a `choice`
-question ("did the user authorize this?") — one more round-trip sitting ON the
-critical path of every blocked command. It now derives authorization from
-**deterministic provenance**: extract the command's target (path/name from
-`rm`/`mv`/`truncate`/…), then substring-match it against the user's **real**
-messages. Measured on the real hook: before = **2** Jev requests per blocked
-command (`destructive` + `authorized`), after = **1** (`destructive`), and when
-unprovable, **0** extra requests.
-
-The `user_request` evidence is taken **only** from genuine user messages
-(`source.kind === 'user'`). `notePrompt` used to join every `role=user` message —
-including background job output (`tool-jobs`) and the plugin's own injected hints
-— so untrusted content could leak into the "user request" field. Deterministic
-provenance uses exactly this source.
-
-This layer is **fail-closed**: if it cannot prove authorization, it DENIES.
-Unlike layer 1 (fail-open) — a defensive layer must lean toward safety when
-uncertain.
+| Mechanism | Handles |
+|---|---|
+| Removed from the allowlist | `trap`, `history`, `hostname`, `xxd`, `uniq`, `split`, `tee` — measured at 0–2 uses per 3,197 commands |
+| `POSITIONAL_OUTPUT_COMMANDS` | `uniq in out`, `xxd in out`, `hostname NEW` — must count positional arguments |
+| `CONDITIONAL_COMMANDS` per command | `sort -o`, `date -s`, `less -o`, `rg --pre`, `fd -x` — a flag must be tied to a specific command, since `-o` means different things in `grep` and `sort` |
 
 ### Why the "Verdict cache" layer exists (1ᶜ)
 
-The gate calls Jev for every `bash` command. Measured on the real log: **~6.4%**
+The gate calls Jev for every `bash` command. Measured on the real log: **~6.2%**
 of `allow` commands are **byte-identical strings** (same tool + command + cwd) —
 a pure wasted round-trip, since the verdict for a byte-identical command is the
 same distribution.
@@ -250,6 +110,129 @@ the threshold cannot flip under drift.
 Memory bound `gateVerdictCacheMax` (500) with FIFO eviction + LRU-touch on hit.
 Disable with `enableGateVerdictCache: false`.
 
+### Why the "User authorization" layer exists (1b)
+
+The old destructive gate **could not tell session scratch from real data**. Real
+log: `rm -rf /tmp/gtest` (a test directory this very session created) was blocked
+at p=0.77, while `rm -rf <nonexistent path>` scored only 0.40 — so legitimate
+cleanup was blocked and had to be retried (one command was blocked **7 times in a
+row**).
+
+The layer runs **only** when layer 1 has already judged the command
+destructive, and it answers one question: did the user themselves ask to delete
+exactly this? Blocking requires **destructive AND not user-authorized**:
+
+```
+p ≥ 0.7  ──► check provenance: is the target in the user's REAL request?
+              ├── yes                              ──► ALLOW (allow_authorized)
+              └── no / cannot prove                ──► DENY (fail-closed)
+```
+
+**v0.9.0 — dropped the second LLM call.** The old version asked Jev a `choice`
+question ("did the user authorize this?") — one more round-trip sitting ON the
+critical path of every blocked command. It now derives authorization from
+**deterministic provenance**: extract the command's target (path/name from
+`rm`/`mv`/`truncate`/…), then substring-match it against the user's **real**
+messages. Measured on the real hook (`tests/offline.mjs` section 7b/7c): before =
+**2** Jev requests per blocked command (`destructive` + `authorized`), after =
+**1** (`destructive`), and when unprovable, **0** extra requests.
+
+The `user_request` evidence is taken **only** from genuine user messages
+(`source.kind === 'user'`). `notePrompt` used to join every `role=user` message —
+including background job output (`tool-jobs`) and the plugin's own injected hints
+— so untrusted content could leak into the "user request" field. Deterministic
+provenance uses exactly this source.
+
+This layer is **fail-closed**: if it cannot prove authorization, it DENIES.
+Unlike layer 1 (fail-open) — a defensive layer must lean toward safety when
+uncertain.
+
+### Why Layer 3 does not call Jev
+
+Default `low`; escalate to `high` only when the previous turn shows a measured
+failure signal (≥2 tool errors or ≥1 test failure). Sticky within a turn.
+
+**Why the per-request classifier was dropped (2026-10-01).** Measured over 120
+consecutive requests: the old mechanism flipped `low↔high` **113/120 times**,
+54.5% of decisions had confidence < 0.5, and it consumed **55%** of Jev tokens at
+~281ms per call sitting ON the critical path. It was the most expensive layer for
+a nearly random decision. Research: measured signals beat "difficulty guessing"
+(arXiv 2505.00127), and a per-step router only wins when it is a small TRAINED
+model (<5ms, arXiv 2603.07915) — not a 1,180-token API classifier.
+
+Cache note (still true, but no longer the main reason): on this router, changing
+effort does **not** invalidate the prompt cache — measured 96% cache hit after a
+change.
+
+### Why the "Context choice" layer exists (Layer 5)
+
+This is the clearest cost target. Most input tokens are burned by the model
+hunting for relevant files through a chain of tool calls (`glob` → `grep` →
+`read` → `read` again), while most of those tokens exist only to answer "which
+file is worth reading".
+
+The plugin lists candidates by **file name** (one breadth-first `readdir`, ranked
+by tokens matching the task), then asks Jev one `noul` question per **candidate**.
+All questions go in **one request**, so 13 batched questions cost 271ms — the
+same as a single question. The host compares against `contextFileThreshold`
+(0.6), sorts by probability, and cuts to `contextMaxFiles` (3).
+
+Why N `noul` questions instead of one multi-branch `choice`: the file list is
+dynamic per repo, whereas `choice.criteria` must be fixed in code — you cannot
+build branches for a list unknown ahead of time.
+
+### Why the "Source-search escalation" layer exists (Layer 8)
+
+Layer 5 lists candidates by **file NAME**. Measured on a real session
+(`777a1746`): the agent took the file hint **0/4 times** — the hint sat in
+context but the agent never opened a file. That session ran **152 raw
+`grep`/`find`/`rg` commands** and used the `jevgrep` skill **0 times** despite it
+being in the catalog.
+
+Layer 8 fills exactly that gap with the `jg` CLI (the `jevgrep` skill): it asks
+Jev "where does this behaviour live" and returns **verbatim source excerpts**.
+Two branches:
+
+- **A. `agent/pre-step` (step 1)** — when the user's task reads as "where does X
+  live" (`looksLikeSearchTask`).
+- **B. `tools/post-execute`** — after `jevGrepSearchTaskThreshold` (3) consecutive
+  raw search commands (`isRawSearchCommand`).
+
+The threshold 3 is grounded in measurement: the longest consecutive search run in
+the real session — search turns 1/3/4/5/7/8 all **≥3**; short turns 2/9/10 only
+**1**.
+
+`jg` runs in the **BACKGROUND** (`jevGrepBackground: true`), with results
+injected at the next `pre-step` — the turn never waits. Why: the `jg` cache is
+per **query**, not per repo — a NEW query is cold and takes 66s–2m5s, so any
+timeout in the await hook is wrong (low never runs, high hangs the turn). Why not
+replace Layer 5 entirely: `jg` measured at ~0.9s warm / ~2.6s cold, added to every
+turn is wasteful.
+
+### Why the "Tool-failure recovery" layer exists (Layer 6)
+
+A tool error is a cheap and strong signal: it says the previous step was wrong.
+Layer 6 asks Jev one `choice` question — retry, change approach, diagnose, or
+report — and injects a hint for the next step. The cap `failureMaxPerTurn` (2)
+prevents repeated nagging.
+
+This layer **skips** commands blocked by Layer 1 itself: those are not tool
+failures but gate blocks, and Layer 1 already has its own message. Detected via
+`error.info.code === 'JEV_DESTRUCTIVE'`.
+
+### Why the "Quality review" layer exists (Layer 7)
+
+When a turn ends and the diff is large enough (`reviewMinChangedLines`, 20
+lines), the plugin auto-calls `jev_review` (MCP) and reports scores back to the
+agent as a report. The cap `reviewMaxPerTurn` (1) prevents repeated calls.
+
+### Why the `jev-review` skill is no longer needed
+
+The plugin used to ship a `jev-review` skill for the agent to call. The
+`jev-review` MCP server already carries its own instructions, so there is a
+single source of guidance — the MCP server — plus Layer 7 auto-calling it when a
+turn ends.
+
 ## Architecture
 
 The plugin is a thin layer between the **DSH engine** and the **Jev API**. It
@@ -261,195 +244,168 @@ not keep the transcript.
 dsh-jev-gate
 │
 ├── LAYER 1 · destructive gate        hook: tools/pre-execute
-│   └── asks Jev (noul): "would this command destroy data irrecoverably?"
+│   ├── LAYER 1₀ · read-only prefilter (local analysis, NO Jev call)
+│   │   └── proven read-only ──► allow now (13.6% of real commands)
+│   ├── LAYER 1ᶜ · verdict cache (key tool+command+cwd, NO Jev call)
+│   │   └── same key + p far from threshold ──► reuse verdict (6.2%)
+│   └── the rest ──► ask Jev (noul): "would this command destroy data irrecoverably?"
 │       ├── p < 0.7  ──► allow
 │       └── p ≥ 0.7  ──► check LAYER 1b
 │
-├── LAYER 1b · user authorization     hook: tools/pre-execute (only when layer 1 denies)
-│   └── DETERMINISTIC provenance (NO Jev call): is the target in the user's real request?
-│       ├── authorized ──► allow
-│       └── narrower/unrelated/quoted ──► DENY
+├── LAYER 1b · user authorization     hook: tools/pre-execute (only when layer 1 blocks)
+│   └── DETERMINISTIC provenance (NO Jev call): is the target in the user's REAL request?
+│       ├── yes ──► allow (allow_authorized)
+│       └── no / cannot prove ──► DENY (fail-closed)
 │
 ├── LAYER 2 · completion check        hook: agent/turn-stopping
-│   └── asks Jev (noul ×3): "done? any evidence? does it need execution?"
-│       ├── done + proven      ──► let the turn end
-│       └── unfinished / no proof ──► steer to keep working
+│   └── ask Jev (noul ×3): "done? evidence? needs execution?"
+│       ├── done + has evidence   ──► let the turn end
+│       └── not done / no evidence ──► push to keep working
 │
-├── LAYER 3 · effort routing          hook: agent/request
-│   └── deterministic: default low, escalate on measured failure signals
+├── LAYER 3 · thinking effort         hook: agent/request
+│   └── DETERMINISTIC RULE (NO Jev call): default low; escalate high when the
+│       previous turn had ≥2 tool errors or ≥1 test failure; sticky within a turn
 │       └── writes reasoningEffort  ──► provider and model UNCHANGED
 │
-├── LAYER 4+5 · approach + context    hook: agent/pre-step (step 1 only)
+├── LAYER 4+5 · approach + file choice hook: agent/pre-step (step 1 only)
 │   └── ONE Jev request, two question kinds:
-│       ├── choice "which approach is optimal?" (layer 4)
-│       │   ├── one-command-scan   ──► "run the single command, do not split it"
-│       │   ├── scripted-analysis  ──► "write one short script and read its result"
-│       │   ├── parallel-workers   ──► "delegate to subagents in parallel"
-│       │   └── guided-interview   ──► "clarify with the user first"
-│       │       (silent below conf 0.3; the model decides, the plugin does not act)
-│       └── noul ×N "must this file be read?" (layer 5)
+│       ├── choice "which approach is optimal?" (Layer 4)
+│       │   ├── one-command-scan   ──► "run a single command, do not split the work"
+│       │   ├── scripted-analysis  ──► "write a short script and read the result"
+│       │   ├── parallel-workers   ──► "split across subagents in parallel"
+│       │   └── guided-interview   ──► "ask the user to clarify first"
+│       │       (silent when conf < 0.3; the model decides, the plugin does not act)
+│       └── noul ×N "should this file be read?" (Layer 5)
 │           ├── the plugin lists candidates by FILE NAME (BFS readdir + ranking)
-│           ├── p ≥ 0.6 → keep, sort descending, truncate to contextMaxFiles (3)
-│           └── injects "read these first" — a hint, not a restriction
+│           └── injects "read file X" when p ≥ 0.6, at most 3 files
 │
 ├── LAYER 6 · tool-failure recovery   hook: tools/post-execute
-│   └── only when a tool actually failed (skips layer 1 denials):
-│       ├── retry           ──► "transient; run the same call once more"
-│       ├── alternate       ──► "wrong approach; change tool/flag/path"
-│       ├── diagnose        ──► "cause unknown; investigate first"
-│       └── stop-and-report ──► "cannot be resolved alone; report it"
-│           (returned via additionalContexts → spliced into the next step)
+│   └── ask Jev (choice): "retry, change approach, diagnose, or report?"
+│       └── injects a hint; skips commands blocked by Layer 1 itself
 │
 ├── LAYER 7 · quality review          hook: agent/turn-stopping
-│   └── auto-calls `jev_review` (MCP) when the turn ends:
-│       ├── four gates: turn really ended / main turn / diff ≥ 20 lines / cap 1
-│       ├── assembles a unified diff from the workspaceChanges service
-│       └── scores → agent.steer (a report, not an instruction)
+│   └── auto-calls the `jev_review` MCP tool when a turn ends + diff ≥ 20 lines
 │
-├── LAYER 8 · source-search escalation  hook: agent/pre-step + tools/post-execute
-│   └── runs `jg` (the jevgrep skill) ONCE when the task is "where does X live":
-│       ├── A. step 1: task reads as a search (where is / which file / chỗ nào)
-│       ├── B. after N consecutive grep/find/rg commands with no progress
-│       ├── `jg` returns files + line ranges + verbatim excerpts → inject hint
-│       └── no `jg` / error / timeout / empty → stay silent, fail-open
-│
-└── every decision ──► ~/.local/share/dsh-jev-gate/decisions.jsonl
+└── LAYER 8 · source-search escalation hook: agent/pre-step + tools/post-execute
+    └── runs `jg` (jevgrep skill) in the BACKGROUND, injects verbatim excerpts
 ```
 
-Every Jev call **fails open**: if Jev errors, times out, or returns garbage,
-work proceeds as if Jev never existed.
-
-Exception: the user-authorization layer (1b) is **fail-closed** — if it errors, the
-command stays blocked rather than being silently allowed.
-
-**One turn passing through the layers** — checkpoints at different moments:
+### Life of one turn
 
 ```
-User types a prompt
+user sends a message
       │
       ▼
-LAYER 4+5 · agent/pre-step  step 1 only, ONE Jev request:
-      │                     which approach is optimal + which files to read first
+LAYER 4+5 · agent/pre-step (step 1) pick approach + pick files for context
+      │                            → inject hints (does not act itself)
       ▼
-LAYER 8 · agent/pre-step     step 1 only, only when the task is "where does X live":
-      │                     → runs `jg`, injects verbatim source excerpts (edits nothing)
+LAYER 8 · agent/pre-step            task is "where does X live"? → run `jg` in BACKGROUND
       ▼
-LAYER 3 · agent/request     on every model call: does the next step need deep thinking?
-      │                     → writes reasoningEffort, provider and model UNCHANGED
+LAYER 3 · agent/request             on every model call: pick reasoningEffort (deterministic rule)
+      │                            → write reasoningEffort, provider and model UNCHANGED
       ▼
-LLM generates a reply or a tool call
+LLM responds or calls a tool
       │
       ▼
-LAYER 1 · tools/pre-execute  bash/pwsh only: would this command destroy data?
-      │                      → p < 0.7: allow
-      │                      → p ≥ 0.7: ask LAYER 1b
+LAYER 1 · tools/pre-execute         bash/pwsh only: would this command destroy data?
+      │                            1₀ read-only prefilter → allow (no Jev call)
+      │                            1ᶜ cache same key       → reuse verdict (no Jev call)
+      │                            the rest → ask Jev; p ≥ 0.7 goes to LAYER 1b provenance
       ▼
-LAYER 6 · tools/post-execute the tool just failed: retry / change / diagnose / report
-      │                      → injects a hint for the next step
+LAYER 6 · tools/post-execute        tool just failed: retry / change approach / diagnose / report
+      │                            → inject a hint for the next step
       ▼
-LAYER 8 · tools/post-execute after N consecutive grep/find/rg commands with no progress:
-      │                      → runs `jg` ONCE, injects verbatim source excerpts
+LAYER 8 · tools/post-execute        after N consecutive grep/find/rg commands with no progress:
+      │                            → run `jg` ONCE, inject verbatim excerpts
       ▼
-LAYER 2 · agent/turn-stopping when the model wants to stop: done? any evidence?
-      │                      → unfinished or no proof means steer to keep working
+LAYER 2 · agent/turn-stopping       when the model tries to stop: done? evidence?
+      │                            → push to keep working if not done / no evidence
       ▼
-LAYER 7 · agent/turn-stopping turn truly ended with a large-enough diff
-      │                      → auto-calls jev_review, steers scores back as a report
+LAYER 7 · agent/turn-stopping       turn really ended and diff is large enough
+      │                            → auto-call jev_review, report scores back as a report
       ▼
 turn ends
 ```
 
 > LAYER 4+5 and LAYER 8 (branch A) run once per turn (step 1). LAYER 3 runs on
-> most steps (it now reuses a confident decision for the next step). LAYER 7 runs
-> once per turn, only when the turn produced a large-enough diff. The LLM,
-> LAYER 1, LAYER 1b, LAYER 6 and LAYER 8 (branch B) **repeat** on every tool
-> call. The diagram above draws one pass for readability.
+> **every step**, while the LLM, LAYER 1, LAYER 1b, LAYER 6 and LAYER 8 (branch
+> B) **repeat** on every tool call. The diagram draws one loop for readability.
 
 ## Install
 
-Requires DSH `>= 0.1.0-rc.7` and a Jev API key ([typesafe.ai](https://typesafe.ai/)).
+Needs DSH `>= 0.1.0-rc.7` and a Jev API key ([typesafe.ai](https://typesafe.ai/)).
 
 ```bash
 # install
 dsh plugin --profile web add git+https://github.com/dungle03/dsh-jev-gate.git
 
 # update to latest
-dsh plugin --profile web add git+https://github.com/dungle03/dsh-jev-gate.git
+dsh plugin --profile web update dsh-jev-gate
 ```
 
-Then set the Jev key (either way):
+Set the key one of two ways:
 
 ```bash
 # option 1: environment variable
 export TYPESAFE_API_KEY="apikey_..."
-
 # option 2: DSH credential store (recommended — independent of your shell)
 # add to ~/.dsh/.credentials.yaml under refs:
 #   refs:
 #     TYPESAFE_API_KEY: "apikey_..."
 ```
 
+> No key? The plugin **fails open** — every gate stays silent and allows, never
+> blocking wrongly. Set the key and restart to enable it.
+
 ### Layer 8 also needs the `jg` CLI (optional)
 
-Layer 8 calls `jg` (the [jevgrep](https://github.com/dzhng/jevgrep) skill) to
-fetch verbatim source excerpts. It is **optional**: without `jg` this layer
-disables itself silently and the other seven layers run normally.
-
-```bash
-npm install --global @dzhng/jevgrep   # needs Node 22+
-jg doctor                             # must print "Jev connection verified"
-```
-
-`jg` uses its own credential store and does **not** read `TYPESAFE_API_KEY` from
-above. If `jg doctor` reports a missing credential, run `jg auth` once in your
-own terminal (it opens a hidden prompt for the key; never paste the key into
-chat).
-
-Restart DSH. Verify:
-
-```bash
-bash ~/.dsh/profiles/web/node_modules/dsh-jev-gate/verify.sh
-```
-
-> No key? The plugin **fails open** — every gate silently allows, nothing is
-> blocked. Set the key and restart to enable it.
+Layer 8 calls the `jg` CLI (the `jevgrep` skill). Without it the layer turns
+itself off silently — no error, no blocking. Install `jg` and put it on `PATH`.
 
 ## Operating principles
 
-- **Absolute fail-open.** If Jev errors, times out, or returns garbage, the
-  action proceeds as if Jev never existed. Jev must never turn its own outage
-  into a workflow outage.
-- **Short timeouts.** The destructive gate sits in the critical path of every
-  tool call: 2s. Slower than that, it fails open.
-- **Pinned model.** `jev-1.13.0`, not `jev-latest`, because the alias shifts
-  when a new version ships and answers can change without notice.
+- **Absolute fail-open.** Jev errors, is slow, or returns garbage → the action
+  proceeds as if Jev never existed. Jev must not turn its own incident into a
+  workflow incident. The only exceptions: the **catastrophic floor** (Layer 1₀)
+  and **Layer 1b** — both fail-closed because they are defensive.
+- **Short timeout.** The destructive gate sits on the critical path of every tool
+  call: 2s. Slower than that and it fails open.
+- **Pin the model.** `jev-1.13.0` rather than `jev-latest`, because an alias
+  drifts when a new version ships and answers can change without notice.
 - **Thresholds by consequence.** The destructive gate (0.7) differs from the
-  completion check (0.5) and the spawn hint (0.6). No shared number.
-- **Bounded state.** Only the goal/task (up to 1,500 chars), the last 6 tool
-  results (700 chars each), and the final reply (900 chars) are sent. Never the
-  whole transcript.
-- **Never changes the model.** The plugin only reads `provider`/`model` and
+  completion check (0.5) and the spawn hint (0.6). No single shared number.
+- **Bounded state.** Only send: goal/task (max 1,500 chars), the last 6 tool
+  results (700 chars each), the final answer (900 chars). Never the whole
+  transcript.
+- **Never change the model.** The plugin only reads `provider`/`model` and
   optionally writes `reasoningEffort`. Your model is never swapped.
-- **Verifiable log.** Every decision is written to
+- **Inspectable log.** Every decision is written to
   `~/.local/share/dsh-jev-gate/decisions.jsonl` (mode 0600).
 
 ## Configuration
 
-Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins page:
+Edit in the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or via the Plugins
+page. The list below matches `DEFAULTS` and `Config` in `lib/index.mjs`.
 
 ```yaml
 - id: jev-gate
   name: dsh-jev-gate
   config:
-    destructiveThreshold: 0.7   # p >= this counts as destructive
-    completionThreshold: 0.5    # p < this means "not done yet"
-    evidenceThreshold: 0.5      # p < this means "evidence missing"
+    destructiveThreshold: 0.7   # p >= this means destructive
+    completionThreshold: 0.5    # p < this means not done
+    evidenceThreshold: 0.5      # p < this means insufficient evidence
     executionThreshold: 0.5     # p >= this means the goal needs execution
     approachConfidenceThreshold: 0.3
-    contextFileThreshold: 0.6   # p >= this means the file is worth reading
-    contextCandidateLimit: 12   # max candidates handed to Jev
+    contextFileThreshold: 0.6   # p >= this means the file should be read
+    contextCandidateLimit: 12   # max candidates given to Jev to grade
     contextMaxFiles: 3          # max files named in the hint
     failureMaxPerTurn: 2        # max recovery hints per turn
+    completionMaxPerTurn: 2     # max completion checks per turn
+    reviewMinChangedLines: 20   # smaller diffs are not reviewed
+    reviewMaxPerTurn: 1         # max reviews per turn
+    reviewMaxDiffChars: 24000   # max diff chars sent to review
+    reviewServerName: jev-review
+    reviewReportToAgent: true   # report scores back to the agent via steer
     gateTimeoutMs: 2000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
@@ -457,24 +413,18 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
     effortDefault: low          # effort when the previous turn was clean
-    effortEscalateTo: high      # raised when the previous turn shows failure signals
-    effortEscalateToolErrors: 2   # ≥2 tool errors in the previous turn escalates
-    effortEscalateTestFailures: 1 # ≥1 test failure in the previous turn escalates
-    completionMaxPerTurn: 2     # max completion checks per turn
-    reviewMinChangedLines: 20   # do not review diffs smaller than this
-    reviewMaxPerTurn: 1         # max reviews per turn
-    reviewMaxDiffChars: 24000   # max diff characters sent to the review
-    reviewServerName: jev-review
-    reviewReportToAgent: true   # report scores back to the agent via steer
-    jevGrepSearchTaskThreshold: 3  # consecutive grep/find/rg commands before escalating; 0 disables branch B
+    effortEscalateTo: high      # effort when the previous turn showed failure
+    effortEscalateToolErrors: 2   # escalate on ≥2 tool errors in the previous turn
+    effortEscalateTestFailures: 1 # escalate on ≥1 test failure in the previous turn
+    jevGrepSearchTaskThreshold: 3  # consecutive grep/find/rg commands to escalate; 0 = disable branch B
     jevGrepMaxPerTurn: 1        # max jevgrep escalations per turn
-    jevGrepTimeoutMs: 120000     # budget for one `jg` run (NEW query is cold for 66s–2m5s); on expiry, fail open
-    jevGrepFailureBreaker: 3    # disable layer 8 for the session after N consecutive jg failures
+    jevGrepTimeoutMs: 120000     # budget for one `jg` run (a NEW query is cold, 66s–2m5s); on timeout, fail open
+    jevGrepFailureBreaker: 3    # after N consecutive jg failures, disable Layer 8 for the session
     jevGrepBackground: true     # run jg in the BACKGROUND, never blocking the turn
     jevGrepExcerptCap: 4000     # max excerpt characters injected into context
     enableDestructiveGate: true
     enableReadOnlyPrefilter: true       # layer 1₀ — proven read-only skips Jev
-    enableCatastrophicFloor: true       # deterministic floor (root wipe, disk format) — hard deny, never fail-open
+    enableCatastrophicFloor: true       # deterministic floor — hard deny, never fail-open
     enableGateVerdictCache: true        # layer 1ᶜ — cache verdict by (tool, command, cwd)
     gateVerdictCacheMax: 500            # max cache entries (FIFO + LRU-touch)
     gateVerdictCacheMargin: 0.1         # do not cache when |p - threshold| <= margin (Jev is non-deterministic)
@@ -484,118 +434,121 @@ Edit the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or use the Plugins pag
     enableSpawnHint: true
     enableContextTriage: true           # context file-selection layer
     enableFailureRecovery: true         # tool-failure recovery layer
-    enableQualityReview: true           # auto-call jev_review when the turn ends
-    enableJevgrepEscalation: true       # source-search escalation via `jg` (requires the jevgrep skill)
+    enableQualityReview: true           # auto-calls jev_review when a turn ends
+    enableJevgrepEscalation: true       # source-search escalation via `jg` (needs the jevgrep skill)
 ```
 
-Layer 8 needs the `jg` CLI on PATH (see
-[Install](#layer-8-also-needs-the-jg-cli-optional)). Without it the layer
-disables itself silently — no error, nothing blocked.
+Retired keys (`effortReuseConfidence`, `effortMaxReuseSteps`,
+`authorizationTimeoutMs`) are **warned about loudly** on load, never ignored
+silently.
 
 ## Verify
 
 ```bash
-bash verify.sh              # 7 items, needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs      # 305 checks, no secret needed
+bash verify.sh               # 7 sections (0–6), needs DSH running + TYPESAFE_API_KEY
+node tests/offline.mjs       # 306 checks, no secret needed
 node tests/attack-corpus.mjs # independent attack corpus — requires 0 leaks
-node tests/live-check.mjs   # 24 checks, needs TYPESAFE_API_KEY + network
+node tests/live-check.mjs    # 10 checks, needs TYPESAFE_API_KEY + network
 ```
 
-- `verify.sh` — 7 items: location, structure, syntax, dependency resolution, profile
-  registration, real boot log, real Jev calls against known-answer cases.
-  Exit 1 if any item fails.
-- `tests/offline.mjs` — no secret needed: fail-open, model invariance, shell-tool
-  gating only, layer-4 guards, genuine-user-message filtering, export contract,
-  and Layer 8 (parsing `jg` output, search-task / raw-search detection, per-turn
-  cap, fail-open). The Layer 8 tests use a **fake** `jg` script on PATH — they
-  never call the real `jg`, so they run in CI with no network and no `jg`.
-- `tests/live-check.mjs` — real Jev API calls against known-answer cases.
-
-- `tools/repair-session-source.mjs` — repairs old session logs corrupted by
-  versions < 0.3.1, which wrote `source` as a bare string (see CHANGELOG 0.3.1).
-  Run it while dsh is stopped:
+- `verify.sh` — 7 sections: location, structure, syntax, dependency resolution,
+  profile registration, real boot log, real Jev call with a known answer. Exit 1
+  if any fails.
+- `tests/offline.mjs` — 306 checks with no secret: fail-open, model invariance,
+  shell-tool-only gating, Layer 4 guard, real-user-message filtering, export
+  contract, the `for` loop prefilter, the verdict cache (safety invariants, no
+  caching near the threshold), 1b provenance end-to-end through the real hook,
+  and Layer 8 (parsing `jg` output, detecting search tasks / raw search commands,
+  per-turn cap, fail-open). The Layer 8 test uses a **fake** `jg` script on PATH
+  — it never calls the real `jg`, so it runs in CI with no network and no `jg`.
+- `tests/attack-corpus.mjs` — independent attack corpus (56 dangerous `for` loops
+  + 16 always-deny commands + 11 disguise pairs). A mutation test proves the
+  corpus has teeth: injecting fake bugs → 12–16/83 leak, the corpus reports a
+  GATE HOLE.
+- `tests/live-check.mjs` — calls the real Jev API with known-answer cases.
+- `tools/repair-session-source.mjs` — repairs old session logs broken by
+  versions < 0.3.1 writing `source` as a bare string (see CHANGELOG 0.3.1). Run
+  with dsh stopped:
 
   ```bash
-  node tools/repair-session-source.mjs --check   # list logs that need repair
+  node tools/repair-session-source.mjs --check   # list files needing repair
   node tools/repair-session-source.mjs           # repair every session in $DSH_HOME
   ```
 
-  Each file keeps its original beside it as `.bak-sourcekind-<time>`, and the new
-  bytes must pass strict validation before publication. Logs held open by another
+  Each file keeps its original beside it with a `.bak-sourcekind-<time>` suffix,
+  and new bytes pass strict validation before publishing. Files open by another
   process are skipped.
 
 CI (GitHub Actions) runs `offline.mjs` on Node 20 + 22 for every push/PR, and
-`live-check.mjs` when the repo has a `TYPESAFE_API_KEY` secret. See
+`live-check.mjs` when the repo has the `TYPESAFE_API_KEY` secret. See
 [`.github/workflows/verify.yml`](.github/workflows/verify.yml).
 
 Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-## Measured results (2026-09-27 → 30, `jev-1.13.0`)
+## Measured results
+
+Measurements on the **real API** (`jev-1.13.0`) and the **real decision log**
+(`~/.local/share/dsh-jev-gate/decisions.jsonl`). The log is a live file — numbers
+drift; each row states its snapshot.
+
+### Current mechanisms (v0.10.x)
+
+| Measurement | Result |
+|---|---|
+| Offline tests (`tests/offline.mjs`) | **306 checks** PASS, 0 failures |
+| Attack corpus (`tests/attack-corpus.mjs`) | **83 commands** — **0 leaks** |
+| Safety invariants (offline) | **329 destructive commands** — 0 leak; fuzz 384+39 — 0 leak |
+| Prefilter coverage on the real log (3,369 `allow` commands, 2026-10-02) | **13.6%** (459 commands) — before v0.10.0 it was 0.03% |
+| Verdict cache savings on the real log | **~6.2%** of gate calls (byte-identical commands) |
+| Gate usefulness (`gate_useful_ratio`, 12,166 records) | **0.96%** — 117 denies / 12,166 runs |
+| Layer 1b — Jev calls per blocked command | **1** (destructive); before v0.9.0 it was 2 |
+| Layer 3 — Jev calls for effort | **0** (deterministic rule) |
+| Does the model ever change? | no — invariant across every test |
+
+### History (earlier versions)
 
 | Measurement | Result |
 |---|---|
 | Destructive gate on 20 real commands | 20/20 correct (recall 100%, precision 100%) |
-| Does deny actually prevent execution? | yes — canary intact after a denied `rm -rf` |
-| Layer 1b · user authorization — pasted content claiming authority | 0/66 returned `authorized` |
-| Layer 1b · user authorization — destructive commands not asked for | 0/48 returned `authorized` |
-| Layer 1b · user authorization — legitimate user-requested cleanup | 46/48 returned `authorized` |
-| Layer 1b · user authorization fails closed on error | yes — a session read error still blocks |
-| Completion check: evidence vs bare claim | 3/3 branches correct |
-| Fail-open layer 1 (missing key / broken store / no llm) | 3/3 pass |
-| Effort gear-shifting by difficulty | `low→low→high→low→high` across 5 steps |
-| Approach choice | 9/10 correct (disk scan → one command; 5 topics → parallel; vague → clarify) |
-| Context choice — threshold margin | files worth reading **0.65–0.98**, unrelated files **0.02–0.18** |
-| Context choice — strict 6-case expectation | 5/6 (for "flaky test" Jev picked only the test file — reasonable) |
+| Does a deny actually block execution? | yes — a canary survives after a denied `rm -rf` |
+| Completion check: evidence vs bare claims | 3/3 branches correct |
+| Layer 1 fail-open (missing key / broken store / no llm) | 3/3 pass |
+| Approach choice | 9/10 correct (disk scan → 1 command; 5 topics → parallel; vague → ask back) |
+| Context choice — threshold boundary | files to read **0.65–0.98**, irrelevant files **0.02–0.18** |
 | Tool-failure recovery, 6 runs/case | 4/4 cases stable 6/6 each |
-| Layers 5+6 end-to-end (real handler + real Jev) | 12/12 correct, layer 1 not regressed (p=0.95) |
-| Layer 5 latency (13 questions batched in 1 request) | median 271ms — same as one question |
+| Layer 5 latency (13 batched questions in 1 request) | median 271ms — same as a single question |
 | Layer 6 latency (1 question) | median 267ms |
-| Layer 3 — Jev cost by layer | **65%** (3,238,650 / 4,958,494 tokens) |
-| Layer 3 — the old lease in practice | `lease=1` in **1,777/1,830 runs (97%)** — the mechanism was effectively dead |
-| Layer 3 — confidence vs stability | conf 0.6 → next step keeps the effort 88%; conf 0.9 → 95% |
-| Layer 3 — what reuse skips | **32%** of Jev calls, wrong 8% (missed an increase 4.3%) |
-| Dropping the `lease` question | saves **148 input + 43 output** tokens per call |
-| Layer 7 — how often `jev_review` ran across 110 real sessions | **once** (author testing, real handler + real MCP, scores steered to the agent), 0 times in real work |
-| Layer 7 — `jev_review` latency | ~100ms |
-| **Layer 7 on 16,905 real log lines (0.4.0)** | fired **66 times**, `reviewed` **0 times** — `seq` bug, fixed in 0.4.1 |
-| **Layer 7 after 0.4.1 (real provider repro)** | before `diff.length=0` → after `diff.length=52` |
-| **Layer 7 first real run (0.4.1)** | `decision:"reviewed"` — 154 lines / 3 files |
-| **Layer 2 on real logs (0.4.0)** | turn=9 fired **16 times**, never `accept` — cap added in 0.4.1 |
-| **Layer 1b — delete request at message 10/25 (0.4.2)** | `unrelated` → **`authorized`** (previously blocked in error) |
-| **Layer 1b — delete request at message 18/25 (0.4.2)** | `unrelated` → **`authorized`** |
-| **Layer 1b — is widening the window to 10 enough? (0.4.2)** | **no** — still blocks at message 10/25; must match by content |
-| **`DELETE_HINT` with Vietnamese diacritics (0.4.2)** | `\b` missed `xoá`/`dẹp` → Unicode lookaround matches all |
-| **Layer 5 file hint — did the agent read it? (session `777a1746`)** | **0/4** — hinted across 4 consecutive turns, agent never opened the file |
-| **Layer 8 — why it is needed (session `777a1746`)** | 152 raw `grep`/`find`/`rg` commands, **0** uses of the `jevgrep` skill despite it being in the catalog |
-| **Layer 8 — what the threshold of 3 is based on** | longest consecutive raw-search run: search turns 1/3/4/5/7/8 all **≥3**; short turns 2/9/10 only **1** |
+| **Layer 3 — old mechanism drift (0.7.0)** | flipped `low↔high` **113/120** requests; **54.5%** of decisions had conf < 0.5 |
+| **Layer 2 — real failures (0.7.0)** | **48/49** were `This operation was aborted` → dropped `signal` in 0.8.0 |
+| **Layer 1b — old mechanism (≤0.8.2, `choice` question)** | pasted content claiming authority: **0/66** returned `authorized`; destructive commands not asked for: **0/48**; legitimate user-requested cleanup: **46/48** — **replaced by deterministic provenance in v0.9.0** |
+| **Layer 7 — `jev_review` (0.4.1)** | first real run: `decision:"reviewed"`, 154 lines / 3 files |
 | **Layer 8 — real `jg` latency** | **~0.9s warm** (cached), **~2.6s cold**; E2E through the real handler 2.4s |
-| **Layer 8 — E2E with the real `jg`** | injected the correct verbatim excerpts for 2 files (`handler.js`, `auth.js`) |
-| **Layer 8 — offline tests** | 60 new checks, using a fake `jg` on PATH (never calls the real one, runs in CI) |
-| Does it change the model? | no — invariant across every test |
-| Per-gate latency | median ~250ms (layer 1b adds ~250ms, only when layer 1 already blocked) |
+| **Layer 8 — E2E with real `jg`** | injected the correct verbatim excerpts for 2 files (`handler.js`, `auth.js`) |
+| Per-gate latency | median ~250ms (Layer 1b is deterministic, adds no LLM call) |
 
 ## What this plugin does NOT do
 
-- **Does not route models.** It never changes the model, only (optionally) the effort.
+- **Does not route the model.** It does not change the model, only (optionally)
+  the effort.
 - **Does not plan or generate content.** Jev only returns a probability for a
-  closed question; the LLM is still what understands and does the work.
-- **Does not act on the chosen approach by itself.** Layer 4 only *hints*; DSH's
-  `agent` API exposes no way to call a tool directly, so the model decides. The
-  model may ignore it — and Jev picks the wrong approach about 1 in 10 times in
-  the measured set.
-- **Does not read files for the model.** Layer 5 only *names* files worth reading;
-  the model still calls the read tool. It also reads no file contents to score —
-  only file names inside the workspace.
-- **Layer 8 does read contents, but only when triggered.** When the task is
-  "where does X live" (or the agent has dug through several consecutive `grep`
-  commands), Layer 8 runs `jg` to fetch verbatim excerpts. It **does not** edit
-  files, **does not** run anything else, and **does not** replace reading the
-  real files — the hint always carries "verify against the real files before
-  changing anything". It needs the `jg` CLI; without it the layer disables
-  itself silently.
-- **Does not fix what the review finds.** Layer 7 only reports scores back to the
-  agent; the agent decides whether another justified improvement is warranted.
-- **Does not replace the agent's judgement.** A recommendation is not an authorisation.
+  closed question; the LLM is still what understands and does.
+- **Does not act on the chosen approach.** Layer 4 only *suggests* an approach;
+  DSH's `agent` API does not expose a way to call tools directly, so the model
+  decides. It does not guarantee the model complies — and Jev picks the wrong
+  approach about 1 in 10 times in measurement.
+- **Does not read files for the model.** Layer 5 only *names* files worth
+  reading; reading is still done by the model calling a tool. It also reads no
+  file content to grade — only file NAMES in the workspace.
+- **Layer 8 does read content, but only when triggered.** When the task is "where
+  does X live" (or the agent has been hunting with several consecutive `grep`
+  commands), Layer 8 runs `jg` to fetch verbatim excerpts. It does **not** edit
+  files, does **not** run anything else, and does **not** replace reading the
+  real file — the hint always carries "verify against the real file before
+  editing". Needs the `jg` CLI; without it the layer turns off silently.
+- **Does not self-fix on review scores.** Layer 7 only reports scores back to the
+  agent; the agent decides whether to improve further.
+- **Does not replace the agent's judgement.** A recommendation is not an
+  authorization.
 
 ## Uninstall
 

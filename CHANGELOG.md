@@ -5,6 +5,22 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [0.10.3] — 2026-10-02
 
+### Sửa — viết lại README cho khớp code
+
+Viết lại `README.md` và `README.en.md` từ code + số đo thật, sửa các sai lệch:
+
+- Bảng lớp: **1b** là provenance tất định (không `choice`); thêm **1₀** prefilter,
+  **1ᶜ** cache; **3** là luật tất định.
+- Sơ đồ kiến trúc + vòng đời lượt: thêm 1₀/1ᶜ vào nhánh gate; 1b provenance.
+- Mục "Quyền của user": mô tả provenance + số call thật (2 → 1); chuyển bảng
+  0/66·0/48·46/48 (cơ chế `choice` cũ) xuống mục "Lịch sử".
+- Thêm mục "Cache verdict" (khoá, bất biến, không cache sát ngưỡng).
+- Bảng "Số đo" tách **Cơ chế hiện tại (v0.10.x)** vs **Lịch sử**, mỗi hàng có mốc.
+- Sửa số sai: `305`→**306** check; `live-check 24`→**10**; prefilter `42,1%`→**13,6%**;
+  bỏ khẳng định "1b thêm ~250ms" (1b tất định, 0 call LLM).
+- Bảng cấu hình: thêm 5 khoá cache/prefilter; xoá `authorizationTimeoutMs`.
+- Ghi rõ `RETIRED_CONFIG` cảnh báo config cũ.
+
 ### Sửa — cảnh báo config đã ngừng dùng (tương thích ngược)
 
 `authorizationTimeoutMs` đã bị xoá khỏi schema (Lớp 1b không còn gọi LLM), nhưng
