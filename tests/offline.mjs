@@ -751,7 +751,7 @@ async function withCountingJev(answers, run) {
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async (calls) => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const handler = handlers['agent/request'][0];
     const down = async () => ({ provider: 'p', model: 'm' });
@@ -767,7 +767,7 @@ async function withCountingJev(answers, run) {
   await withCountingJev({ effort: 'high', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith([]) } },
@@ -786,7 +786,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(events) } },
@@ -802,7 +802,7 @@ async function withCountingJev(answers, run) {
     const events = [{ type: 'tool/result', data: { turn: 1, message: { isError: true } } }];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(events) } },
@@ -828,7 +828,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(events, 'sess-11e') } },
@@ -844,7 +844,7 @@ async function withCountingJev(answers, run) {
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const handler = handlers['agent/request'][0];
     const down = async () => ({ provider: 'p', model: 'm' });
@@ -864,7 +864,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const handler = handlers['agent/request'][0];
     const down = async () => ({ provider: 'p', model: 'm' });
@@ -883,7 +883,7 @@ async function withCountingJev(answers, run) {
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const handler = handlers['agent/request'][0];
     const down = async () => ({ provider: 'p', model: 'm' });
@@ -909,7 +909,7 @@ async function withCountingJev(answers, run) {
     };
     const { handlers } = await loadPlugin({
       llm: onlyHigh,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 1, step: 1, signal: new AbortController().signal, agent: { session } },
@@ -925,7 +925,7 @@ async function withCountingJev(answers, run) {
   await withCountingJev({ effort: 'high', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 1, step: 1, signal: new AbortController().signal, agent: { session } },
@@ -950,7 +950,7 @@ async function withCountingJev(answers, run) {
       llm,
       config: {
         logDir,
-        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true,
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic',
       },
     });
     const handler = handlers['agent/request'][0];
@@ -990,7 +990,7 @@ async function withCountingJev(answers, run) {
       llm,
       config: {
         logDir,
-        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true,
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic',
       },
     });
     await handlers['agent/request'][0](
@@ -1050,7 +1050,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(catFail, 'sess-catfail') } },
@@ -1076,7 +1076,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(realFail, 'sess-realfail') } },
@@ -1105,7 +1105,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(grepFail, 'sess-grepfail') } },
@@ -1131,7 +1131,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(aborts, 'sess-aborts') } },
@@ -1151,7 +1151,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(realErrors, 'sess-realerr') } },
@@ -1171,7 +1171,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       // turn 3 đọc tín hiệu của turn 2 (không có gì) ⇒ low, dù turn 1 có error.
@@ -1213,7 +1213,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(realShape, 'sess-realshape') } },
@@ -1240,7 +1240,7 @@ async function withCountingJev(answers, run) {
     ];
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic' },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(orphan, 'sess-orphan') } },
@@ -1248,6 +1248,235 @@ async function withCountingJev(answers, run) {
     );
     check('result mồ côi (callId không khớp) → không nâng', out.reasoningEffort === 'low',
       `effort=${out.reasoningEffort}`);
+  });
+}
+
+console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI DUNG tin nhắn user');
+
+/**
+ * Chế độ mặc định mới (2026-10-04): mỗi LƯỢT user gửi, Jev đọc yêu cầu và chọn
+ * mức effort cho lượt đó. Sticky trong turn ⇒ 1 call/lượt, không phải mỗi step.
+ *
+ * Task text đến từ `notePrompt` (hook `agent/pre-step`), nên phải seed tin nhắn
+ * user qua pre-step trước khi gọi `agent/request` — đúng luồng thật.
+ */
+{
+  const llm = {
+    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }),
+  };
+  const session = { id: 'sess-input', snapshotEvents: () => [] };
+  const seedTask = async (handlers, agent, text) => {
+    await handlers['agent/pre-step'][0](
+      {
+        turn: 1, step: 1, signal: new AbortController().signal, agent,
+        messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }],
+      },
+      async () => ({ kind: 'enter' }),
+    );
+  };
+
+  /** 11z-a. Jev chọn `high` cho yêu cầu khó → hook áp đúng `high`. */
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-a', session };
+    await seedTask(handlers, agent, 'thiết kế lại kiến trúc đồng bộ đa luồng, xử lý race condition');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: Jev chọn high → áp high', out.reasoningEffort === 'high', `effort=${out.reasoningEffort}`);
+    check('input: gọi Jev ĐÚNG 1 lần cho lượt', calls() === 1, `calls=${calls()}`);
+  });
+
+  /** 11z-b. Jev chọn `low` cho yêu cầu dễ → áp `low`. */
+  await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-b', session: { id: 'sess-input-b', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'liệt kê file trong thư mục hiện tại');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: Jev chọn low → áp low', out.reasoningEffort === 'low', `effort=${out.reasoningEffort}`);
+  });
+
+  /** 11z-c. STICKY trong turn: nhiều step, Jev chỉ được gọi 1 lần. */
+  await withCountingJev({ effort: 'medium', __confidence: 0.9 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-c', session: { id: 'sess-input-c', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'phân tích vài phương án rồi chọn một');
+    const down = async () => ({ provider: 'p', model: 'm' });
+    const outs = [];
+    for (let step = 1; step <= 4; step += 1) {
+      outs.push(await handlers['agent/request'][0](
+        { turn: 1, step, signal: new AbortController().signal, agent }, down));
+    }
+    check('input: mọi step cùng turn giữ nguyên mức', outs.every((o) => o.reasoningEffort === 'medium'),
+      `efforts=${outs.map((o) => o.reasoningEffort).join(',')}`);
+    check('input: 4 step chỉ tốn 1 call Jev (sticky)', calls() === 1, `calls=${calls()}`);
+  });
+
+  /**
+   * 11z-d. FAIL-OPEN: Jev lỗi mạng → lùi `low`, lượt vẫn chạy.
+   *
+   * `createJev` bind `fetchImpl = globalThis.fetch` LÚC TẠO, nên mock phải được
+   * cài TRƯỚC `loadPlugin` — cài sau thì plugin đã giữ fetch thật và lỗi giả
+   * không bao giờ xảy ra (bẫy đã sập ở lần viết test đầu).
+   */
+  {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('network down'); };
+    try {
+      const { handlers } = await loadPlugin({
+        llm,
+        config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+      });
+      const agent = { id: 'a-input-d', session: { id: 'sess-input-d', snapshotEvents: () => [] } };
+      await seedTask(handlers, agent, 'việc gì đó khó');
+      const out = await handlers['agent/request'][0](
+        { turn: 1, step: 1, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+      check('input: Jev lỗi → fail-open về medium (fallback), không ném', out?.reasoningEffort === 'medium',
+        `effort=${out?.reasoningEffort}`);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  /** 11z-e. Jev trả mức KHÔNG có trong dải model → lùi mặc định, không áp bừa. */
+  await withCountingJev({ effort: 'ultra', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-e', session: { id: 'sess-input-e', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc siêu khó');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: Jev trả mức ngoài tập cho phép → lùi medium (không áp bừa)', out.reasoningEffort === 'medium',
+      `effort=${out.reasoningEffort}`);
+  });
+
+  /** 11z-f. KHÔNG có tin nhắn user → không gọi Jev, dùng mặc định. */
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent: { id: 'a-input-f', session: { id: 'sess-input-f', snapshotEvents: () => [] } } },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: không có task → không gọi Jev, dùng medium', out.reasoningEffort === 'medium' && calls() === 0,
+      `effort=${out.reasoningEffort} calls=${calls()}`);
+  });
+
+  /** 11z-g. Sang TURN MỚI → hỏi Jev lại (mỗi lượt user một quyết định). */
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-g', session: { id: 'sess-input-g', snapshotEvents: () => [] } };
+    const down = async () => ({ provider: 'p', model: 'm' });
+    await seedTask(handlers, agent, 'yêu cầu lượt 1');
+    await handlers['agent/request'][0]({ turn: 1, step: 1, signal: new AbortController().signal, agent }, down);
+    await seedTask(handlers, agent, 'yêu cầu lượt 2');
+    await handlers['agent/request'][0]({ turn: 2, step: 1, signal: new AbortController().signal, agent }, down);
+    check('input: 2 lượt → 2 call Jev (mỗi lượt quyết định riêng)', calls() === 2, `calls=${calls()}`);
+  });
+
+  /**
+   * 11z-h. Jev CHỈ được chọn trong `effortJevChoices` (mặc định low/high).
+   *
+   * Operator chốt: Jev quyết low/high, phần còn lại là medium. Nên nếu Jev trả
+   * `medium` hay `max` (ngoài tập cho phép) thì KHÔNG được áp — phải rơi về
+   * fallback `medium`. Đây là bất biến phân quyền: Jev chỉ đẩy 2 đầu.
+   */
+  await withCountingJev({ effort: 'max', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-h', session: { id: 'sess-input-h', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc cực khó đòi chứng minh hình thức');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: Jev trả `max` (ngoài tập low/high) → KHÔNG áp max, rơi medium',
+      out.reasoningEffort === 'medium', `effort=${out.reasoningEffort}`);
+  });
+
+  /** 11z-i. Jev trả `medium` → cũng ngoài tập cho phép → giữ medium (không đổi). */
+  await withCountingJev({ effort: 'medium', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-i', session: { id: 'sess-input-i', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc vừa vừa');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: Jev trả `medium` (ngoài tập) → giữ medium', out.reasoningEffort === 'medium',
+      `effort=${out.reasoningEffort}`);
+  });
+
+  /**
+   * 11z-k. Model chỉ nhận MỘT mức trong tập cho phép → không hỏi Jev nữa.
+   * Hỏi Jev khi chỉ có 1 lựa chọn là vô nghĩa; phải dùng thẳng fallback.
+   */
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async (calls) => {
+    // Model chỉ nhận high + max: giao với {low,high} còn đúng {high} → <2 lựa chọn.
+    const onlyHigh = {
+      resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'high' }, { id: 'max' }] } }),
+    };
+    const { handlers } = await loadPlugin({
+      llm: onlyHigh,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-k', session: { id: 'sess-input-k', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc gì đó');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: chỉ 1 mức hợp lệ → KHÔNG gọi Jev, dùng fallback',
+      calls() === 0 && out.reasoningEffort === 'high', `calls=${calls()} effort=${out.reasoningEffort}`);
+  });
+
+  /** 11z-l. `effortJevChoices` cấu hình được — đổi sang {medium,high} thì Jev chọn medium. */
+  await withCountingJev({ effort: 'medium', __confidence: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true,
+        enableSpawnHint: false, enableContextTriage: false,
+        effortJevChoices: ['medium', 'high'],
+      },
+    });
+    const agent = { id: 'a-input-l', session: { id: 'sess-input-l', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc vừa vừa');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('input: đổi effortJevChoices={medium,high} → Jev chọn medium được áp',
+      out.reasoningEffort === 'medium', `effort=${out.reasoningEffort}`);
   });
 }
 
@@ -3500,7 +3729,7 @@ console.log('\n20. Hồi quy Lớp 3 — ngưỡng nâng effort đọc từ CONF
   const callEffort = async (events, config, id) => {
     const { handlers } = await loadPlugin({
       llm,
-      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, ...config },
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, effortDecision: 'deterministic', ...config },
     });
     const out = await handlers['agent/request'][0](
       { turn: 2, step: 1, signal: new AbortController().signal, agent: { session: sessionWith(events, id) } },
@@ -3815,6 +4044,322 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await callGate(handlers, { command: 'echo hi > /tmp/gate-far-threshold' });
     check('(i) p xa ngưỡng (0.1) VẪN cache → Jev gọi 1 lần', calls() === 1, `calls=${calls()}`);
   });
+}
+
+console.log('\n22. Lớp 1b — thẻ ĐỒNG Ý phá dữ liệu (ctx.userQuestions)');
+
+/**
+ * Gọi handler `tools/pre-execute` thật với `callId` + session tuỳ biến, để kiểm
+ * nhánh consent (khác `callGate` ở chỗ có `callId` — cần cho đường `askTimed`).
+ */
+function consentGate(handlers, { command, callId = 'call-consent-1', userText } = {}) {
+  const events = userText === undefined ? [] : [{
+    type: 'user/message',
+    data: { message: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } },
+  }];
+  return handlers['tools/pre-execute'][0](
+    {
+      name: 'bash',
+      callId,
+      arguments: { command },
+      agent: { id: 'a-consent', cwd: '/tmp', session: { id: 'sess-consent', snapshotEvents: () => events } },
+      signal: new AbortController().signal,
+    },
+    async () => ({ kind: 'allow' }),
+  );
+}
+
+/** Nạp plugin với một `userQuestions` giả và chạy một lượt gate phá dữ liệu. */
+async function runConsent({ service, config = {}, command = 'rm -rf /tmp/consent-target', userText } = {}) {
+  const logDir = tmpDir('jev-gate-consent-');
+  let out;
+  await withGateCacheJev({ answers: { destructive: 0.9 } }, async () => {
+    const { handlers } = await loadPlugin({
+      services: service === undefined ? undefined : { userQuestions: service },
+      config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false, ...config },
+    });
+    out = await consentGate(handlers, { command, userText });
+  });
+  // Log ghi bất đồng bộ (appendFile) — chờ một nhịp trước khi đọc, như mục 21.
+  await sleepMs(250);
+  const rows = await gateRows(logDir);
+  return { out, rows };
+}
+/** Trả lời như service `userQuestions` thật: `{answers:[{id, selected, custom?}]}`. */
+const answerWith = (selected, extra = {}) => ({
+  ask: async (request) => {
+    answerWith.lastRequest = request;
+    return { answers: [{ id: 'jev-destructive-consent', selected, ...extra }] };
+  },
+});
+
+// (a) User ĐỒNG Ý (chọn đúng nhãn "Run it") → cho chạy.
+{
+  const service = answerWith(['Run it']);
+  const { out, rows } = await runConsent({ service });
+  check('(a) user đồng ý → allow', out.kind === 'allow', `kind=${out.kind}`);
+  const q = answerWith.lastRequest?.questions?.[0];
+  check('(a) thẻ mang detail = LỆNH và đúng 2 lựa chọn',
+    typeof q?.detail === 'string' && q.detail.includes('rm -rf /tmp/consent-target') && q.options?.length === 2,
+    `detail=${JSON.stringify(q?.detail)} options=${q?.options?.length}`);
+  check('(a) thẻ mang intent.approve + callId (cần cho nút đồng ý)',
+    q?.intent?.approve === 'Run it' && q?.intent?.callId === 'call-consent-1',
+    JSON.stringify(q?.intent));
+  check('(a) log ghi allow_consented', rows.some((r) => r.decision === 'allow_consented'),
+    JSON.stringify(rows.map((r) => r.decision)));
+}
+
+// (b) User TỪ CHỐI → chặn, mã riêng JEV_CONSENT_DENIED.
+{
+  const { out, rows } = await runConsent({ service: answerWith(['Do not run it']) });
+  check('(b) user từ chối → deny', out.kind === 'deny', `kind=${out.kind}`);
+  check('(b) mã deny là JEV_CONSENT_DENIED', out.info?.code === 'JEV_CONSENT_DENIED', `code=${out.info?.code}`);
+  check('(b) log ghi deny_consent + consent=refused',
+    rows.some((r) => r.decision === 'deny_consent' && r.consent === 'refused'),
+    JSON.stringify(rows.map((r) => ({ d: r.decision, c: r.consent }))));
+}
+
+// (c) Đồng ý NHƯNG có gõ thêm văn bản tự do → KHÔNG tính là đồng ý (giống plan-mode).
+{
+  const { out } = await runConsent({ service: answerWith(['Run it'], { custom: 'nhưng đợi đã' }) });
+  check('(c) selected=Run it + custom → vẫn deny (đồng ý phải rõ ràng)', out.kind === 'deny', `kind=${out.kind}`);
+}
+
+// (d) Timeout: `askTimed` trả `{pending:true}` → CHẶN (im lặng không phải đồng ý).
+{
+  let sawCallId; let sawTimeout;
+  const service = {
+    // Service thật có CẢ `ask` và `askTimed`; `ask` không được gọi khi có `askTimed`.
+    ask: async () => { throw new Error('ask() phải bị bỏ qua khi có askTimed'); },
+    askTimed: async (_request, callId, timeoutMs) => { sawCallId = callId; sawTimeout = timeoutMs; return { pending: true }; },
+  };
+  const { out, rows } = await runConsent({ service, config: { consentTimeoutMs: 5000 } });
+  check('(d) hết hạn → deny (không tự chạy)', out.kind === 'deny', `kind=${out.kind}`);
+  check('(d) ưu tiên askTimed, truyền đúng callId + timeoutMs',
+    sawCallId === 'call-consent-1' && sawTimeout === 5000, `callId=${sawCallId} timeout=${sawTimeout}`);
+  check('(d) log consent_reason=ASK_TIMED_OUT',
+    rows.some((r) => r.decision === 'deny_consent' && r.consent_reason === 'ASK_TIMED_OUT'),
+    JSON.stringify(rows.map((r) => ({ d: r.decision, r: r.consent_reason }))));
+}
+
+// (e) User bỏ qua thẻ (`ASK_CANCELLED`) → CHẶN.
+{
+  const service = {
+    ask: async () => { const error = new Error('cancelled'); error.code = 'ASK_CANCELLED'; throw error; },
+  };
+  const { out, rows } = await runConsent({ service });
+  check('(e) ASK_CANCELLED → deny', out.kind === 'deny', `kind=${out.kind}`);
+  check('(e) log consent_reason=ASK_CANCELLED',
+    rows.some((r) => r.decision === 'deny_consent' && r.consent_reason === 'ASK_CANCELLED'),
+    JSON.stringify(rows.map((r) => r.consent_reason)));
+}
+
+// (f) KHÔNG có kênh hỏi user → CHẶN (FAIL-CLOSED, không cho qua vì thiếu kênh).
+{
+  const { out, rows } = await runConsent({ service: undefined });
+  check('(f) thiếu service userQuestions → deny', out.kind === 'deny', `kind=${out.kind}`);
+  check('(f) log consent=unavailable',
+    rows.some((r) => r.decision === 'deny_consent' && r.consent === 'unavailable'),
+    JSON.stringify(rows.map((r) => ({ d: r.decision, c: r.consent }))));
+}
+
+// (g) Lỗi bất ngờ từ service → cũng CHẶN (không fail-open ở lớp này).
+{
+  const service = { ask: async () => { throw new Error('boom'); } };
+  const { out } = await runConsent({ service });
+  check('(g) service ném lỗi lạ → deny (không fail-open)', out.kind === 'deny', `kind=${out.kind}`);
+}
+
+// (h) BẤT BIẾN: user ĐÃ nêu đúng target → allow_authorized, KHÔNG hỏi consent.
+{
+  let asked = false;
+  const service = { ask: async () => { asked = true; return { answers: [] }; } };
+  const { out, rows } = await runConsent({
+    service,
+    command: 'rm -rf /tmp/consent-prov',
+    userText: 'xoá /tmp/consent-prov giúp tôi',
+  });
+  check('(h) user nêu target → allow, không hỏi thẻ', out.kind === 'allow' && asked === false,
+    `kind=${out.kind} asked=${asked}`);
+  check('(h) log ghi allow_authorized',
+    rows.some((r) => r.decision === 'allow_authorized'), JSON.stringify(rows.map((r) => r.decision)));
+}
+
+// (i) Tắt consent → giữ nguyên hành vi chặn cứng cũ (mã JEV_DESTRUCTIVE).
+{
+  const { out, rows } = await runConsent({
+    service: answerWith(['Run it']),
+    config: { enableDestructiveConsent: false },
+  });
+  check('(i) enableDestructiveConsent:false → deny cứng', out.kind === 'deny' && out.info?.code === 'JEV_DESTRUCTIVE',
+    `kind=${out.kind} code=${out.info?.code}`);
+  check('(i) log vẫn là deny (không hỏi thẻ)',
+    rows.some((r) => r.decision === 'deny'), JSON.stringify(rows.map((r) => r.decision)));
+}
+
+// (j) Lớp 6 KHÔNG được gợi ý phục hồi cho một lệnh bị thẻ đồng ý chặn.
+{
+  const logDir = tmpDir('jev-gate-consent-l6-');
+  await withGateCacheJev({ answers: { destructive: 0.9 } }, async () => {
+    const { handlers } = await loadPlugin({
+      services: { userQuestions: answerWith(['Do not run it']) },
+      config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false, enableFailureRecovery: true },
+    });
+    const exec = {
+      name: 'bash', callId: 'c-l6', arguments: { command: 'rm -rf /tmp/consent-l6' },
+      agent: { id: 'a-l6', cwd: '/tmp', session: { id: 's-l6', snapshotEvents: () => [] } },
+      signal: new AbortController().signal,
+    };
+    const denied = await handlers['tools/pre-execute'][0](exec, async () => ({ kind: 'allow' }));
+    const post = await handlers['tools/post-execute'][0](
+      exec,
+      { isError: true, error: denied, content: [{ type: 'text', text: 'blocked' }] },
+      async () => ({ kind: 'allow' }),
+    );
+    check('(j) post-execute bỏ qua deny của thẻ đồng ý (không gợi ý retry)',
+      post?.kind !== 'deny' && (post?.additionalContexts === undefined || post.additionalContexts.length === 0),
+      `kind=${post?.kind} ctx=${JSON.stringify(post?.additionalContexts)}`);
+  });
+}
+
+console.log('\n23. Lớp 3 — tín hiệu ĐO ĐƯỢC là SÀN effort, không bao giờ bị hạ xuống dưới');
+
+/**
+ * Yêu cầu gốc: effort phải dựa trên INPUT của user, nhưng tín hiệu thất bại đo
+ * được (tool error / test fail của turn trước) là bằng chứng THỨ CẤP được cộng
+ * vào và KHÔNG bao giờ bị hạ thấp hơn mức chúng đòi. Đây là các test cho bất
+ * biến đó: input mode (Jev quyết) + sàn tín hiệu.
+ */
+{
+  const llm = {
+    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }),
+  };
+  const seedTask = async (handlers, agent, text) => {
+    await handlers['agent/pre-step'][0](
+      {
+        turn: 1, step: 1, signal: new AbortController().signal, agent,
+        messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }],
+      },
+      async () => ({ kind: 'enter' }),
+    );
+  };
+  const failEvents = (id) => [
+    { type: 'tool/call', data: { turn: 1, callId: id, name: 'bash', arguments: { command: 'npm test' } } },
+    {
+      type: 'tool/result',
+      data: { turn: 1, message: { role: 'tool', toolCallId: id, content: [{ type: 'text', text: 'FAIL x.test.mjs\n1 failed' }] } },
+    },
+  ];
+  const runInput = async ({ answers, events = [], id, config = {} }) => {
+    let out;
+    await withCountingJev(answers, async () => {
+      const { handlers } = await loadPlugin({
+        llm,
+        config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false, ...config },
+      });
+      const agent = { id, session: { id: `sess-${id}`, snapshotEvents: () => events } };
+      await seedTask(handlers, agent, 'việc gì đó');
+      out = await handlers['agent/request'][0](
+        { turn: 2, step: 1, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+    });
+    return out;
+  };
+
+  // 23a. Jev đọc input thấy dễ (low), NHƯNG turn trước có test fail → SÀN high.
+  {
+    const out = await runInput({ answers: { effort: 'low', __confidence: 0.9 }, events: failEvents('t-a'), id: 'floor-a' });
+    check('23a Jev nói low + test fail turn trước → NÂNG lên high (sàn)', out.reasoningEffort === 'high',
+      `effort=${out.reasoningEffort}`);
+  }
+
+  // 23b. Jev nói high, tín hiệu sạch → giữ high (sàn không kéo xuống).
+  {
+    const out = await runInput({ answers: { effort: 'high', __confidence: 0.9 }, events: [], id: 'floor-b' });
+    check('23b Jev nói high + sạch → giữ high', out.reasoningEffort === 'high', `effort=${out.reasoningEffort}`);
+  }
+
+  // 23c. Dưới ngưỡng: 1 tool error (ngưỡng 2) → KHÔNG nâng, giữ low.
+  {
+    const one = [{ type: 'tool/result', data: { turn: 1, message: { isError: true } } }];
+    const out = await runInput({ answers: { effort: 'low', __confidence: 0.9 }, events: one, id: 'floor-c' });
+    check('23c 1 tool error (dưới ngưỡng) → giữ low', out.reasoningEffort === 'low', `effort=${out.reasoningEffort}`);
+  }
+
+  // 23d. Tín hiệu được GỬI cho Jev như bằng chứng thứ cấp (state.measured_signals).
+  {
+    let state;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.questions?.effort) state = body.state;
+      return new Response(JSON.stringify({
+        model: 'jev-stub',
+        answers: { effort: { type: 'choice', choice: 'low', confidence: 0.9, probabilities: { low: 1, high: 0 } } },
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    try {
+      const { handlers } = await loadPlugin({
+        llm,
+        config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+      });
+      const agent = { id: 'floor-d', session: { id: 'sess-floor-d', snapshotEvents: () => failEvents('t-d') } };
+      await seedTask(handlers, agent, 'việc gì đó');
+      await handlers['agent/request'][0](
+        { turn: 2, step: 1, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+    } finally { globalThis.fetch = realFetch; }
+    check('23d request gửi Jev có state.measured_signals = {toolErrors,testFailures}',
+      state?.measured_signals !== undefined && state.measured_signals.testFailures >= 1,
+      JSON.stringify(state?.measured_signals));
+  }
+
+  // 23e. Sàn KHÔNG áp khi model không nhận mức sàn (high) → rơi về mức hợp lệ.
+  {
+    const llmNoHigh = { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }] } }) };
+    let out;
+    await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
+      const { handlers } = await loadPlugin({
+        llm: llmNoHigh,
+        config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+      });
+      const agent = { id: 'floor-e', session: { id: 'sess-floor-e', snapshotEvents: () => failEvents('t-e') } };
+      await seedTask(handlers, agent, 'việc gì đó');
+      out = await handlers['agent/request'][0](
+        { turn: 2, step: 1, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+    });
+    check('23e model không có high → sàn bỏ qua, dùng mức hợp lệ (medium)',
+      out.reasoningEffort === 'medium', `effort=${out.reasoningEffort}`);
+  }
+
+  // 23f. Log ghi rõ lần bị nâng bởi sàn: `floored_from` + `floor`.
+  {
+    const logDir = tmpDir('jev-gate-floor-log-');
+    await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
+      const { handlers } = await loadPlugin({
+        llm,
+        config: { logDir, enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+      });
+      const agent = { id: 'floor-f', session: { id: 'sess-floor-f', snapshotEvents: () => failEvents('t-f') } };
+      await seedTask(handlers, agent, 'việc gì đó');
+      await handlers['agent/request'][0](
+        { turn: 2, step: 1, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+    });
+    const { readFileSync } = await import('node:fs');
+    await sleepMs(250);
+    const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line)).filter((row) => row.type === 'effort_route' && row.decision === 'applied');
+    const row = rows.at(-1);
+    check('23f log có floored_from=low + floor=high', row?.floored_from === 'low' && row?.floor === 'high',
+      JSON.stringify({ from: row?.floored_from, floor: row?.floor, effort: row?.effort }));
+  }
 }
 
 console.log(`\n${'─'.repeat(56)}`);

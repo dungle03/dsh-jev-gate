@@ -53,7 +53,7 @@
       "id": "l4",
       "type": "backend",
       "label": "LỚP 3 · chọn effort",
-      "sublabel": "luật tất định — KHÔNG gọi Jev",
+      "sublabel": "Jev đọc tin nhắn user — low/high, else medium",
       "pos": [
         500,
         260
@@ -293,7 +293,7 @@
       "items": [
         "LỚP 1 · lệnh này có phá dữ liệu không khôi phục được? p ≥ 0.7 → chặn",
         "LỚP 1₀+1ᶜ · prefilter chỉ-đọc + cache verdict — tất định, bỏ qua Jev",
-        "LỚP 1b · provenance: target có trong yêu cầu THẬT của user? không chứng minh được → chặn",
+        "LỚP 1b · provenance: target có trong yêu cầu THẬT của user? không chứng minh được → HỎI user bằng thẻ đồng ý, chờ trả lời",
         "LỚP 2 · xong chưa, có bằng chứng chưa, có cần thi hành không"
       ]
     },
@@ -301,7 +301,7 @@
       "dot": "cyan",
       "title": "Tối ưu vận hành",
       "items": [
-        "LỚP 3 · chọn effort bằng luật tất định (low → high khi turn trước lỗi) — không gọi Jev",
+        "LỚP 3 · Jev đọc nội dung tin nhắn user → low/high, còn lại medium (1 call/lượt)",
         "LỚP 4+5 · hướng nào tối ưu, file nào cần đọc trước",
         "LỚP 6 · tool vừa lỗi: retry / đổi cách / điều tra / báo user",
         "LỚP 7 · turn xong và diff ≥ 20 dòng → tự gọi jev_review",

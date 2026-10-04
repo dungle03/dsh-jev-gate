@@ -21,26 +21,29 @@ bộ não thứ hai.
 
 ## Các lớp
 
-Tám khoảnh khắc Jev được hỏi, cộng bốn cơ chế **tất định không gọi Jev** (đánh dấu
-`—` ở cột Kiểu). Trạng thái mặc định lấy trực tiếp từ `DEFAULTS` trong
-`lib/index.mjs`.
+Tám khoảnh khắc Jev được hỏi, cộng ba cơ chế **tất định không gọi Jev** (đánh dấu
+`—` ở cột Kiểu). Lớp 3 gọi Jev ở chế độ `input`; chỉ thành tất định khi đặt
+`effortDecision: 'deterministic'`. Trạng thái mặc định lấy trực tiếp từ `DEFAULTS`
+trong `lib/index.mjs`.
 
 | Lớp | Hook | Câu hỏi / cơ chế | Kiểu | Mặc định |
 |---|---|---|---|---|
 | **1** · Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
 | **1₀** · Prefilter chỉ-đọc | `tools/pre-execute` (trước 1) | Chứng minh cục bộ lệnh không thể ghi → bỏ qua Jev | — | **bật** |
 | **1ᶜ** · Cache verdict | `tools/pre-execute` (trước khi gọi Jev) | Trùng khoá `tool+command+cwd` → dùng lại verdict | — | **bật** |
-| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi 1 chặn) | Provenance: target có trong yêu cầu THẬT của user? | — | **bật** |
+| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi 1 chặn) | Provenance target; không chứng minh được → thẻ ĐỒNG Ý nổi cho user | `ask` | **bật** |
 | **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
-| **3** · Chọn effort | `agent/request` | Luật tất định từ tín hiệu turn trước | — | **bật** |
+| **3** · Chọn effort | `agent/request` | Jev đọc nội dung tin nhắn user → `low`/`high`; còn lại `medium` | 1/lượt | **bật** |
 | **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | Tự gọi `jev_review` khi turn xong và diff đủ lớn | tool MCP | **bật** |
 | **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | Chạy `jg` khi việc là "tìm X nằm ở đâu" | CLI `jg` | **bật** |
 
-Bốn cơ chế **không gọi Jev** — **1₀** prefilter, **1ᶜ** cache, **1b** provenance,
-**3** effort routing. Đây là các quyết định suy ra được từ cú pháp lệnh / exit
-code / nguồn gốc gốc tin nhắn.
+Ba cơ chế **không gọi Jev** — **1₀** prefilter, **1ᶜ** cache, **1b** provenance.
+Đây là các quyết định suy ra được từ cú pháp lệnh / exit code / nguồn gốc tin
+nhắn. (Lớp **3** ở chế độ `input` có gọi Jev; đặt `effortDecision: deterministic`
+để nó cũng thành tất định. Lớp **1b** khi provenance KHÔNG chứng minh được sẽ
+hỏi user qua thẻ nổi — xem mục "Quyền của user" bên dưới.)
 
 ### Vì sao có lớp "Prefilter chỉ-đọc" (1₀)
 
@@ -117,8 +120,42 @@ hội đủ hai điều — **phá dữ liệu VÀ không được user yêu c�
 ```
 p ≥ 0.7  ──► kiểm provenance: target có trong yêu cầu THẬT của user?
               ├── có    ──► CHO CHẠY  (allow_authorized)
-              └── không / không chứng minh được ──► CHẶN (deny)
+              └── không / không chứng minh được
+                    └──► HỎI USER bằng thẻ ĐỒNG Ý nổi, CHỜ trả lời
+                          ├── đồng ý rõ ràng ──► CHO CHẠY (allow_consented)
+                          └── từ chối / bỏ qua / hết hạn / không có kênh hỏi
+                                └──► CHẶN (deny_consent)
 ```
+
+**v0.13.0 — thẻ ĐỒNG Ý cho hành động do agent tự đề nghị.** Trước đây nhánh
+"không chứng minh được" **chặn cứng**. Nhưng yêu cầu gốc tách làm hai: yêu cầu
+**của user** là kiên quyết (user bảo xoá thì xoá — provenance lo nhánh này), còn
+khi **agent tự đề nghị** xoá giữa lúc chạy thì phải **hỏi user và chờ đồng ý**,
+tuyệt đối không tự xoá khi user chưa cho phép. Nên nhánh sau giờ dựng một **thẻ
+câu hỏi nổi** và chờ:
+
+- **Đồng ý** = user chọn đúng một nhãn `"Run it"`, **không** gõ thêm văn bản tự
+  do (cùng quy tắc với `dsh-plan-mode`). Khi đó chạy, ghi `allow_consented`.
+- **Mọi thứ khác** = CHẶN, ghi `deny_consent`, mã lỗi `JEV_CONSENT_DENIED`:
+  chọn `"Do not run it"`, bỏ qua thẻ (`ASK_CANCELLED`), hết hạn
+  (`ASK_TIMED_OUT`), hoặc không có kênh hỏi user.
+
+**Im lặng KHÔNG phải là đồng ý.** Hết hạn, bỏ qua, hay không có kênh hỏi (agent
+con do agent khác sở hữu không có người trả lời) đều **CHẶN**. Không hành động
+phá dữ liệu nào chạy mà thiếu đồng ý rõ ràng — đây vẫn là lớp **fail-closed**.
+
+**Vì sao dùng `ctx.userQuestions`, không dùng `ctx.approval`.** Đường `{kind:'ask'}`
+của `tools/pre-execute` đi qua `ctx.approval`, nhưng ở bản deploy này `dsh-purge`
+đã vá `dsh-user-approval` thành **auto-grant** (`dsh-user-approval/lib/index.js:173-178`
+trả thẳng `"allowed-once"` mà không hỏi ai). Hỏi qua đó cũng như không — không
+lấy được đồng ý thật. `dsh-user-questions` còn nguyên và đúng là kênh hỏi user
+thật (thẻ nổi, user gõ/chọn được), nên lớp 1b dùng nó. Tiền lệ: thẻ "Plan review"
+của `dsh-plan-mode`.
+
+Hai config điều khiển: `enableDestructiveConsent` (mặc định `true`; tắt thì quay
+về chặn cứng cũ) và `consentTimeoutMs` (mặc định `120000` — quá hạn thì coi như
+từ chối). Lớp 6 cũng **bỏ qua** lệnh bị thẻ đồng ý chặn (mã `JEV_CONSENT_DENIED`)
+— một lệnh bị chặn không phải "tool lỗi" để gợi ý retry.
 
 **v0.9.0 — bỏ call LLM thứ hai.** Bản cũ hỏi Jev một câu `choice` ("user có yêu
 cầu không?") — một round-trip nữa nằm TRÊN đường tới hạn của mọi lệnh bị chặn.
@@ -133,24 +170,67 @@ Bằng chứng `user_request` **chỉ** lấy tin nhắn thật của user (`sou
 nền (`tool-jobs`) và gợi ý do chính plugin chèn — nên nội dung không tin cậy có
 thể lọt vào trường "yêu cầu của user". Provenance tất định dùng đúng nguồn này.
 
-Lớp này **fail-closed**: không chứng minh được thì CHẶN. Khác lớp 1 (fail-open) —
-vì đây là lớp phòng thủ, "không biết" phải nghiêng về phía an toàn.
+Lớp này **fail-closed**: không chứng minh được thì CHẶN (hoặc hỏi user, và mọi
+câu trả lời không phải đồng ý rõ ràng cũng CHẶN). Khác lớp 1 (fail-open) — vì
+đây là lớp phòng thủ, "không biết" phải nghiêng về phía an toàn.
 
-### Vì sao Lớp 3 không gọi Jev
+### Lớp 3 — Jev chọn effort theo nội dung tin nhắn user
 
-Mặc định `low`; nâng `high` chỉ khi turn trước có bằng chứng thất bại ĐO ĐƯỢC
-(≥2 tool error hoặc ≥1 test fail). Sticky trong turn.
+Mặc định (chế độ `input`): mỗi **lượt** user gửi, Jev đọc yêu cầu và quyết mức
+effort cho lượt đó. **Jev chỉ được chọn `low` hoặc `high`**; mọi trường hợp khác
+(Jev lỗi, không có task, trả mức ngoài tập) rơi về `medium`. Sticky trong turn nên
+chỉ tốn **1 call Jev/lượt**, không phải mỗi step.
 
-**Vì sao bỏ classifier per-request (2026-10-01).** Đo trên 120 request liên tiếp:
-cơ chế cũ đổi mức `low↔high` **113/120 lần**, 54,5% quyết định có confidence
-< 0,5, và chiếm **55%** token Jev với mỗi call ~281ms nằm TRÊN đường tới hạn. Đó
-là lớp tốn kém nhất để đổi một quyết định gần như ngẫu nhiên. Research: tín hiệu
-đo được thắng tín hiệu đoán độ khó (arXiv 2505.00127), và router per-step chỉ
-thắng khi là model nhỏ đã TRAIN (<5ms, arXiv 2603.07915) — không phải API
-classifier 1.180 token.
+Hai config điều khiển:
 
-Ghi chú cache (vẫn đúng, nhưng không còn là lý do chính): trên router này đổi
-effort **không** xoá prompt cache — đo được 96% cache hit sau khi đổi.
+- `effortJevChoices` (mặc định `['low','high']`) — tập mức Jev được phép chọn,
+  giao với dải `reasoningEfforts` của model. Giao còn < 2 mức thì không hỏi Jev.
+- `effortFallback` (mặc định `'medium'`) — mức áp khi Jev không quyết được.
+
+**v0.13.0 — tín hiệu THẤT BẠI đo được là SÀN, không phải nguồn chính.** Yêu cầu
+gốc: effort phải dựa trên **mỗi input của user**. Nhưng bỏ qua bằng chứng đo được
+(tool lỗi / test fail ở turn trước) thì vô lý — bước trước đã hỏng là lý do chính
+đáng để nâng effort. Nên: nội dung input vẫn là **nguồn chính** (Jev đọc và
+quyết), còn tín hiệu đo được gửi kèm Jev dưới `state.measured_signals` như **bằng
+chứng bậc hai**, và đóng vai **sàn**:
+
+- Nếu Jev chọn mức **thấp hơn** mức mà tín hiệu đòi (`effortEscalateTo` khi turn
+  trước có ≥ `effortEscalateToolErrors` tool error hoặc ≥ `effortEscalateTestFailures`
+  test fail), mức được **nâng lên sàn**. Không bao giờ hạ xuống dưới sàn.
+- Nếu model không nhận mức sàn, sàn bị bỏ qua và dùng mức hợp lệ gần nhất.
+- Dòng log `effort_route` ghi `floored_from` + `floor` khi sàn nâng mức, và
+  `signals` để kiểm chứng.
+
+Ba config `effortEscalateTo`/`effortEscalateToolErrors`/`effortEscalateTestFailures`
+giờ điều khiển cả sàn ở chế độ `input` (trước chỉ dùng ở `deterministic`).
+`lib/policy.mjs` export `EFFORT_ORDER`, `effortRank`, `effortFloorFromSignals` để
+tính sàn tất định.
+
+Đặt `effortDecision: 'deterministic'` để quay lại luật tín hiệu cũ (mặc định
+`effortDefault`, nâng `effortEscalateTo` khi turn trước có tool error/test fail,
+**không gọi Jev**).
+
+**Vì sao Jev chỉ quyết 2 đầu (đo thật 2026-10-04).** Probe trực tiếp
+`effortQuestion`, 5 lần lặp mỗi độ khó, dải `low/medium/high/max`:
+
+| Độ khó | Kết quả 5 lần | Nhận xét |
+|---|---|---|
+| dễ (liệt kê file) | `low`×5, conf **1.00** | rất chắc |
+| vừa (so sánh 2 lib) | `low`×5, conf 0.29–0.39 | **gộp medium vào low** |
+| khó (truy vết leak) | `low`×3, `high`×2 | **dao động** |
+| cực khó (chứng minh) | `max`×5, conf 0.40–0.50 | khá chắc |
+
+`medium` gần như không bao giờ được chọn (1/14 task, conf 0.35). Jev đáng tin ở
+2 đầu, mơ hồ ở giữa — nên giao 2 đầu cho Jev, giữ giữa cho config.
+
+**Lịch sử.** Lớp này từng là classifier per-request gọi Jev MỌI request
+(2026-09), rồi bị thay bằng luật tất định (2026-10-01) vì đo được cơ chế cũ đổi
+mức `low↔high` **113/120 lần**, 54,5% quyết định conf < 0,5, chiếm **55%** token
+Jev. Chế độ `input` hiện tại khác bản cũ ở chỗ: gọi **1 lần/lượt** (không phải
+mỗi request), chỉ hỏi "yêu cầu này khó không", và **giới hạn Jev trong 2 đầu**.
+
+Ghi chú cache: trên router này đổi effort **không** xoá prompt cache — đo được
+96% cache hit sau khi đổi.
 
 ### Vì sao có lớp "Chọn file nạp vào context" (Lớp 5)
 
@@ -235,7 +315,9 @@ dsh-jev-gate
 ├── LỚP 1b · quyền của user            hook: tools/pre-execute (chỉ khi lớp 1 chặn)
 │   └── provenance TẤT ĐỊNH (KHÔNG gọi Jev): target có trong yêu cầu THẬT của user?
 │       ├── có ──► cho chạy (allow_authorized)
-│       └── không / không chứng minh được ──► CHẶN (fail-closed)
+│       └── không ──► thẻ ĐỒNG Ý nổi (ctx.userQuestions), CHỜ user trả lời
+│           ├── đồng ý rõ ràng ──► cho chạy (allow_consented)
+│           └── từ chối/bỏ qua/hết hạn/không có kênh ──► CHẶN (deny_consent, fail-closed)
 │
 ├── LỚP 2 · kiểm hoàn thành           hook: agent/turn-stopping
 │   └── hỏi Jev (noul ×3): "xong chưa? có bằng chứng chưa? có cần thi hành không?"
@@ -347,7 +429,9 @@ lỗi, không chặn gì. Cài `jg` rồi để nó trên `PATH`.
 - **Fail-open tuyệt đối.** Jev lỗi, chậm, hay trả rác → hành động đi tiếp như
   chưa từng có Jev. Jev không được biến sự cố của nó thành sự cố của workflow.
   Ngoại lệ duy nhất: **sàn catastrophic** (Lớp 1₀) và **Lớp 1b** — hai chỗ này
-  fail-closed vì là phòng thủ.
+  fail-closed vì là phòng thủ. Riêng Lớp 1b, khi provenance không chứng minh được
+  thì nó **hỏi user bằng thẻ nổi và chờ**; mọi câu trả lời không phải đồng ý rõ
+  ràng (kể cả hết hạn / bỏ qua / không có kênh hỏi) đều CHẶN.
 - **Timeout ngắn.** Gate phá dữ liệu chạy trong đường tới hạn của mọi tool call:
   2s. Chậm hơn thì fail-open.
 - **Pin model.** `jev-1.13.0` chứ không `jev-latest`, vì alias dịch chuyển khi
@@ -392,10 +476,13 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
     spawnTimeoutMs: 6000
     contextTimeoutMs: 6000
     failureTimeoutMs: 4000
-    effortDefault: low          # mức effort khi turn trước sạch
-    effortEscalateTo: high      # mức nâng lên khi turn trước có tín hiệu thất bại
-    effortEscalateToolErrors: 2   # ≥2 tool error trong turn trước thì nâng
-    effortEscalateTestFailures: 1 # ≥1 test fail trong turn trước thì nâng
+    effortDecision: input      # 'input' = Jev đọc tin nhắn user; 'deterministic' = luật tín hiệu
+    effortJevChoices: [low, high] # tập mức Jev được phép chọn (chế độ input)
+    effortFallback: medium     # mức áp khi Jev lỗi/không quyết được (chế độ input)
+    effortDefault: low          # mức mặc định ở chế độ deterministic
+    effortEscalateTo: high      # mức nâng lên khi turn trước có tín hiệu thất bại (deterministic + SÀN chế độ input)
+    effortEscalateToolErrors: 2   # ≥2 tool error trong turn trước thì nâng / làm sàn (mọi chế độ)
+    effortEscalateTestFailures: 1 # ≥1 test fail trong turn trước thì nâng / làm sàn (mọi chế độ)
     jevGrepSearchTaskThreshold: 3  # số lệnh grep/find/rg LIÊN TIẾP thì leo thang; 0 = tắt nhánh B
     jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
     jevGrepTimeoutMs: 120000     # ngân sách một lần `jg` (truy vấn MỚI cold 66s–2m5s); quá hạn thì fail-open
@@ -409,6 +496,8 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
     gateVerdictCacheMax: 500            # trần số entry cache (FIFO + LRU-touch)
     gateVerdictCacheMargin: 0.1         # không cache khi |p − threshold| ≤ margin (Jev không tất định)
     enableAuthorizationOverride: true   # lớp 1b provenance — tắt thì chặn mọi lệnh phá dữ liệu
+    enableDestructiveConsent: true      # lớp 1b — provenance không chứng minh được thì hỏi user bằng thẻ nổi
+    consentTimeoutMs: 120000            # hết hạn thẻ đồng ý thì coi như từ chối (CHẶN)
     enableCompletionCheck: true
     enableEffortRouting: true
     enableSpawnHint: true
@@ -424,15 +513,17 @@ Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 ## Kiểm chứng
 
 ```bash
-bash verify.sh               # 7 mục (0–6), cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs       # 306 check, không cần secret
-node tests/attack-corpus.mjs # corpus tấn công độc lập — yêu cầu 0 lọt
-node tests/live-check.mjs    # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
+bash verify.sh                    # 8 mục (0–7), cần DSH đang chạy + TYPESAFE_API_KEY
+node tests/offline.mjs            # 346 check, không cần secret
+node tests/attack-corpus.mjs      # corpus tấn công độc lập — yêu cầu 0 lọt
+node tests/live-check.mjs         # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
+node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua nếu không có)
 ```
 
-- `verify.sh` — 7 mục: vị trí, cấu trúc, syntax, resolve dependency, đăng ký
-  profile, log boot thật, gọi Jev thật với case đã biết đáp án. Exit 1 nếu hỏng.
-- `tests/offline.mjs` — 306 check không cần secret: fail-open, bất biến model,
+- `verify.sh` — 8 mục: vị trí, cấu trúc, syntax, resolve dependency, đăng ký
+  profile, log boot thật, gọi Jev thật với case đã biết đáp án, và thẻ đồng ý qua
+  `UserQuestionService` thật. Exit 1 nếu hỏng.
+- `tests/offline.mjs` — 346 check không cần secret: fail-open, bất biến model,
   chỉ gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export,
   prefilter vòng `for`, cache verdict (bất biến an toàn, không cache sát ngưỡng),
   provenance 1b end-to-end qua hook thật, và Lớp 8 (parse output `jg`, nhận diện
@@ -443,6 +534,12 @@ node tests/live-check.mjs    # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
   16 lệnh phá luôn-deny + 11 cặp ngụy trang). Mutation test chứng minh corpus có
   răng: tiêm lỗi giả → 12–16/83 lọt, corpus báo LỖ HỔNG.
 - `tests/live-check.mjs` — gọi Jev API thật với case đã biết đáp án.
+- `tests/consent-integration.mjs` — chạy câu hỏi đồng ý của Lớp 1b qua
+  `UserQuestionService` **thật** (import `dsh-user-questions` + `cordis` từ DSH
+  cục bộ): câu hỏi hợp lệ qua được validation thật (không `BAD_INTENT`), `approve`
+  sai / thiếu `detail` → `BAD_INTENT`, đồng ý + custom → refused, và đường hết
+  hạn `askTimed` thật → `{pending:true}` → CHẶN. Bỏ qua (exit 0) khi máy không có
+  DSH, nên CI không đỏ.
 - `tools/repair-session-source.mjs` — vá session log cũ bị hỏng do bản < 0.3.1 ghi
   `source` dạng chuỗi trần (xem CHANGELOG 0.3.1). Chạy khi dsh đã tắt:
 
@@ -467,18 +564,19 @@ Số đo trên **API thật** (`jev-1.13.0`) và **log quyết định thật**
 (`~/.local/share/dsh-jev-gate/decisions.jsonl`). Log là file sống — số sẽ trôi;
 mỗi hàng ghi rõ mốc.
 
-### Cơ chế hiện tại (v0.10.x)
+### Cơ chế hiện tại (v0.13.x)
 
 | Phép đo | Kết quả |
 |---|---|
-| Test offline (`tests/offline.mjs`) | **306 check** PASS, 0 lỗi |
+| Test offline (`tests/offline.mjs`) | **346 check** PASS, 0 lỗi |
 | Corpus tấn công (`tests/attack-corpus.mjs`) | **83 lệnh** — **0 lọt** |
 | Bất biến an toàn (test offline) | **329 lệnh phá dữ liệu** — 0 lọt; fuzz 384+39 — 0 lọt |
 | Prefilter phủ trên log thật (3.369 lệnh `allow`, 2026-10-02) | **13,6%** (459 lệnh) — trước v0.10.0 là 0,03% |
 | Cache verdict tiết kiệm trên log thật | **~6,2%** call gate (lệnh trùng y hệt) |
 | Gate hữu dụng (`gate_useful_ratio`, 12.166 bản ghi) | **0,96%** — 117 deny / 12.166 lần chạy |
 | Lớp 1b — call Jev mỗi lần gate chặn | **1** (destructive); trước v0.9.0 là 2 |
-| Lớp 3 — call Jev cho effort | **0** (luật tất định) |
+| Lớp 1b — provenance không chứng minh được | **0** call Jev bổ sung; hỏi user qua thẻ nổi, chờ đồng ý rõ ràng |
+| Lớp 3 — call Jev cho effort | **1/lượt** (chế độ `input`); 0 ở chế độ `deterministic` |
 | Model có bị đổi không? | không — bất biến qua mọi test |
 
 ### Lịch sử (các bản trước)

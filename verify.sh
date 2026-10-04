@@ -59,6 +59,14 @@ else
   fail "live check thất bại (kiểm TYPESAFE_API_KEY và mạng)"
 fi
 
+echo "7. Thẻ đồng ý qua UserQuestionService THẬT (bỏ qua nếu không có DSH)"
+if node "$PLUGIN/tests/consent-integration.mjs" >/tmp/jev-gate-consent-int.$$ 2>&1; then
+  pass "$(tail -1 /tmp/jev-gate-consent-int.$$)"
+else
+  fail "consent integration thất bại — xem /tmp/jev-gate-consent-int.$$"
+fi
+rm -f /tmp/jev-gate-consent-int.$$
+
 echo
 [ $FAIL -eq 0 ] && echo "TẤT CẢ MỤC PASS" || echo "CÓ MỤC HỎNG"
 exit $FAIL

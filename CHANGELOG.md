@@ -3,6 +3,180 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.13.0] — 2026-10-04
+
+### Thêm — Lớp 1b: thẻ ĐỒNG Ý cho hành động do agent tự đề nghị
+
+Yêu cầu gốc tách làm hai:
+
+- **Yêu cầu của user là kiên quyết** — user bảo xoá thì xoá. Provenance tất định
+  (v0.9.0) đã lo nhánh này: `allow_authorized`.
+- **Agent tự đề nghị xoá giữa lúc chạy** thì **phải hỏi user và chờ đồng ý**,
+  tuyệt đối không tự xoá khi user chưa cho phép. Trước đây nhánh này **chặn cứng**
+  (`deny`), tức là user muốn cho qua cũng không có cách nào đồng ý.
+
+Nay khi provenance **không** chứng minh được quyền, Lớp 1b dựng một **thẻ câu hỏi
+nổi** qua `ctx.userQuestions` và **chờ** câu trả lời:
+
+```
+provenance không chứng minh được
+  └─► thẻ ĐỒNG Ý nổi (ctx.userQuestions), chờ user
+        ├── đồng ý rõ ràng ──► cho chạy (allow_consented)
+        └── từ chối/bỏ qua/hết hạn/không có kênh ──► CHẶN (deny_consent)
+```
+
+- **Đồng ý** = chọn đúng một nhãn `"Run it"`, **không** gõ văn bản tự do (cùng
+  quy tắc với `dsh-plan-mode`). Chạy, ghi `allow_consented`.
+- **Mọi thứ khác** = CHẶN, ghi `deny_consent`, mã lỗi `JEV_CONSENT_DENIED`:
+  `"Do not run it"`, `ASK_CANCELLED` (bỏ qua), `ASK_TIMED_OUT` (hết hạn),
+  `ASK_ABORTED`, hoặc không có kênh hỏi.
+
+Thẻ dùng `service.askTimed(request, callId, consentTimeoutMs)` (có đếm ngược +
+claim) khi có, lùi về `service.ask(request)` khi không. Thẻ mang `detail` = lệnh
+đã rút gọn, hai lựa chọn, và `intent: {kind:'jev-destructive-consent',
+approve:'Run it', callId}`.
+
+Hai config mới:
+
+- `enableDestructiveConsent` (mặc định `true`) — tắt thì quay về chặn cứng cũ.
+- `consentTimeoutMs` (mặc định `120000`) — quá hạn thì coi như từ chối.
+
+Lớp 6 (`tools/post-execute`) thêm mã `JEV_CONSENT_DENIED` vào danh sách bỏ qua:
+một lệnh bị thẻ đồng ý chặn không phải "tool lỗi" để gợi ý retry.
+
+### Thêm — Lớp 3: tín hiệu thất bại đo được là SÀN effort
+
+Yêu cầu gốc: effort phải dựa trên **mỗi input của user**. Nhưng bỏ qua bằng chứng
+đo được (tool lỗi / test fail ở turn trước) thì vô lý. Nên nội dung input vẫn là
+**nguồn chính** (Jev đọc và quyết), còn tín hiệu đo được gửi kèm Jev dưới
+`state.measured_signals` như **bằng chứng bậc hai**, và đóng vai **sàn**:
+
+- Jev chọn mức **thấp hơn** mức mà tín hiệu đòi (`effortEscalateTo` khi turn
+  trước có ≥ `effortEscalateToolErrors` tool error hoặc ≥ `effortEscalateTestFailures`
+  test fail) → **nâng lên sàn**. Không bao giờ hạ xuống dưới sàn.
+- Model không nhận mức sàn → bỏ qua sàn, dùng mức hợp lệ gần nhất.
+- Log `effort_route` ghi thêm `floored_from` + `floor` khi sàn nâng mức, và
+  `signals` để kiểm chứng.
+
+Ba config `effortEscalateTo`/`effortEscalateToolErrors`/`effortEscalateTestFailures`
+giờ điều khiển cả sàn ở chế độ `input` (trước chỉ dùng ở `deterministic`).
+`lib/policy.mjs` export thêm `EFFORT_ORDER`, `effortRank`, `effortFloorFromSignals`.
+
+### Vì sao dùng `ctx.userQuestions`, không dùng `ctx.approval`
+
+Đường `{kind:'ask'}` của `tools/pre-execute` đi qua `ctx.approval`, nhưng ở bản
+deploy này `dsh-purge` đã vá `dsh-user-approval` thành **auto-grant**
+(`dsh-user-approval/lib/index.js:173-178` trả thẳng `"allowed-once"` mà không hỏi
+ai). Hỏi qua đó không lấy được đồng ý thật. `dsh-user-questions` còn nguyên và
+đúng là kênh hỏi user thật, nên Lớp 1b dùng nó.
+
+### Test
+
+- Thêm 20 test Lớp 1b (`tests/offline.mjs` mục 22): đồng ý → allow +
+  `allow_consented`; từ chối → deny `JEV_CONSENT_DENIED` + `deny_consent`; đồng ý
+  kèm văn bản tự do → vẫn deny; hết hạn (`askTimed` trả `{pending:true}`) → deny,
+  kiểm đúng `callId`/`timeoutMs`; `ASK_CANCELLED` → deny; thiếu service → deny
+  `unavailable`; service ném lỗi lạ → deny (không fail-open); user nêu target →
+  `allow_authorized` và **không** hỏi thẻ; `enableDestructiveConsent:false` →
+  `JEV_DESTRUCTIVE`; Lớp 6 bỏ qua lệnh bị thẻ chặn.
+- Thêm 6 test Lớp 3 (mục 23): Jev `low` + test fail → nâng `high` (sàn); Jev
+  `high` + sạch → giữ `high`; 1 tool error (dưới ngưỡng) → giữ `low`; request gửi
+  Jev có `measured_signals`; model thiếu `high` → bỏ sàn, dùng `medium`; log có
+  `floored_from`/`floor`.
+- `node tests/offline.mjs` → **TẤT CẢ PASS**.
+- Thêm `tests/consent-integration.mjs` — chạy câu hỏi đồng ý qua
+  `UserQuestionService` **THẬT** (import `dsh-user-questions` + `cordis` từ DSH
+  cục bộ): câu hỏi hợp lệ qua được validation thật (không `BAD_INTENT`), parse
+  answer thật ra `approved`; `intent.approve` sai hoặc thiếu `detail` → service
+  ném `BAD_INTENT` (chứng minh validation thật sự chạy); đồng ý + custom →
+  refused; và đường hết hạn `askTimed` thật → `{pending:true}` → CHẶN. 10 check
+  PASS. File này **bỏ qua** (exit 0) khi máy không có DSH, nên CI Node 20/22
+  không đỏ. `verify.sh` mục 7 chạy nó.
+
+## [0.12.0] — 2026-10-04
+
+### Đổi — Lớp 3 chế độ `input`: Jev chỉ quyết `low`/`high`, còn lại `medium`
+
+Operator chốt: Jev chỉ đẩy hai đầu; mọi trường hợp khác giữ `medium`.
+
+Thêm hai config:
+
+- `effortJevChoices` (mặc định `['low','high']`) — tập mức Jev **được phép**
+  chọn. Giao với dải `reasoningEfforts` của model; nếu giao còn **< 2 mức** thì
+  không hỏi Jev nữa (không có gì để chọn) và dùng thẳng fallback.
+- `effortFallback` (mặc định `'medium'`) — mức áp khi Jev lỗi / không có task /
+  trả mức ngoài tập cho phép.
+
+Hệ quả: Jev trả `max` hay `medium` (ngoài tập) đều **không** được áp — rơi về
+`medium`. Đây là bất biến phân quyền: Jev chỉ đẩy 2 đầu, phần giữa do config
+quyết.
+
+### Vì sao (đo thật, không phải suy đoán)
+
+Probe trực tiếp Jev (`effortQuestion`, 5 lần lặp mỗi độ khó, dải
+`low/medium/high/max`):
+
+| Độ khó | Kết quả 5 lần | Nhận xét |
+|---|---|---|
+| dễ (liệt kê file) | `low`×5, conf **1.00** | rất chắc |
+| vừa (so sánh 2 lib) | `low`×5, conf 0.29–0.39 | **gộp medium vào low** |
+| khó (truy vết leak) | `low`×3, `high`×2 | **dao động** |
+| cực khó (chứng minh) | `max`×5, conf 0.40–0.50 | khá chắc |
+
+`medium` gần như không bao giờ được chọn (1/14 task, conf 0.35). Jev đáng tin ở
+2 đầu, mơ hồ ở giữa — nên giao 2 đầu cho Jev, giữ giữa cho config là hợp lý.
+
+### Test
+
+- Thêm 4 test: Jev trả `max` → không áp, rơi medium; Jev trả `medium` → giữ
+  medium; model chỉ nhận 1 mức hợp lệ → không gọi Jev; `effortJevChoices` đổi
+  được.
+- 3 test cũ đổi kỳ vọng fallback từ `low` → `medium`.
+- `offline.mjs` (13 test chế độ input), `live-check.mjs`, `attack-corpus.mjs` đều
+  PASS.
+- Chứng minh trong **DSH boot thật** (profile abB + overlay 9router):
+  dễ → `low` (conf 0.99), khó → `high` (conf 0.52), Jev lỗi → `medium`
+  (`reason: fail_open`).
+
+## [0.11.0] — 2026-10-04
+
+### Thêm — Lớp 3 chế độ `input`: Jev chọn effort từ nội dung tin nhắn user
+
+Operator muốn: mỗi lượt user gửi, Jev đọc yêu cầu rồi quyết định lượt đó chạy ở
+mức effort nào. Trước đây Lớp 3 là luật tất định (mặc định `low`, chỉ nâng khi
+turn trước có tool error/test fail) và **không hề đọc nội dung yêu cầu**.
+
+Thêm config `effortDecision`:
+
+- `'input'` (**mặc định mới**) — mỗi lượt user, gọi Jev `effortQuestion` với task
+  text (lấy từ `notePrompt` ở `agent/pre-step`), chọn mức theo độ khó yêu cầu.
+- `'deterministic'` — luật tín hiệu cũ, giữ nguyên làm đường lui.
+
+Bất biến giữ nguyên:
+
+- **Sticky theo turn** ⇒ Jev chỉ được gọi **1 lần/lượt**, không phải mỗi step.
+- **FAIL-OPEN** về `effortDefault` (low) khi Jev lỗi/timeout/không có task.
+- Mức Jev trả **phải nằm trong dải `reasoningEfforts`** của model, nếu không lùi
+  mặc định (không áp mức model không nhận).
+- **Không bao giờ đổi provider/model** — chỉ ghi `reasoningEffort`.
+- Log `effort_route` ghi thêm `source: 'jev_input' | 'deterministic'` và
+  `confidence` để đo được lớp này có tác dụng không.
+
+Đánh đổi đã biết (ghi rõ để không tự huyễn): chế độ `input` tốn **1 call Jev/lượt
+trên đường tới hạn** (~281ms) và có thể dao động mức giữa các lượt — đúng những
+gì bản classifier 2026-09 từng mắc. Khác biệt: lần này gọi **1 lần/lượt** thay vì
+mỗi request, và chỉ hỏi "yêu cầu này khó không", không hỏi lại trong cùng lượt.
+
+### Test
+
+- Thêm 9 test mục `11z` cho chế độ `input`: Jev chọn high/low, sticky 1 call/4
+  step, fail-open khi lỗi mạng, mức ngoài dải → lùi mặc định, không task → không
+  gọi Jev, sang turn mới hỏi lại.
+- Mục 11 cũ (20 test) và mục 19 giữ nguyên hành vi bằng cách opt-in
+  `effortDecision: 'deterministic'`.
+- `offline.mjs`, `live-check.mjs`, `verify.sh` đều PASS (gồm "lớp effort áp được
+  reasoningEffort" trên Jev API thật).
+
 ## [0.10.3] — 2026-10-02
 
 ### Sửa — vẽ lại sơ đồ kiến trúc cho khớp v0.10.3
