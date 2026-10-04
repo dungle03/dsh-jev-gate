@@ -21,8 +21,10 @@ bộ não thứ hai.
 
 ## Các lớp
 
-Tám khoảnh khắc Jev được hỏi, cộng ba cơ chế **tất định không gọi Jev** (đánh dấu
-`—` ở cột Kiểu). Lớp 3 gọi Jev ở chế độ `input`; chỉ thành tất định khi đặt
+Tám khoảnh khắc Jev được hỏi, cộng các cơ chế **tất định không gọi Jev** (đánh dấu
+`—` ở cột Kiểu): prefilter chỉ-đọc (**1₀**) và cache verdict (**1ᶜ**). Lớp **1b**
+cũng tất định, nhưng khi không chứng minh được quyền thì hỏi user qua thẻ nổi
+(Kiểu `ask`). Lớp 3 gọi Jev ở chế độ `input`; chỉ thành tất định khi đặt
 `effortDecision: 'deterministic'`. Trạng thái mặc định lấy trực tiếp từ `DEFAULTS`
 trong `lib/index.mjs`.
 
@@ -33,7 +35,7 @@ trong `lib/index.mjs`.
 | **1ᶜ** · Cache verdict | `tools/pre-execute` (trước khi gọi Jev) | Trùng khoá `tool+command+cwd` → dùng lại verdict | — | **bật** |
 | **1b** · Quyền của user | `tools/pre-execute` (chỉ khi 1 chặn) | Provenance target; không chứng minh được → thẻ ĐỒNG Ý nổi cho user | `ask` | **bật** |
 | **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
-| **3** · Chọn effort | `agent/request` | Jev đọc nội dung tin nhắn user → `low`/`high`; còn lại `medium` | 1/lượt | **bật** |
+| **3** · Chọn effort | `agent/request` | Jev đọc nội dung tin nhắn user → `low`/`high`; còn lại `medium`; tín hiệu đo được nâng lên sàn | 1/lượt | **bật** |
 | **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | Tự gọi `jev_review` khi turn xong và diff đủ lớn | tool MCP | **bật** |
@@ -352,8 +354,8 @@ dsh-jev-gate
 │       └── chưa xong / thiếu bằng chứng ──► đẩy làm tiếp
 │
 ├── LỚP 3 · chọn mức suy nghĩ         hook: agent/request
-│   └── LUẬT TẤT ĐỊNH (KHÔNG gọi Jev): mặc định low; nâng high khi turn
-│       trước có ≥2 tool error hoặc ≥1 test fail; sticky trong cùng turn
+│   └── chế độ `input` (mặc định): Jev đọc yêu cầu user → low/high; còn lại medium
+│       tín hiệu thất bại turn trước là SÀN (chỉ nâng, không hạ); sticky trong turn
 │       └── ghi reasoningEffort  ──► provider và model GIỮ NGUYÊN
 │
 ├── LỚP 4+5 · chọn hướng + chọn file  hook: agent/pre-step (chỉ step 1)
@@ -390,7 +392,7 @@ LỚP 4+5 · agent/pre-step (step 1)  chọn hướng + chọn file nạp contex
       ▼
 LỚP 8 · agent/pre-step             việc là "tìm X ở đâu"? → chạy `jg` NỀN
       ▼
-LỚP 3 · agent/request              mỗi lần gọi model: chọn reasoningEffort (luật tất định)
+LỚP 3 · agent/request              mỗi lượt: Jev chọn reasoningEffort (low/high, else medium)
       │                            → ghi reasoningEffort, provider và model GIỮ NGUYÊN
       ▼
 LLM sinh phản hồi hoặc gọi tool
@@ -416,9 +418,10 @@ LỚP 7 · agent/turn-stopping        lượt thật sự xong và diff đủ l�
 lượt kết thúc
 ```
 
-> LỚP 4+5 và LỚP 8 (nhánh A) chỉ chạy một lần mỗi lượt (step 1). LỚP 3 chạy ở
-> **mỗi bước**, còn LLM, LỚP 1, LỚP 1b, LỚP 6 và LỚP 8 (nhánh B) **lặp lại**
-> mỗi khi có tool call. Sơ đồ trên vẽ một vòng để dễ đọc.
+> LỚP 4+5 và LỚP 8 (nhánh A) chỉ chạy một lần mỗi lượt (step 1). LỚP 3 móc vào
+> **mỗi bước**, nhưng chỉ **hỏi Jev một lần mỗi lượt** rồi tái dùng (sticky); còn
+> LLM, LỚP 1, LỚP 1b, LỚP 6 và LỚP 8 (nhánh B) **lặp lại** mỗi khi có tool call.
+> Sơ đồ trên vẽ một vòng để dễ đọc.
 
 ## Cài đặt
 
@@ -516,6 +519,7 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
     jevGrepFailureBreaker: 3    # jg hỏng liên tiếp N lần thì tắt Lớp 8 cho hết phiên
     jevGrepBackground: true     # chạy jg NỀN, không chặn turn (cold ~2 phút/truy vấn mới)
     jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
+    logDir:                     # thư mục log; bỏ trống = ~/.local/share/dsh-jev-gate (đường để test cô lập)
     enableDestructiveGate: true
     enableReadOnlyPrefilter: true       # lớp 1₀ — chứng minh chỉ-đọc thì bỏ qua Jev
     enableCatastrophicFloor: true       # sàn tất định — deny cứng, không fail-open
@@ -541,7 +545,7 @@ Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 
 ```bash
 bash verify.sh                    # 8 mục (0–7), cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs            # 346 check, không cần secret
+node tests/offline.mjs            # 360 check, không cần secret
 node tests/attack-corpus.mjs      # corpus tấn công độc lập — yêu cầu 0 lọt
 node tests/live-check.mjs         # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
 node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua nếu không có)
@@ -550,13 +554,14 @@ node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua n�
 - `verify.sh` — 8 mục: vị trí, cấu trúc, syntax, resolve dependency, đăng ký
   profile, log boot thật, gọi Jev thật với case đã biết đáp án, và thẻ đồng ý qua
   `UserQuestionService` thật. Exit 1 nếu hỏng.
-- `tests/offline.mjs` — 346 check không cần secret: fail-open, bất biến model,
+- `tests/offline.mjs` — 360 check không cần secret: fail-open, bất biến model,
   chỉ gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export,
   prefilter vòng `for`, cache verdict (bất biến an toàn, không cache sát ngưỡng),
-  provenance 1b end-to-end qua hook thật, và Lớp 8 (parse output `jg`, nhận diện
-  task tìm-kiếm / lệnh dò tìm thô, trần mỗi turn, fail-open). Test Lớp 8 dùng một
-  script `jg` **giả** trên PATH — không bao giờ gọi `jg` thật, nên chạy được
-  trong CI không có mạng lẫn không có `jg`.
+  provenance 1b end-to-end qua hook thật, câu hỏi effort TURN-LEVEL (khoá văn bản
+  instructions + criteria qua đúng đường plugin), và Lớp 8 (parse output `jg`,
+  nhận diện task tìm-kiếm / lệnh dò tìm thô, trần mỗi turn, fail-open). Test Lớp 8
+  dùng một script `jg` **giả** trên PATH — không bao giờ gọi `jg` thật, nên chạy
+  được trong CI không có mạng lẫn không có `jg`.
 - `tests/attack-corpus.mjs` — corpus tấn công độc lập (56 vòng `for` nguy hiểm +
   16 lệnh phá luôn-deny + 11 cặp ngụy trang). Mutation test chứng minh corpus có
   răng: tiêm lỗi giả → 12–16/83 lọt, corpus báo LỖ HỔNG.
@@ -595,7 +600,7 @@ mỗi hàng ghi rõ mốc.
 
 | Phép đo | Kết quả |
 |---|---|
-| Test offline (`tests/offline.mjs`) | **346 check** PASS, 0 lỗi |
+| Test offline (`tests/offline.mjs`) | **360 check** PASS, 0 lỗi |
 | Corpus tấn công (`tests/attack-corpus.mjs`) | **83 lệnh** — **0 lọt** |
 | Bất biến an toàn (test offline) | **329 lệnh phá dữ liệu** — 0 lọt; fuzz 384+39 — 0 lọt |
 | Prefilter phủ trên log thật (3.369 lệnh `allow`, 2026-10-02) | **13,6%** (459 lệnh) — trước v0.10.0 là 0,03% |

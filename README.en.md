@@ -459,9 +459,10 @@ LAYER 7 · agent/turn-stopping       turn really ended and diff is large enough
 turn ends
 ```
 
-> LAYER 4+5 and LAYER 8 (branch A) run once per turn (step 1). LAYER 3 runs on
-> **every step**, while the LLM, LAYER 1, LAYER 1b, LAYER 6 and LAYER 8 (branch
-> B) **repeat** on every tool call. The diagram draws one loop for readability.
+> LAYER 4+5 and LAYER 8 (branch A) run once per turn (step 1). LAYER 3 is hooked on
+> **every step**, but asks Jev **once per turn** and reuses the answer (sticky);
+> the LLM, LAYER 1, LAYER 1b, LAYER 6 and LAYER 8 (branch B) **repeat** on every
+> tool call. The diagram draws one loop for readability.
 
 ## Install
 
@@ -560,6 +561,7 @@ page. The list below matches `DEFAULTS` and `Config` in `lib/index.mjs`.
     jevGrepFailureBreaker: 3    # after N consecutive jg failures, disable Layer 8 for the session
     jevGrepBackground: true     # run jg in the BACKGROUND, never blocking the turn
     jevGrepExcerptCap: 4000     # max excerpt characters injected into context
+    logDir:                     # log directory; empty = ~/.local/share/dsh-jev-gate (the isolation hook for tests)
     enableDestructiveGate: true
     enableReadOnlyPrefilter: true       # layer 1₀ — proven read-only skips Jev
     enableCatastrophicFloor: true       # deterministic floor — hard deny, never fail-open
@@ -586,7 +588,7 @@ silently.
 
 ```bash
 bash verify.sh                    # 8 sections (0–7), needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs            # 346 checks, no secret needed
+node tests/offline.mjs            # 360 checks, no secret needed
 node tests/attack-corpus.mjs      # independent attack corpus — requires 0 leaks
 node tests/live-check.mjs         # 10 checks, needs TYPESAFE_API_KEY + network
 node tests/consent-integration.mjs # 10 checks, needs a local DSH (skipped if absent)
@@ -595,17 +597,18 @@ node tests/consent-integration.mjs # 10 checks, needs a local DSH (skipped if ab
 - `verify.sh` — 8 sections: location, structure, syntax, dependency resolution,
   profile registration, real boot log, real Jev call with a known answer, and the
   consent card through the real `UserQuestionService`. Exit 1 if any fails.
-- `tests/offline.mjs` — 346 checks with no secret: fail-open, model invariance,
+- `tests/offline.mjs` — 360 checks with no secret: fail-open, model invariance,
   shell-tool-only gating, Layer 4 guard, real-user-message filtering, export
   contract, the `for` loop prefilter, the verdict cache (safety invariants, no
   caching near the threshold), 1b provenance and the consent card end-to-end
   through the real hook (approve → `allow_consented`; refuse / dismiss / timeout
   / no channel → `JEV_CONSENT_DENIED`), the Layer 3 effort floor
   (`measured_signals` sent, raised to the floor, skipped when unsupported,
-  `floored_from` + `floor` in the log), and Layer 8 (parsing `jg` output,
-  detecting search tasks / raw search commands, per-turn cap, fail-open). The
-  Layer 8 test uses a **fake** `jg` script on PATH — it never calls the real
-  `jg`, so it runs in CI with no network and no `jg`.
+  `floored_from` + `floor` in the log), the TURN-LEVEL effort question (the
+  instructions and criteria are pinned through the real plugin path), and Layer 8
+  (parsing `jg` output, detecting search tasks / raw search commands, per-turn
+  cap, fail-open). The Layer 8 test uses a **fake** `jg` script on PATH — it
+  never calls the real `jg`, so it runs in CI with no network and no `jg`.
 - `tests/attack-corpus.mjs` — independent attack corpus (56 dangerous `for` loops
   + 16 always-deny commands + 11 disguise pairs). A mutation test proves the
   corpus has teeth: injecting fake bugs → 12–16/83 leak, the corpus reports a
@@ -647,7 +650,7 @@ drift; each row states its snapshot.
 
 | Measurement | Result |
 |---|---|
-| Offline tests (`tests/offline.mjs`) | **346 checks** PASS, 0 failures |
+| Offline tests (`tests/offline.mjs`) | **360 checks** PASS, 0 failures |
 | Attack corpus (`tests/attack-corpus.mjs`) | **83 commands** — **0 leaks** |
 | Safety invariants (offline) | **329 destructive commands** — 0 leak; fuzz 384+39 — 0 leak |
 | Prefilter coverage on the real log (3,369 `allow` commands, 2026-10-02) | **13.6%** (459 commands) — before v0.10.0 it was 0.03% |
