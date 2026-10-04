@@ -251,6 +251,36 @@ deterministically.
 `medium` is almost never chosen (1/14 tasks, conf 0.35). Jev is reliable at the
 two ends and vague in the middle — so the ends go to Jev, the middle to config.
 
+**v0.13.1 — the effort question must be TURN-LEVEL, not per-step.** The old
+phrasing asked *"which reasoning effort is sufficient for the NEXT generation"* —
+correct for the old per-step reuse mechanism, but WRONG in practice: Layer 3
+fixes the level for the WHOLE turn and keeps it (sticky). Measured on **26
+labelled tasks × 5 runs**:
+
+| Phrasing | Correct | easy (16) | hard (10) |
+|---|---|---|---|
+| old — "NEXT generation" | 21/26 | 16/16 | **5/10** |
+| new — "fixed for the WHOLE turn … ENTIRE request" | **26/26** | 16/16 | **10/10** |
+
+All 5 old-phrasing failures share one shape: a request that **names a symptom to
+diagnose** ("memory leak", "race condition", "slow query, cause unknown") was
+scored `low` because its first step is just reading a file — even though the whole
+turn needs `high`. The new phrasing states the level applies to the whole turn and
+that "a request whose cause is not yet known is not a routine request"; it does
+**not** over-escalate (easy stays 16/16) and is stable across 3 repeats.
+
+**Confidence is NOT used to gate.** Measured on the same labelled set: the
+confidence band of WRONG cases (0.52–0.57) sits entirely inside the band of RIGHT
+cases (0.00–0.79) — any threshold that cuts the wrong ones also cuts the right
+ones. So `confidence` is only written to the `effort_route` log for the operator;
+the instructions no longer promise it decides reuse (which was never true in
+`input` mode).
+
+At the same time `EFFORT_MEANING` (the criteria Jev reads) was aligned: the old
+`low` said *"…including the easy opening step of a hard task"* — a per-step
+carve-out that contradicts the turn-level phrasing. Now `low` = *"the whole
+request is routine or mechanical"*. Re-measured: still **26/26**.
+
 **History.** This layer was once a per-request classifier calling Jev on EVERY
 request (2026-09), then replaced by a deterministic rule (2026-10-01) after
 measuring the old mechanism flipping `low↔high` **113/120 times** with 54.5% of

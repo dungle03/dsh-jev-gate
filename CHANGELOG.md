@@ -3,6 +3,56 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.13.1] — 2026-10-04
+
+### Sửa — câu hỏi chọn effort là TURN-LEVEL, không phải per-step (Lớp 3)
+
+Câu hỏi `effortQuestion` cũ hỏi *"which reasoning effort is sufficient for the
+NEXT generation"*. Điều đó đúng với cơ chế tái dùng theo từng step ngày xưa,
+nhưng **sai với thực tế hiện tại**: Lớp 3 chốt mức cho CẢ turn rồi giữ nguyên
+(sticky theo turn). Hệ quả đo được trên **26 task có nhãn × 5 lần**:
+
+| Phrasing | Đúng | easy (16) | hard (10) |
+|---|---|---|---|
+| cũ — "NEXT generation" | 21/26 | 16/16 | **5/10** |
+| mới — "fixed for the WHOLE turn … ENTIRE request" | **26/26** | 16/16 | **10/10** |
+
+Cả 5 ca sai của phrasing cũ cùng một dạng: yêu cầu **nêu triệu chứng cần chẩn
+đoán** ("memory leak", "race condition", "query chậm chưa rõ nguyên nhân") bị
+chấm `low` vì bước đầu tiên chỉ là đọc file — dù cả turn cần `high`. Phrasing mới
+nói rõ mức áp cho toàn turn và "yêu cầu mà nguyên nhân chưa biết thì không phải
+yêu cầu thường". Không over-escalate (easy vẫn 16/16), ổn định qua 3 lần lặp.
+
+### Sửa — bỏ lời hứa sai về confidence trong instructions
+
+Instructions cũ nói confidence *"is used to decide whether this level can be
+carried into the following step"*. Ở chế độ `input` điều này **chưa từng đúng**:
+sticky theo turn, không theo confidence. Đo trên cùng tập nhãn cho thấy ngưỡng
+confidence **không tách được** ca đúng/sai (dải ca sai 0,52–0,57 nằm trọn trong
+dải ca đúng 0,00–0,79). Nay instructions nói thẳng confidence chỉ được ghi log
+cho người vận hành. Hành vi không đổi — chỉ bỏ một lời hứa khiến Jev hiệu chỉnh
+confidence sai hướng.
+
+### Sửa — `EFFORT_MEANING.low` bỏ carve-out per-step
+
+Criteria là thứ Jev đọc để phân biệt các mức, nên nó phải khớp phrasing turn-level.
+Bản cũ định nghĩa `low` là *"a routine or mechanical next step … including the easy
+opening step of a hard task"* — đúng với phrasing cũ nhưng **tự mâu thuẫn** với
+phrasing mới (vốn nói rõ mức áp cho cả turn). Nay `low` = *"the whole request is
+routine or mechanical"*, `high` = *"requires resolving genuine uncertainty at some
+point"*. Đo lại với criteria mới: vẫn **26/26**, easy 16/16, hard 10/10.
+
+### Thêm — test 11z-m/11z-n/11z-o khoá phrasing turn-level
+
+14 check mới trong `tests/offline.mjs`:
+- **11z-m** — instructions chứa "WHOLE turn", "ENTIRE request", ưu tiên `high` khi
+  yêu cầu nêu triệu chứng, **không** còn "NEXT generation" hay lời hứa confidence cũ.
+- **11z-n** — `EFFORT_MEANING` không còn carve-out "easy opening step".
+- **11z-o** — câu hỏi turn-level đi qua **đúng đường plugin**: chặn `fetch` ở tầng
+  thấp nhất, chạy trọn `agent/pre-step` → `agent/request`, soi nguyên văn body gửi
+  Jev (task, instructions, criteria). Đã kiểm bằng mutation: khôi phục phrasing cũ
+  làm **7 check hỏng**, nên đây là test thật chứ không phải tautology.
+
 ## [0.13.0] — 2026-10-04
 
 ### Thêm — Lớp 1b: thẻ ĐỒNG Ý cho hành động do agent tự đề nghị

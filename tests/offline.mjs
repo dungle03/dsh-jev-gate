@@ -714,6 +714,42 @@ async function withCountingJev(answers, run) {
 }
 
 /**
+ * Như `withCountingJev` nhưng GIỮ LẠI nguyên văn mọi body gửi Jev, để kiểm được
+ * nội dung câu hỏi đi qua ĐÚNG đường plugin (index.mjs → jevEffort →
+ * effortQuestion), không phải chỉ gọi `effortQuestion` trực tiếp.
+ *
+ * `bodies()` trả mảng `{ questions, state }` theo thứ tự gọi.
+ */
+async function withCapturingJev(answers, run) {
+  const realFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    const ids = Object.keys(body.questions);
+    const payload = {
+      model: 'jev-stub',
+      answers: Object.fromEntries(ids.map((id) => {
+        const question = body.questions[id];
+        const spec = answers[id] ?? answers['*'];
+        const value = typeof spec === 'function' ? spec(id, question, bodies.length) : spec;
+        if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
+        const keys = Object.keys(question.criteria);
+        const probabilities = Object.fromEntries(keys.map((key) => [key, key === value ? 1 : 0]));
+        return [id, { type: 'choice', choice: value, confidence: answers.__confidence ?? 0.9, probabilities }];
+      })),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    return await run(() => bodies);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/**
  * Thiết kế mới (2026-10-01) thay hẳn cơ chế "tái dùng theo confidence".
  *
  * Vì sao bỏ: đo trên 120 request liên tiếp (8 session thật), cơ chế cũ đổi mức
@@ -1477,6 +1513,96 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
     );
     check('input: đổi effortJevChoices={medium,high} → Jev chọn medium được áp',
       out.reasoningEffort === 'medium', `effort=${out.reasoningEffort}`);
+  });
+
+  /**
+   * 11z-m. Câu hỏi effort phải là TURN-LEVEL, không phải next-generation.
+   *
+   * Lý do (đo 2026-10-04, 26 task có nhãn × 5 lần): phrasing cũ hỏi "sufficient
+   * for the NEXT generation", nên một yêu cầu NÊU TRIỆU CHỨNG cần chẩn đoán
+   * ("memory leak", "race", "query chậm chưa rõ nguyên nhân") bị chấm `low` chỉ
+   * vì bước đầu là đọc file — dù cả turn cần `high`. Kết quả 21/26, 5 ca sai
+   * cùng dạng. Phrasing turn-level ("fixed for the WHOLE turn … complete the
+   * ENTIRE request") đạt 26/26, giữ nguyên easy 16/16.
+   *
+   * Test này KHOÁ văn bản đó lại: nó không kiểm hành vi Jev (đã đo offline),
+   * chỉ bảo đảm sửa sau này không vô tình quay về phrasing per-step.
+   */
+  {
+    const { effortQuestion } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?turn=1`);
+    const question = effortQuestion({
+      task: 'memory leak trong worker pool',
+      progress: '',
+      recentToolCalls: [],
+      supportedEfforts: ['low', 'high'],
+      effortMeaning: { low: 'routine', high: 'resolve uncertainty' },
+    });
+    const instr = question.questions.effort.instructions;
+    check('11z-m: instructions nói mức áp cho CẢ turn', /WHOLE turn/.test(instr), instr.slice(0, 60));
+    check('11z-m: instructions nói hoàn thành toàn bộ yêu cầu', /ENTIRE request/.test(instr));
+    check('11z-m: instructions ưu tiên high khi yêu cầu nêu triệu chứng',
+      /names a symptom\s+to diagnose/.test(instr));
+    check('11z-m: instructions KHÔNG còn hỏi "NEXT generation"',
+      !/NEXT generation/.test(instr));
+    check('11z-m: instructions KHÔNG còn hứa confidence quyết định tái dùng',
+      !/carried into the following step/.test(instr) && /not used to change\s+this level/.test(instr));
+    check('11z-m: criteria lấy đúng thang bên gọi truyền vào',
+      question.questions.effort.criteria.low === 'routine'
+      && question.questions.effort.criteria.high === 'resolve uncertainty');
+
+    /**
+     * 11z-n. `EFFORT_MEANING` mặc định cũng phải là turn-level. Bản cũ định
+     * nghĩa `low` là *"a routine or mechanical next step … including the easy
+     * opening step of a hard task"* — chính là carve-out per-step mà phrasing
+     * turn-level phủ nhận. Criteria là thứ Jev đọc, nên để nguyên là tự mâu
+     * thuẫn. (Đo lại với criteria mới: vẫn 26/26, easy 16/16, hard 10/10.)
+     */
+    const { EFFORT_MEANING } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?meaning=1`);
+    check('11z-n: EFFORT_MEANING.low KHÔNG còn carve-out "easy opening step"',
+      !/opening step/.test(EFFORT_MEANING.low));
+    check('11z-n: EFFORT_MEANING.low nói về CẢ yêu cầu, không phải next step',
+      /whole request/.test(EFFORT_MEANING.low));
+    check('11z-n: EFFORT_MEANING.high nói "at some point" của cả yêu cầu',
+      /at some point/.test(EFFORT_MEANING.high));
+  }
+
+  /**
+   * 11z-o. Câu hỏi turn-level phải đi qua ĐÚNG ĐƯỜNG PLUGIN.
+   *
+   * 11z-m chỉ gọi `effortQuestion` trực tiếp, nên nó bỏ sót câu hỏi thật sự
+   * quan trọng: `index.mjs` có truyền ĐÚNG `task`/`signals` và dùng đúng
+   * `effortQuestion` không? Test này chặn `fetch` ở tầng thấp nhất, chạy trọn
+   * luồng `agent/pre-step` → `agent/request`, rồi soi nguyên văn body gửi Jev.
+   *
+   * Kèm luôn phép kiểm `measured_signals`: tín hiệu thất bại turn trước phải
+   * xuất hiện trong `state` (đây là hợp đồng với sàn effort ở mục 23).
+   */
+  await withCapturingJev({ effort: 'high', __confidence: 0.8 }, async (bodies) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: {
+        enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true,
+        enableSpawnHint: false, enableContextTriage: false,
+      },
+    });
+    const agent = { id: 'a-input-o', session: { id: 'sess-input-o', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'memory leak trong worker pool');
+    const out = await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+
+    const sent = bodies().at(-1);
+    const q = sent.questions.effort;
+    check('11z-o: qua plugin, task user đi nguyên văn vào state.task',
+      sent.state.task === 'memory leak trong worker pool', `task=${JSON.stringify(sent.state.task)}`);
+    check('11z-o: qua plugin, instructions là TURN-LEVEL',
+      /WHOLE turn/.test(q.instructions) && /ENTIRE request/.test(q.instructions));
+    check('11z-o: qua plugin, KHÔNG còn "NEXT generation"', !/NEXT generation/.test(q.instructions));
+    check('11z-o: qua plugin, criteria là EFFORT_MEANING mặc định (turn-level)',
+      /whole request/.test(q.criteria.low) && !/opening step/.test(q.criteria.low));
+    check('11z-o: quyết định của Jev được ÁP (high)',
+      out.reasoningEffort === 'high', `effort=${out.reasoningEffort}`);
   });
 }
 

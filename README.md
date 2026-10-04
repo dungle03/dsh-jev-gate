@@ -223,6 +223,33 @@ tính sàn tất định.
 `medium` gần như không bao giờ được chọn (1/14 task, conf 0.35). Jev đáng tin ở
 2 đầu, mơ hồ ở giữa — nên giao 2 đầu cho Jev, giữ giữa cho config.
 
+**v0.13.1 — câu hỏi effort phải là TURN-LEVEL, không phải per-step.** Phrasing cũ
+hỏi *"which reasoning effort is sufficient for the NEXT generation"* — đúng với
+cơ chế tái dùng theo step ngày xưa, nhưng SAI với thực tế: Lớp 3 chốt mức cho CẢ
+turn rồi giữ nguyên (sticky). Hệ quả đo được trên **26 task có nhãn × 5 lần**:
+
+| Phrasing | Đúng | easy (16) | hard (10) |
+|---|---|---|---|
+| cũ — "NEXT generation" | 21/26 | 16/16 | **5/10** |
+| mới — "fixed for the WHOLE turn … ENTIRE request" | **26/26** | 16/16 | **10/10** |
+
+5 ca sai của phrasing cũ đều cùng một dạng: yêu cầu **nêu triệu chứng cần chẩn
+đoán** ("memory leak", "race condition", "query chậm chưa rõ nguyên nhân") bị chấm
+`low` vì bước đầu tiên chỉ là đọc file — dù cả turn cần `high`. Phrasing mới nói
+rõ mức áp cho toàn turn và "yêu cầu mà nguyên nhân chưa biết thì không phải yêu
+cầu thường"; nó **không** over-escalate (easy vẫn 16/16) và ổn định qua 3 lần lặp.
+
+**Confidence KHÔNG dùng để gate.** Đo trên cùng tập nhãn: dải confidence của ca
+SAI (0,52–0,57) nằm trọn trong dải ca ĐÚNG (0,00–0,79) — mọi ngưỡng cắt được ca
+sai cũng cắt mất ca đúng. Vì vậy `confidence` chỉ được ghi vào log
+`effort_route` cho người vận hành; instructions không còn hứa rằng nó quyết định
+việc tái dùng (điều đó chưa từng đúng ở chế độ `input`).
+
+Cùng lúc, `EFFORT_MEANING` (criteria Jev đọc) được sửa cho khớp: `low` bản cũ
+định nghĩa *"…including the easy opening step of a hard task"* — carve-out
+per-step tự mâu thuẫn với phrasing turn-level. Nay `low` = *"the whole request is
+routine or mechanical"*. Đo lại: vẫn **26/26**.
+
 **Lịch sử.** Lớp này từng là classifier per-request gọi Jev MỌI request
 (2026-09), rồi bị thay bằng luật tất định (2026-10-01) vì đo được cơ chế cũ đổi
 mức `low↔high` **113/120 lần**, 54,5% quyết định conf < 0,5, chiếm **55%** token
