@@ -5,6 +5,16 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Chưa phát hành] — 2026-10-05
 
+### 改进 — 附件 P1 与真实兼容验证
+
+- 破坏性操作来源要求完整祈使请求覆盖全部目标及相同动作类别，说明、疑问、引用和混合保留请求走确认；目标路径保留大小写，无路径明确撤回也使旧请求失效。未解析通配/目录展开及 find 附加执行或写入进入确认。
+- direct/review/jevgrep 统一成本预占，保留旧 direct 上限及保护性判定豁免。
+- review 反馈上下文在 RPC 前预占、finally 释放；telemetry 无反馈上下文开销，旧配置保持兼容。
+- jevgrep 会话/全局并发限流、pending 上限、按 session/root 冷却半开断路器；取消不计服务故障，进程退出后才释放额度。
+- Layer 5/8 仓库证据转义并显式包裹；预算截断保留完整警示与开闭边界。
+- stopping signal 兼容旧已中止事件与新 live cancellation。
+- 新增真实 DSH 兼容入口与四档轨迹分析；未收集真实 A/B 数据前保持实验开关关闭。
+
 ### Sửa — call gate an toàn không còn tiêu ngân sách của lớp khác
 
 - **Lỗi thật đo trên log vận hành**: gate (Lớp 1) gọi Jev cho MỌI lệnh shell, và

@@ -21,11 +21,11 @@ for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/poli
 done
 
 echo "2. Syntax"
-for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs; do
+for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs lib/jevgrep-control.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs tools/trajectory-matrix.mjs; do
   if node --check "$PLUGIN/$f" 2>/dev/null; then pass "$f"; else fail "$f lỗi syntax"; fi
 done
 
-for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs; do
+for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs; do
   output="/tmp/jev-gate-${f##*/}.$$"
   if node "$PLUGIN/$f" >"$output" 2>&1; then
     pass "$f"
@@ -34,6 +34,14 @@ for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/met
     fail "$f — xem $output"
   fi
 done
+
+matrix_output="/tmp/jev-gate-trajectory-matrix.$$"
+if node "$PLUGIN/tools/trajectory-matrix.mjs" --self-test >"$matrix_output" 2>&1; then
+  pass "tools/trajectory-matrix.mjs --self-test (synthetic, not measured A/B)"
+  rm -f "$matrix_output"
+else
+  fail "trajectory matrix self-test — xem $matrix_output"
+fi
 
 echo "3. Dependency resolve (nguyên nhân lỗi 'failed to import' trước đây)"
 if [ -d "$PLUGIN/node_modules/@deepseek-ai/schemastery" ]; then

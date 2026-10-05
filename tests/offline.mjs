@@ -3915,15 +3915,16 @@ OUT
      * `session_id + normalized_query_hash`.
      *
      * Test: `jg` giả chạy CHẬM (`slow`, sleep 1s). Task A khởi động chạy nền rồi
-     * ĐỔI sang task B trong lúc A còn dở. Task B phải khởi động được lần chạy nền
-     * RIÊNG — log phải có 2 `started_background` với `task_hash` KHÁC nhau.
+     * Switch to B while A runs. B cancels A and retries on a later hook after
+     * child close releases the session slot; only real starts are logged.
      */
     {
       process.env.JEVRGATE_FAKE = 'slow';
       const { readFileSync } = await import('node:fs');
       const logDir = tmpDir('jev-gate-keying-');
-      const { handlers } = await loadPlugin({
-        config: { ...cfgJg, jevGrepBackground: true, logDir, jevGrepMaxPerTurn: 5 },
+      const { handlers, effects } = await loadPlugin({
+        config: { ...cfgJg, jevGrepBackground: true, logDir, jevGrepMaxPerTurn: 5,
+          maxDecisionCostPerTurn: 32 },
       });
       const agent = makeAgent(1);
       const prime = (a, text) => handlers['agent/pre-step'][0](
@@ -3939,10 +3940,12 @@ OUT
       );
 
       await prime(agent, 'tìm file nào xử lý verifyToken');
-      await fire(agent);              // task A: khởi động chạy nền (còn dở)
+      await fire(agent);
+      await new Promise((resolve) => setTimeout(resolve, 100));
       await prime(agent, 'tìm file nào xử lý billing webhook');
-      await fire(agent);              // task B: PHẢI khởi động được dù A chưa xong
-
+      await fire(agent);              // Cancel A; keep its slot until child close.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await fire(agent);              // Retry B after the previous slot is released.
       await new Promise((resolve) => setTimeout(resolve, 400));
       const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
         .split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -3953,6 +3956,8 @@ OUT
         rows.length === 2, `started_background=${rows.length}`);
       check('hai lần khởi động có task_hash KHÁC nhau (khoá theo truy vấn)',
         hashes.size === 2, `hashes=${JSON.stringify([...hashes])}`);
+      for (const effect of effects) effect()?.();
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     // Cùng truy vấn, khác workspace: lần chạy cũ không được chiếm khoá chờ mới.
@@ -3960,8 +3965,9 @@ OUT
       process.env.JEVRGATE_FAKE = 'slow';
       const { readFileSync } = await import('node:fs');
       const logDir = tmpDir('jev-gate-root-key-');
-      const { handlers } = await loadPlugin({
-        config: { ...cfgJg, jevGrepBackground: true, logDir, jevGrepMaxPerTurn: 5 },
+      const { handlers, effects } = await loadPlugin({
+        config: { ...cfgJg, jevGrepBackground: true, logDir, jevGrepMaxPerTurn: 5,
+          maxDecisionCostPerTurn: 32 },
       });
       const agent = makeAgent(1, '/tmp/jg-root-a');
       const prime = () => handlers['agent/pre-step'][0](
@@ -3977,9 +3983,12 @@ OUT
       );
       await prime();
       await fire();
+      await new Promise((resolve) => setTimeout(resolve, 100));
       agent.cwd = '/tmp/jg-root-b';
       agent.session.header.cwd = agent.cwd;
       await prime();
+      await fire();
+      await new Promise((resolve) => setTimeout(resolve, 400));
       await fire();
       await new Promise((resolve) => setTimeout(resolve, 400));
       const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
@@ -3987,6 +3996,8 @@ OUT
         .filter((row) => row.type === 'jevgrep_escalation' && row.decision === 'started_background');
       check('B13: cùng truy vấn nhưng khác workspace → hai lần tìm độc lập',
         rows.length === 2, `started_background=${rows.length}`);
+      for (const effect of effects) effect()?.();
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     /**

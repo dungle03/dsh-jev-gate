@@ -684,7 +684,11 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     contextEvidence: true       # §8: kèm đoạn trích THẬT (imports/exports/dòng khớp) — tắt = hành vi cũ chỉ-có-tên (để A/B)
     jevBudgetEnabled: true      # §16: ngân sách dùng chung; gate an toàn vẫn chạy dù hết hạn mức
     jevMaxCallsPerTurn: 4       # mức khởi đầu cần hiệu chỉnh trên phiên thực
-    jevMaxCallsPerSession: 100  # mức khởi đầu cần hiệu chỉnh trên phiên thực
+    jevMaxCallsPerSession: 100  # direct Jev calls only
+    maxDecisionCostPerTurn: 16  # direct=1, review=2, jg cold=8 / proven warm=3
+    maxDecisionCostPerSession: 120
+    reviewMaxPerSession: 20
+    jevGrepMaxPerSession: 10
     maxPluginContextTokensPerTurn: 500  # §22: trần token văn bản plugin chèn mỗi turn (≈ chars/4); safety/consent/real_user KHÔNG BAO GIỜ bị cắt
     failureMaxPerTurn: 2        # số lần gợi ý phục hồi tối đa mỗi turn
     completionMaxPerTurn: 2     # trần số lần kiểm hoàn thành mỗi turn
@@ -692,7 +696,10 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     reviewMaxPerTurn: 1         # trần số lần review mỗi turn
     reviewMaxDiffChars: 24000   # trần ký tự diff gửi cho review
     reviewServerName: jev-review
-    reviewReportToAgent: true   # báo điểm lại cho agent qua steer
+    reviewReportToAgent: true   # legacy fallback when reviewMode is omitted
+    # reviewMode: agent-feedback # telemetry | agent-feedback; disable with enableQualityReview
+    reviewContextReserveTokens: 120
+    reviewTimeoutMs: 15000
     gateTimeoutMs: 2000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
@@ -713,7 +720,11 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     jevGrepSearchTaskHeuristic: false # nhánh A (task "nghe giống tìm-kiếm"); mặc định TẮT, xem lý do bên dưới
     jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
     jevGrepTimeoutMs: 120000     # ngân sách một lần `jg` (truy vấn MỚI cold 66s–2m5s); quá hạn thì fail-open
-    jevGrepFailureBreaker: 3    # jg hỏng liên tiếp N lần thì tắt Lớp 8 cho hết phiên
+    jevGrepFailureBreaker: 3    # per session/root; 0 disables the breaker
+    jevGrepBreakerCooldownMs: 60000 # one half-open probe after cooldown
+    jevGrepMaxConcurrentPerSession: 1
+    jevGrepMaxConcurrentGlobal: 2
+    jevGrepPendingMax: 20
     jevGrepBackground: true     # chạy jg NỀN, không chặn turn (cold ~2 phút/truy vấn mới)
     jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
     logDir:                     # thư mục log; bỏ trống = ~/.local/share/dsh-jev-gate (đường để test cô lập)
@@ -741,6 +752,24 @@ Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 
 ### Ngân sách Jev và đo hành trình đối chứng
 
+统一成本控制在执行前同步预占：direct Jev = 1、quality review = 2、
+冷 jevgrep = 8（有明确暖缓存证据时为 3）。保护性判定豁免这些额度，
+旧 direct-call 上限独立保留。review 在 RPC 前预占反馈上下文，
+通过 `finally` 释放；`telemetry` 不消耗反馈上下文。
+省略 `reviewMode` 时保持旧 `reviewReportToAgent` 语义。
+completion 和 review 合并 live host signal 与独立超时；
+旧 host 已中止的 stopping signal 仅使用独立超时。
+
+Layer 8 设会话/全局并发上限和 pending hint 数量上限。
+断路器按 session/root 隔离，冷却后仅放行一次半开探测。
+被新查询取代的请求会取消，取消不计服务故障。
+Layer 5/8 的仓库片段转义并包裹为不可信证据，内容不作为指令。
+破坏性操作的来源判定要求完整祈使请求与命令动作相同，且覆盖每个精确目标；
+目标保留大小写，最新明确撤回即使没有路径也使旧请求失效。
+疑问、建议、引用、混合保留/删除、未解析展开或附加写入仍走用户确认。
+阈值检索遇临时并发或断路限制后，可在后续钩子重试；成功次数和成本上限仍生效。
+
+
 `jevMaxCallsPerTurn: 4` và `jevMaxCallsPerSession: 100` là giới hạn khởi đầu,
 chưa được hiệu chỉnh trên phiên thực. Khi cạn hạn mức, plugin bỏ các call tư vấn
 trước, chừa chỗ cho kiểm hoàn thành và phục hồi; gate phá dữ liệu vẫn được chấm
@@ -765,6 +794,22 @@ hiện một false-allow mới trong cặp đã đo thì báo `regression`). Cô
 tích tệp đã cung cấp, không tự chạy DSH hay
 xác minh trường `source: real`; cần tổ chức các phiên A/B thực và gán nhãn an
 toàn độc lập trước khi bật các lớp thực nghiệm theo mặc định.
+
+四档 P2 分析使用 `tools/trajectory-matrix.mjs`，严格按
+`(task_id, seed, repo_state, model)` 配对 `vanilla/safe/balanced/experimental`。
+重复 arm 或身份缺失不会任意选一条，缺指标保持 `null`，结论保持 `unknown`。
+自检是合成数据验证，不是实际 A/B 收益。
+
+```bash
+node tools/trajectory-matrix.mjs measured.jsonl
+node tools/trajectory-matrix.mjs --self-test
+node tests/dsh-compat.mjs --strict
+```
+
+真实宿主兼容测试覆盖 ToolRuntime、UserQuestionService、ReactLoopAgent、
+completion continuation、review hook 和 effort routing；外部 model/Jev、
+UI 回答和 workspace diff 明确使用测试替身。CI 的 deployed/latest-supported
+固定为 `0.2.0-rc.2`，master 夜间观察任务非阻断。远端 CI 尚待实际运行。
 
 ## Kiểm chứng
 

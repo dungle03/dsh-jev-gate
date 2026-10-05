@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
 
 jobs:
   offline:
@@ -42,9 +44,14 @@ jobs:
           node tests/metrics.mjs
           node tests/profiles.mjs
           node tests/trajectory.mjs
+          node tools/trajectory-matrix.mjs --self-test
           node tests/budget.mjs
           node tests/context.mjs
           node tests/evidence.mjs
+          node tests/provenance.mjs
+          node tests/cost-governor.mjs
+          node tests/jevgrep-control.mjs
+          node tests/evidence-boundary.mjs
 
       - name: Không có secret hardcode trong source
         run: |
@@ -64,6 +71,59 @@ jobs:
             exit 1
           fi
           echo "Sạch — không có path tuyệt đối"
+
+  dsh-compat:
+    name: DSH compatibility (${{ matrix.host }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: deployed
+            version: 0.2.0-rc.2
+          - host: latest-supported
+            version: 0.2.0-rc.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+      - run: npm install --no-audit --no-fund
+      - name: Install exact supported host
+        run: npm install --global --no-audit --no-fund '@deepseek-ai/dsh@${{ matrix.version }}'
+      - name: Strict real-host integration
+        env:
+          DSH_EXPECT_VERSION: ${{ matrix.version }}
+        run: node tests/dsh-compat.mjs --strict
+
+  dsh-master:
+    name: DSH master (observational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+      - run: npm install --no-audit --no-fund
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: master
+          path: host-master
+      - name: Build real master host packages
+        working-directory: host-master
+        run: |
+          npm install --global pnpm@11.7.0
+          pnpm install --frozen-lockfile
+          pnpm run build:lib:host
+      - name: Strict real-master integration
+        env:
+          DSH_HOST_PACKAGE: ${{ github.workspace }}/host-master/apps/cli/package.json
+          DSH_COMPAT_MASTER: '1'
+        run: |
+          git -C host-master rev-parse HEAD
+          node tests/dsh-compat.mjs --strict
 
   live:
     name: Live (cần TYPESAFE_API_KEY)
