@@ -3,6 +3,56 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [Unreleased]
+
+### Sửa — tính đúng đắn của benchmark/trajectory
+
+- **Credential bắt buộc trước khi chạy bất kỳ arm nào.** Chế độ `normal` cần CẢ
+  `TRAJECTORY_MODEL_KEY` và `TYPESAFE_API_KEY`; thiếu một trong hai thì collector
+  dừng ngay, nêu rõ credential thiếu và KHÔNG sinh record một phần. Trước đây chỉ
+  kiểm `TRAJECTORY_MODEL_KEY`, nên thiếu key Jev khiến `safe`/`balanced`/
+  `experimental` fail-open và biến so sánh thành "vanilla vs profile mất backend".
+  Hành vi khi Jev outage tách thành mode riêng `--jev-outage`, không trộn với
+  benchmark hiệu năng.
+- **Capability manifest thật cho mỗi row.** `configured`/`available`/`invoked`
+  suy từ config boot, `decisions.jsonl` và preflight thật; không suy từ tên arm.
+  Promotion loại nhóm có môi trường capability không hợp lệ (thiếu hạ tầng) hoặc
+  chưa chứng minh, trả `hold` với lý do machine-readable và KHÔNG tính là thụt lùi
+  hiệu năng.
+- **Identity ghép cặp chặt hơn.** Ngoài `task_id`/`seed`/`repo_state`/`model`, nay
+  gồm `benchmark_config_hash`, `dsh_version`, `plugin_version`; row thiếu trường
+  vào `incomplete`, không bị đoán. Cùng tên arm nhưng `profile_config_hash` khác là
+  treatment khác, không gộp bằng chứng.
+- **Metric chi phí từ operation telemetry.** Thêm `decision_reserved_units`,
+  `decision_actual_invocations`, `jev_http_attempts`, `review_tool_invocations`,
+  `jevgrep_process_spawns`, `decision_operation_failures`,
+  `decision_operation_cancellations` lấy từ `cost_governor` theo `operation_id`.
+  Số lần gọi thực tế KHÔNG suy từ `jev_ok` (một logical call có thể retry thành
+  nhiều HTTP request). `jev_calls` giữ để tương thích, nay chỉ nghĩa là operation
+  thành công.
+- **Schema phiên bản hoá.** Row mang `dsh-jev-gate-trajectory-v2`, báo cáo mang
+  `trajectory-matrix-v2`; parser TỪ CHỐI tường minh schema cũ thay vì hiểu nhầm.
+- **Task catalog + evaluator tất định.** `tools/trajectory-tasks.mjs` có sáu lớp
+  task (`routine`, `repository-navigation`, `bug-diagnosis`, `tool-failure-recovery`,
+  `destructive-intent-safety`, `multi-file-coding`); task destructive chỉ chạm thư
+  mục fixture tạm. Collector chạy được nhiều task/nhiều seed trong một lần gọi qua
+  `--tasks id,id` và `--seeds 1,2`; task/seed/flag sai bị từ chối TRƯỚC khi spawn
+  tiến trình nào, và chỉ ghi row sau khi chạy thật xong.
+- **Manifest hoàn tất cho mỗi lần chạy.** Row ghi dần nên một lần chạy bị giết giữa
+  chừng để lại JSONL thiếu row trông như file đầy đủ. Collector ghi kèm
+  `<output>.manifest.json` (`status: complete`/`incomplete`, số row mong đợi);
+  `trajectory-matrix` gắn `manifest_warning` khi file không đầy đủ hoặc thiếu
+  manifest, không phân tích nhầm lần chạy dở thành bằng chứng. `parseArgs` tách
+  thành hàm THUẦN và từ chối flag thiếu giá trị thay vì âm thầm dùng mặc định;
+  `baseURL` không hợp lệ báo lỗi rõ thay vì `TypeError: Invalid URL` thô.
+- **Promotion bảo thủ.** Không bao giờ tự động; trần `eligible-for-review`, cần
+  ≥10 nhóm held-out thật ghép cặp trên ≥2 lớp task, không thụt lùi an toàn/chất
+  lượng. Chỉ số thiếu vẫn `null` (không tự thành 0). Lợi ích hiệu năng vẫn CHƯA
+  được chứng minh cho tới khi có đủ dữ liệu held-out.
+- **Kiểm thử offline mới** (`tests/trajectory-tasks.mjs`, cập nhật
+  `tests/trajectory-collector.mjs` và `tests/trajectory-promotion.mjs`) chạy hàm
+  thật, không gọi mạng, và đã được thêm vào `verify.sh` cùng CI push/PR.
+
 ## [0.14.0] - 2026-10-05
 
 ### Chuyển cấu hình và phạm vi hỗ trợ

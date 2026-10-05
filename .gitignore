@@ -4,3 +4,6 @@ node_modules/
 
 # Log quyết định của plugin (dữ liệu runtime, không thuộc source)
 decisions.jsonl
+
+# Artifact đo lường cục bộ (pilot thật, không thuộc source)
+.jev-artifacts/

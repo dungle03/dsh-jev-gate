@@ -64,6 +64,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ROW_SCHEMA } from './trajectory-schema.mjs';
 
 /** Ba arm của Phase 4: DSH thuần, DSH + core Jev, DSH + full Jev experimental. */
 export const ARMS = Object.freeze(['vanilla', 'core', 'experimental']);
@@ -199,6 +200,7 @@ export function parseTrajectories(text) {
   const malformed = [];
   const incomplete = [];
   const unknownArm = [];
+  const unsupportedSchema = [];
   let lineNo = 0;
 
   for (const raw of String(text ?? '').split('\n')) {
@@ -214,6 +216,14 @@ export function parseTrajectories(text) {
     }
     if (!isObj(row)) {
       malformed.push({ line: lineNo, error: 'không phải đối tượng' });
+      continue;
+    }
+    // Row khai schema trajectory PHIÊN BẢN MỚI (do collector v2 ghi) không được
+    // hiểu như row cũ: arm `safe`/`balanced` sẽ bị coi là "arm lạ" và cặp bị
+    // ghép sai. Từ chối TƯỜNG MINH thay vì diễn giải sai. Row không khai schema
+    // vẫn được xử lý như trước (tương thích ngược với dữ liệu cũ).
+    if (typeof row.schema === 'string' && /^dsh-jev-gate-trajectory-/.test(row.schema)) {
+      unsupportedSchema.push({ line: lineNo, schema: row.schema });
       continue;
     }
     const missing = [];
@@ -259,7 +269,7 @@ export function parseTrajectories(text) {
   }
   const records = all.filter((record) => !dropped.has(record));
 
-  return { records, malformed, incomplete, unknownArm, duplicates };
+  return { records, malformed, incomplete, unknownArm, unsupportedSchema, duplicates };
 }
 
 /**
@@ -458,6 +468,9 @@ export function evaluate(parsed, {
   if (parsed.malformed.length > 0) warnings.push(`${parsed.malformed.length} dòng JSONL hỏng — đã bỏ`);
   if (parsed.incomplete.length > 0) warnings.push(`${parsed.incomplete.length} dòng thiếu task_id/seed/arm — đã bỏ`);
   if (parsed.unknownArm.length > 0) warnings.push(`${parsed.unknownArm.length} dòng có arm lạ (ngoài ${ARMS.join('/')}) — đã bỏ`);
+  if (parsed.unsupportedSchema.length > 0) {
+    warnings.push(`${parsed.unsupportedSchema.length} dòng khai schema trajectory phiên bản mới (${ROW_SCHEMA}) — công cụ v1 TỪ CHỐI đọc, dùng tools/trajectory-matrix.mjs`);
+  }
   if (parsed.duplicates.length > 0) {
     warnings.push(`${parsed.duplicates.length} khoá (task_id, seed, arm) TRÙNG — loại hết nhóm trùng, không đoán bản nào chuẩn`);
   }
@@ -486,6 +499,7 @@ export function evaluate(parsed, {
       malformed: parsed.malformed.length,
       incomplete: parsed.incomplete.length,
       unknown_arm: parsed.unknownArm.length,
+      unsupported_schema: parsed.unsupportedSchema.length,
       duplicate_keys: parsed.duplicates.length,
       synthetic_pairs: syntheticPairs.size,
     },
@@ -552,7 +566,7 @@ export function printHuman(report) {
   lines.push('─'.repeat(64));
   const c = report.counts;
   lines.push(`bản ghi ${c.records} | cặp ${c.pairs} | hỏng ${c.malformed} | thiếu trường ${c.incomplete} `
-    + `| arm lạ ${c.unknown_arm} | khoá trùng ${c.duplicate_keys}`);
+    + `| arm lạ ${c.unknown_arm} | schema lạ ${c.unsupported_schema} | khoá trùng ${c.duplicate_keys}`);
   lines.push(`độ phủ theo arm: ${ARMS.map((arm) => `${arm}=${report.arm_coverage[arm].pairs} cặp`).join('  ')}`);
   for (const warning of report.warnings) lines.push(`cảnh báo: ${warning}`);
 

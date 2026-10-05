@@ -297,12 +297,17 @@ console.log('\n11. Dòng hỏng, thiếu trường, arm lạ');
     '{ khong-phai-json',
     JSON.stringify({ seed: 1, arm: 'core' }),          // thiếu task_id
     row({ task_id: 'c', seed: 1, arm: 'mystery' }),    // arm lạ
+    JSON.stringify({ schema: 'dsh-jev-gate-trajectory-v2', task_id: 'd', seed: 1, arm: 'safe' }), // schema v2
   ]);
   check('1 dòng JSON hỏng', parsed.malformed.length === 1);
   check('1 dòng thiếu task_id', parsed.incomplete.length === 1);
   check('1 dòng arm lạ', parsed.unknownArm.length === 1);
+  check('1 dòng schema v2 bị từ chối tường minh', parsed.unsupportedSchema.length === 1,
+    JSON.stringify(parsed.unsupportedSchema));
+  check('row schema v2 KHÔNG lọt vào records', parsed.records.every((r) => r.task_id !== 'd'));
   const report = evaluate(parsed, { treatments: ['core'] });
-  check('cảnh báo đủ 3 loại', report.warnings.length >= 3, JSON.stringify(report.warnings));
+  check('cảnh báo đủ 4 loại', report.warnings.length >= 4, JSON.stringify(report.warnings));
+  check('counts có unsupported_schema', report.counts.unsupported_schema === 1);
   check('báo cáo vẫn ra được cặp hợp lệ', report.comparisons.core.n_pairs === 1);
   check('không có NaN trong báo cáo', !JSON.stringify(report).includes('NaN'));
 }

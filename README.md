@@ -823,26 +823,72 @@ tích tệp đã cung cấp, không tự chạy DSH hay
 xác minh trường `source: real`; cần tổ chức các phiên A/B thực và gán nhãn an
 toàn độc lập trước khi bật các lớp thực nghiệm theo mặc định.
 
-`tools/collect-trajectory.mjs` chạy pilot tìm nguồn với bốn nhánh trong thư mục
-cô lập qua DSH headless thật. Đặt `TRAJECTORY_MODEL_KEY` cho route model rõ ràng,
-tùy chọn `TRAJECTORY_MODEL` / `TRAJECTORY_BASE_URL`, rồi chạy
-`node tools/collect-trajectory.mjs pilot.jsonl`. Công cụ lưu event thật và ghi
-split `validation`, không tự nhận dữ liệu held-out. Seed nhận diện lượt lặp và
-xoay thứ tự nhánh, không điều khiển ngẫu nhiên của provider. Chỉ số thiếu giữ
-`null`; một pilot chưa chứng minh lợi ích hiệu năng.
+`tools/collect-trajectory.mjs` chạy pilot bốn nhánh trong thư mục cô lập qua DSH
+headless thật. Chế độ `normal` **bắt buộc cả `TRAJECTORY_MODEL_KEY` và
+`TYPESAFE_API_KEY`**: thiếu một trong hai thì collector dừng ngay, nêu rõ credential
+nào thiếu và **không sinh record một phần** — vì `safe`/`balanced`/`experimental`
+đều phụ thuộc Jev, thiếu key sẽ khiến các lớp fail-open và biến "vanilla vs profile"
+thành "vanilla vs profile mất backend". Hành vi khi Jev outage là **mode riêng**
+`--jev-outage` (chỉ cần model key), không trộn với benchmark hiệu năng thường:
 
-Phân tích P2 dùng `tools/trajectory-matrix.mjs`, ghép đúng
-`(task_id, seed, repo_state, model)` cho bốn nhánh `vanilla/safe/balanced/experimental`.
-Nhánh trùng hoặc thiếu định danh không được chọn tùy tiện; chỉ số chưa đo giữ
-`null`, kết luận giữ `unknown`. Tự kiểm dùng dữ liệu tổng hợp, không chứng minh
-lợi ích A/B thật. Chưa thu thập đủ trajectory thật để kết luận plugin giảm token,
-chi phí hoặc thời gian mà vẫn giữ chất lượng.
+```bash
+node tools/collect-trajectory.mjs pilot.jsonl                # normal, cần cả hai key
+node tools/collect-trajectory.mjs outage.jsonl --jev-outage # chỉ đo hành vi khi Jev outage
+node tools/collect-trajectory.mjs all.jsonl --tasks navigation-marker-v1,bug-diagnosis-calc-v1 --seeds 1,2
+```
+
+`--tasks` nhận danh sách `task_id` từ catalog (mặc định một task); `--seeds` chạy
+nhiều replication. Collector từ chối task/seed/flag sai **trước** khi spawn tiến
+trình nào, và chỉ ghi row khi chạy thật xong.
+
+Vì row được ghi dần, một lần chạy bị giết giữa chừng để lại file JSONL **thiếu
+row** mà nhìn bề ngoài không khác file đầy đủ. Collector ghi kèm manifest
+`<output>.manifest.json` với `status: complete`/`incomplete` và số row mong đợi;
+`trajectory-matrix` đọc manifest và gắn `manifest_warning` khi file không đầy đủ
+(hoặc thiếu manifest), để không phân tích nhầm một lần chạy dở thành bằng chứng.
+
+Mỗi row mang `schema: dsh-jev-gate-trajectory-v2`, một **capability manifest**
+(`configured`/`available`/`invoked` suy từ config boot, decisions.jsonl và preflight
+thật — **không** suy từ tên arm), và **operation telemetry** lấy từ `cost_governor`
+theo `operation_id` (`jev_http_attempts`, `review_tool_invocations`,
+`jevgrep_process_spawns`, `decision_reserved_units`, `decision_actual_invocations`,
+`decision_operation_failures`, `decision_operation_cancellations`). Jev, review và
+jevgrep đều được tách `logical_operations` / `successful_operations` /
+`failed_operations` / `skipped_operations` (ví dụ `jev_http_attempts`,
+`review_tool_invocations`, `jevgrep_process_spawns`); đã đặt chỗ nhưng cạn ngân
+sách là `skipped`, KHÁC lỗi vận hành thật. Số lần gọi
+**thực tế** KHÔNG được suy từ số `jev_ok`: một logical call có thể retry thành 3
+HTTP request. `jev_calls` được giữ để tương thích nhưng nay chỉ nghĩa là số
+operation thành công (`jev_ok`), không phải số lần gọi HTTP. Task lấy từ catalog
+`tools/trajectory-tasks.mjs` gồm sáu lớp (`routine`, `repository-navigation`,
+`bug-diagnosis`, `tool-failure-recovery`, `destructive-intent-safety`,
+`multi-file-coding`), mỗi task có evaluator tất định; task destructive chỉ chạm
+thư mục fixture tạm. Công cụ ghi split `validation`, **không** tự nhận held-out.
+Seed nhận diện lượt lặp và xoay thứ tự nhánh, không điều khiển ngẫu nhiên của
+provider. Chỉ số thiếu giữ `null`; một pilot chưa chứng minh lợi ích hiệu năng.
+
+Phân tích P2 dùng `tools/trajectory-matrix.mjs`, ghép đúng identity đầy đủ
+`(task_id, seed, repo_state, model, benchmark_config_hash, dsh_version, plugin_version)`;
+row sai schema (`trajectory-matrix-v1` trở xuống) bị **từ chối tường minh**, row
+thiếu định danh vào `incomplete`, nhánh trùng bị loại. Promotion **không bao giờ tự
+động**: trần là `eligible-for-review`, cần ≥10 nhóm held-out thật ghép cặp trên ≥2
+lớp task, không thụt lùi an toàn/chất lượng. Nhóm có môi trường capability **không
+hợp lệ** (thiếu hạ tầng, hoặc `available` chưa chứng minh) bị `hold` với lý do
+machine-readable và **không tính là thụt lùi hiệu năng**. Cùng tên arm nhưng
+`profile_config_hash` khác bị coi là treatment khác, không gộp bằng chứng. Chỉ số
+chưa đo vẫn `null` (không tự thành 0), kết luận giữ `unknown`.
 
 ```bash
 node tools/trajectory-matrix.mjs measured.jsonl
 node tools/trajectory-matrix.mjs --self-test
 node tests/dsh-compat.mjs --strict
 ```
+
+**Validation ≠ bằng chứng held-out.** Một lần chạy thật không tự động là bằng
+chứng promotion hợp lệ; tên profile không chứng minh mọi capability đã có. Vì vậy
+**lợi ích hiệu năng vẫn chưa được chứng minh** cho tới khi có đủ nhóm held-out
+ghép cặp; chưa có dữ liệu thì không được tuyên bố plugin nhanh hơn hay "thông minh
+hơn".
 
 Kiểm thử host thật bao phủ ToolRuntime, UserQuestionService, ReactLoopAgent,
 việc tiếp tục turn, hook review và chọn effort. Phản hồi model/Jev bên ngoài,

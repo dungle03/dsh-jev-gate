@@ -861,26 +861,78 @@ task, which is reported as `regression`). This tool analyzes supplied records; i
 or verify that a `source: real` field is truthful. Independently labeled live
 A/B runs are needed before enabling experimental layers by default.
 
-`tools/collect-trajectory.mjs` executes an isolated four-arm repository-navigation
-pilot through the real DSH headless CLI. Set `TRAJECTORY_MODEL_KEY` for the explicit
-model route and optionally `TRAJECTORY_MODEL` / `TRAJECTORY_BASE_URL`, then run
-`node tools/collect-trajectory.mjs pilot.jsonl`. It stores real events and labels
-records `validation`, not held-out evidence. A replication seed identifies the
-run and rotates arm order; it does not seed provider randomness. Missing metrics
-remain `null`. One pilot does not establish a performance benefit.
+`tools/collect-trajectory.mjs` runs a four-arm pilot in an isolated directory
+through the real DSH headless CLI. The `normal` mode **requires both
+`TRAJECTORY_MODEL_KEY` and `TYPESAFE_API_KEY`**: if either is missing the collector
+stops immediately, names the missing credential, and **writes no partial record** —
+because `safe`/`balanced`/`experimental` all depend on Jev, a missing key makes
+those layers fail-open and turns "vanilla vs profile" into "vanilla vs profile
+without a backend". Jev-outage behavior is a **separate mode** `--jev-outage`
+(model key only), never mixed with the normal performance benchmark:
 
-The P2 analyzer `tools/trajectory-matrix.mjs` pairs all four arms,
-`vanilla/safe/balanced/experimental`, by exact `(task_id, seed, repo_state, model)`.
-Duplicate arms or missing identities are not selected arbitrarily. Missing
-measurements stay `null`, and the verdict stays `unknown`. Its self-test uses
-synthetic data, not real A/B evidence. Real trajectories have not established
-lower token usage, cost, or elapsed time without a quality regression.
+```bash
+node tools/collect-trajectory.mjs pilot.jsonl                # normal, both keys required
+node tools/collect-trajectory.mjs outage.jsonl --jev-outage # measures outage behavior only
+node tools/collect-trajectory.mjs all.jsonl --tasks navigation-marker-v1,bug-diagnosis-calc-v1 --seeds 1,2
+```
+
+`--tasks` takes a list of catalog `task_id`s (defaults to one task); `--seeds` runs
+multiple replications. The collector rejects a bad task/seed/flag **before**
+spawning any process, and only writes a row after a run actually completes.
+
+Because rows are written incrementally, a run killed mid-way leaves a JSONL file
+**missing rows** that looks no different from a complete one. The collector writes
+a `<output>.manifest.json` sidecar with `status: complete`/`incomplete` and the
+expected row count; `trajectory-matrix` reads it and attaches a `manifest_warning`
+when the file is incomplete (or has no manifest), so a partial run is never
+mistaken for complete evidence.
+
+Every row carries `schema: dsh-jev-gate-trajectory-v2`, a **capability manifest**
+(`configured`/`available`/`invoked` derived from boot config, decisions.jsonl and
+real preflight — **never** from the arm name), and **operation telemetry** taken
+from `cost_governor` by `operation_id` (`jev_http_attempts`,
+`review_tool_invocations`, `jevgrep_process_spawns`, `decision_reserved_units`,
+`decision_actual_invocations`, `decision_operation_failures`,
+`decision_operation_cancellations`). Jev, review and jevgrep are each split into
+`logical_operations` / `successful_operations` / `failed_operations` /
+`skipped_operations` (e.g. `jev_http_attempts`, `review_tool_invocations`,
+`jevgrep_process_spawns`); reserved-but-budget-exhausted is `skipped`, distinct
+from a real operational failure. **Actual** invocation counts are never derived
+from the `jev_ok` count: one logical call can retry into three HTTP requests.
+`jev_calls` is kept for compatibility but now means successful logical operations
+(`jev_ok`), not HTTP attempts. Tasks come from the `tools/trajectory-tasks.mjs`
+catalog covering six classes (`routine`, `repository-navigation`, `bug-diagnosis`,
+`tool-failure-recovery`, `destructive-intent-safety`, `multi-file-coding`), each
+with a deterministic evaluator; destructive tasks only touch a temporary fixture
+directory. It labels records `validation` and **never** claims held-out evidence.
+A replication seed identifies the run and rotates arm order; it does not seed
+provider randomness. Missing metrics remain `null`. One pilot does not establish a
+performance benefit.
+
+The P2 analyzer `tools/trajectory-matrix.mjs` pairs on the full identity
+`(task_id, seed, repo_state, model, benchmark_config_hash, dsh_version, plugin_version)`;
+rows with an unsupported schema (`trajectory-matrix-v1` and older) are **explicitly
+rejected**, rows missing identity land in `incomplete`, and duplicate arms are
+dropped. Promotion is **never automatic**: the ceiling is `eligible-for-review`,
+requiring ≥10 real held-out paired groups across ≥2 task classes with no
+safety/quality regression. Groups with an **invalid** capability environment
+(missing infrastructure, or `available` not yet proven) are `hold` with a
+machine-readable reason and are **not** counted as a performance regression. The
+same arm name with a different `profile_config_hash` is a different treatment and
+its evidence is not pooled. Missing measurements stay `null` (never 0), and the
+verdict stays `unknown`.
 
 ```bash
 node tools/trajectory-matrix.mjs measured.jsonl
 node tools/trajectory-matrix.mjs --self-test
 node tests/dsh-compat.mjs --strict
 ```
+
+**Validation ≠ held-out evidence.** A real run is not automatically valid
+promotion evidence, and a profile name does not prove every capability was
+available. Therefore **the performance benefit remains unproven** until enough
+held-out paired groups exist; with no data, the plugin must not be claimed to be
+faster or "smarter".
 
 Real-host integration covers ToolRuntime, UserQuestionService, ReactLoopAgent,
 completion continuation, review hooks, and effort resolution. External model/Jev

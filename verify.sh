@@ -21,11 +21,11 @@ for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/poli
 done
 
 echo "2. Syntax"
-for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs lib/jevgrep-control.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-promotion.mjs lib/control/operation.mjs tools/trajectory-matrix.mjs tools/collect-trajectory.mjs; do
+for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs lib/jevgrep-control.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-tasks.mjs tests/trajectory-promotion.mjs lib/control/operation.mjs tools/trajectory-matrix.mjs tools/collect-trajectory.mjs tools/trajectory-schema.mjs tools/trajectory-tasks.mjs; do
   if node --check "$PLUGIN/$f" 2>/dev/null; then pass "$f"; else fail "$f lỗi syntax"; fi
 done
 
-for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-promotion.mjs tests/dsh-compat.mjs; do
+for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-tasks.mjs tests/trajectory-promotion.mjs tests/dsh-compat.mjs; do
   output="/tmp/jev-gate-${f##*/}.$$"
   if node "$PLUGIN/$f" >"$output" 2>&1; then
     pass "$f"
