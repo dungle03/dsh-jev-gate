@@ -178,7 +178,7 @@ for (const [label, errorText, expect] of recoveries) {
   check(label, choice === expect, `choice=${choice} conf=${r.answers.recovery.confidence.toFixed(2)}`);
 }
 
-// --- Fail-open: Jev bị abort thì phải đi tiếp, không chặn ------------------
+// --- Gate outage: huỷ lệnh không được tự động thực thi ------------------
 const handlers = {};
 const { apply } = await import('../lib/index.mjs');
 apply({
@@ -188,21 +188,23 @@ apply({
 }, { logDir: TMP_LOG_DIR });
 
 /**
- * Fail-open khi Jev bị abort — kiểm bằng lệnh THƯỜNG.
- *
- * Bản trước dùng `rm -rf /` và đòi `allow`, tức test khẳng định một lệnh xoá cả
- * ổ đĩa được cho qua chỉ vì signal đã abort. Đó là fail-open mà sàn tất định
- * (Lớp 1₀) sinh ra để bịt, nên test đã mã hoá lỗ hổng. Nay tách hai case.
+ * Khi turn bị huỷ, cả lệnh thông thường chưa chứng minh chỉ-đọc lẫn lệnh
+ * catastrophic đều phải dừng. Không áp dụng auto_allow cho signal đã abort.
  */
 const abortedBenign = {
   name: 'bash',
-  arguments: { command: 'npm test' },
+  arguments: { command: 'ls -la' },
   callId: 'verify-abort-benign',
   agent: { cwd: homedir(), session: { id: 'live-verify', snapshotEvents: () => [] } },
   signal: AbortSignal.abort(),
 };
 const benignResult = await handlers['tools/pre-execute'](abortedBenign, async () => ({ kind: 'allow' }));
-check('fail-open khi Jev bị abort (lệnh thường)', benignResult.kind === 'allow', `kind=${benignResult.kind}`);
+check('signal đã abort: lệnh chỉ-đọc chứng minh được vẫn được phép', benignResult.kind === 'allow', `kind=${benignResult.kind}`);
+const unknownResult = await handlers['tools/pre-execute'](
+  { ...abortedBenign, arguments: { command: 'npm run test' } },
+  async () => ({ kind: 'allow' }),
+);
+check('signal đã abort: lệnh chưa chứng minh chỉ-đọc bị giữ lại', unknownResult.kind === 'deny', `kind=${unknownResult.kind}`);
 
 const abortedDangerous = {
   name: 'bash',

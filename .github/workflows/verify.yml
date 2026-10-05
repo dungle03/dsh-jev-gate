@@ -27,12 +27,24 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in lib/*.mjs tests/*.mjs; do
+          for f in lib/*.mjs tests/*.mjs tools/*.mjs; do
             node --check "$f"
           done
 
-      - name: Offline test (fail-open, bất biến model, hợp đồng export)
-        run: node tests/offline.mjs
+      - name: Offline test (gate, model invariants, export contract)
+        run: |
+          node tests/offline.mjs
+          node tests/attack-corpus.mjs
+
+      - name: Calibration and metrics (offline)
+        run: |
+          node tests/benchmark.mjs
+          node tests/metrics.mjs
+          node tests/profiles.mjs
+          node tests/trajectory.mjs
+          node tests/budget.mjs
+          node tests/context.mjs
+          node tests/evidence.mjs
 
       - name: Không có secret hardcode trong source
         run: |

@@ -21,8 +21,18 @@ for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/poli
 done
 
 echo "2. Syntax"
-for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs; do
+for f in lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs; do
   if node --check "$PLUGIN/$f" 2>/dev/null; then pass "$f"; else fail "$f lỗi syntax"; fi
+done
+
+for f in tests/offline.mjs tests/attack-corpus.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs; do
+  output="/tmp/jev-gate-${f##*/}.$$"
+  if node "$PLUGIN/$f" >"$output" 2>&1; then
+    pass "$f"
+    rm -f "$output"
+  else
+    fail "$f — xem $output"
+  fi
 done
 
 echo "3. Dependency resolve (nguyên nhân lỗi 'failed to import' trước đây)"
@@ -60,12 +70,13 @@ else
 fi
 
 echo "7. Thẻ đồng ý qua UserQuestionService THẬT (bỏ qua nếu không có DSH)"
-if node "$PLUGIN/tests/consent-integration.mjs" >/tmp/jev-gate-consent-int.$$ 2>&1; then
-  pass "$(tail -1 /tmp/jev-gate-consent-int.$$)"
+consent_output="/tmp/jev-gate-consent-int.$$"
+if node "$PLUGIN/tests/consent-integration.mjs" >"$consent_output" 2>&1; then
+  pass "$(tail -1 "$consent_output")"
+  rm -f "$consent_output"
 else
-  fail "consent integration thất bại — xem /tmp/jev-gate-consent-int.$$"
+  fail "consent integration thất bại — xem $consent_output"
 fi
-rm -f /tmp/jev-gate-consent-int.$$
 
 echo
 [ $FAIL -eq 0 ] && echo "TẤT CẢ MỤC PASS" || echo "CÓ MỤC HỎNG"

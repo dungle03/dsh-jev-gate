@@ -31,16 +31,16 @@ in `lib/index.mjs`.
 
 | Layer | Hook | Question / mechanism | Type | Default |
 |---|---|---|---|---|
-| **1** · Destructive gate | `tools/pre-execute` | Would this command destroy data irrecoverably? | `noul` | **on** |
+| **1** · Destructive gate | `tools/pre-execute` + `ctx.tools.guard` | Jev checks destructive effect; a monotonic guard repeats the catastrophic floor after the waterfall | `noul` + — | **on** |
 | **1₀** · Read-only prefilter | `tools/pre-execute` (before 1) | Prove locally the command cannot write → skip Jev | — | **on** |
 | **1ᶜ** · Verdict cache | `tools/pre-execute` (before calling Jev) | Same key `tool+command+cwd` → reuse verdict | — | **on** |
-| **1b** · User authorization | `tools/pre-execute` (only when 1 blocks) | Provenance of the target; if unproven → a floating CONSENT card to the user | `ask` | **on** |
+| **1b** · User authorization | `tools/pre-execute` (only when 1 blocks) | Explicit destructive intent, all exact targets, no negation/quotation; ambiguity → consent card | `ask` | **on** |
 | **2** · Completion check | `agent/turn-stopping` | Done yet? Any evidence? Does it need execution? | `noul` ×3 | **on** |
 | **3** · Effort routing | `agent/request` | Jev reads the user's message → `low`/`high`, else `medium`; measured signals raise it to a floor | 1/turn | **on** |
-| **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files to read first? | `choice` + `noul` ×N | **on** |
+| **4+5** · Approach + context choice | `agent/pre-step` (step 1) | Which approach is optimal? Which files to read first? | `choice` + `noul` ×N | **both off** |
 | **6** · Tool-failure recovery | `tools/post-execute` | Retry, change approach, diagnose, or report? | `choice` | **on** |
 | **7** · Quality review | `agent/turn-stopping` | Auto-calls `jev_review` when the turn ends and the diff is large | MCP tool | **on** |
-| **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | Runs `jg` when the task is "where does X live?" | `jg` CLI | **on** |
+| **8** · Source-search escalation | `agent/pre-step` + `tools/post-execute` | Runs `jg` for source discovery; matches task/root/turn before injecting background results | `jg` CLI | **off** |
 
 The prefilter, the verdict cache, and Layer 1b's provenance decision **never
 call Jev** — they are derivable from command syntax / exit code / message
@@ -97,10 +97,11 @@ Three compensating mechanisms, each for a different class of problem:
 
 ### Why the "Verdict cache" layer exists (1ᶜ)
 
-The gate calls Jev for every `bash` command. Measured on the real log: **~6.2%**
-of `allow` commands are **byte-identical strings** (same tool + command + cwd) —
-a pure wasted round-trip, since the verdict for a byte-identical command is the
-same distribution.
+The gate calls Jev for shell commands not proved read-only. A historical
+snapshot found **~6.2%** repeated `allow` command strings (same tool, command,
+and cwd); this is **not the observed cache-hit rate**. The operational log on
+2026-10-04 showed only **four `cached:true` rows**. Measure actual saved calls
+separately rather than inferring savings from duplicate strings.
 
 Cache key = `tool + command (verbatim) + cwd + declared workdir`. Only **clear**
 verdicts are cached: `allow` (p far from threshold) and `deny`. **`fail_open` is
@@ -132,7 +133,8 @@ allow; **destructive AND unprovable** → ask the user; and only when consent is
 refused or unavailable does it **deny**:
 
 ```
-p ≥ 0.7  ──► check provenance: is the target in the user's REAL request?
+p ≥ 0.7  ──► prove explicit destructive intent in the REAL user request,
+              │   all command targets matched, no negation/quotation/discussion?
               ├── yes    ──► ALLOW (allow_authorized)
               └── no / cannot prove
                     └──► ASK THE USER via a floating CONSENT card, then WAIT
@@ -180,10 +182,12 @@ by the consent card (code `JEV_CONSENT_DENIED`) — a blocked command is not a
 
 **v0.9.0 — dropped the second LLM call.** The old version asked Jev a `choice`
 question ("did the user authorize this?") — one more round-trip sitting ON the
-critical path of every blocked command. It now derives authorization from
-**deterministic provenance**: extract the command's target (path/name from
-`rm`/`mv`/`truncate`/…), then substring-match it against the user's **real**
-messages. Measured on the real hook (`tests/offline.mjs` section 7b/7c): before =
+critical path of every blocked command. It now derives authorization from **deterministic provenance**: require an
+explicit destructive request from a **real** user message, exclude negation,
+quotation, and mere discussion, and match **every** extracted command target.
+Compound commands, globs, shell expansions, `find -exec`, and complex redirections
+always require the consent card; target extraction alone does not prove their effect.
+Other ambiguous cases also require consent rather than granting permission. Measured on the real hook (`tests/offline.mjs` section 7b/7c): before =
 **2** Jev requests per blocked command (`destructive` + `authorized`), after =
 **1** (`destructive`), and when unprovable, **0** extra requests.
 
@@ -194,15 +198,18 @@ including background job output (`tool-jobs`) and the plugin's own injected hint
 provenance uses exactly this source.
 
 This layer is **fail-closed**: if it cannot prove authorization, it asks the
-user, and every answer that is not an explicit approval also DENIES. Unlike
-layer 1 (fail-open) — a defensive layer must lean toward safety when uncertain.
+user, and every answer that is not an explicit approval also DENIES. Layer 1 now also defaults to asking on Jev outage (`gateFailureMode: ask`);
+`block` denies immediately and `auto_allow` restores the old fail-open behavior
+only when explicitly configured.
 
 ### Layer 3 — Jev picks effort from the user's message
 
 Default (`input` mode): on every user **turn**, Jev reads the request and decides
-that turn's effort level. **Jev may only pick `low` or `high`**; everything else
-(Jev error, no task, out-of-set choice) falls back to `medium`. Sticky within a
-turn, so it costs **1 Jev call/turn**, not per step.
+that turn's effort level. On the default path **Jev may only pick `low` or
+`high`**; everything else (Jev error, no task, out-of-set choice) falls back to
+`medium`. Set `effortAbstain: true` to switch to the **two-`noul`** path that lets
+Jev abstain deliberately (see the v0.13.2 note below). Sticky within a turn, so it
+costs **1 Jev call/turn**, not per step.
 
 Two config keys control it:
 
@@ -288,27 +295,146 @@ decisions below conf 0.5 and **55%** of Jev tokens. `input` mode differs from th
 old version: it calls **once per turn** (not per request), only asks "is this
 request hard", and **constrains Jev to the two ends**.
 
+**`medium` as a REAL abstention (`effortAbstain`, default OFF).** When
+`effortJevChoices` holds only `low`/`high`, a working API forces Jev to pick one
+extreme even for a middle task; `medium` only appeared when Jev **failed** — a
+failure signal, not a decision (measured: the level flipped `low↔high` 113/120
+times). With `effortAbstain: true` the host asks **two independent `noul`
+questions in ONE request** and maps them itself:
+
+| `routine` | `hard` | Result |
+|---|---|---|
+| >= 0.5 | < 0.5 | `low` |
+| < 0.5 | >= 0.5 | `high` |
+| otherwise (contradiction / both weak) | | `effortFallback` = `medium` (**abstain**) |
+
+The two axes are calibrated independently via `effortRoutineThreshold` /
+`effortHardThreshold`. The measured-failure floor still applies (Jev says `low`,
+previous-turn test failed → `high`), `effortJevChoices` stays honoured (`low` =
+lowest level, `high` = highest), and the default `effortAbstain: false` keeps the
+measured **26/26** `choice` path unchanged. The `effort_route` log records
+`source: 'jev_abstain'` plus `routine`/`hard`.
+
+**Measured on the 26-label set.** The exact 26 tasks used to measure the `choice`
+path (16 easy expecting `low`, 10 hard expecting `high`), model `jev-1.13.0`, 3
+repeats:
+
+| `hard` question wording | score | false abstains |
+|---|---|---|
+| first version (as designed) | **63/78** | 15 |
+| rewritten | **78/78** | 0 |
+
+Real defect found by measuring: the first version said *"the answer is not yet
+known and must be found"* — which literally describes *"read `package.json` to
+find the version"*, so Jev returned a high `hard` (0.50–0.61) on routine tasks and
+was ABSTAINED **in error**. The rewrite separates *"work out something that
+**DETERMINES WHAT TO DO**"* from *"Reading a file to learn a value you were asked
+to report is **NOT** uncertainty"*. Test `11aa-k` locks this carve-out in.
+
+**Does abstain add value?** On 12 "mid" tasks, abstain differed from the `choice`
+path in **8/12 cases** — and it abstained exactly where `choice` was *forced* to
+an extreme with low confidence (e.g. `gộp hai hàm trùng lặp` → abstain `medium`
+vs forced `low` conf **0.01**; `viết thêm test cho module config` → `medium` vs
+`high` conf **0.09**). That is the design goal: **do not bias the model when
+there is no clear signal**.
+
 Cache note: on this router, changing effort does **not** invalidate the prompt
 cache — measured 96% cache hit after a change.
 
-### Why the "Context choice" layer exists (Layer 5)
+### Why Layer 4 stays silent without evidence (probability + margin gate)
 
-This is the clearest cost target. Most input tokens are burned by the model
-hunting for relevant files through a chain of tool calls (`glob` → `grep` →
-`read` → `read` again), while most of those tokens exist only to answer "which
-file is worth reading".
+The `choice` question **always** returns a direction, even when the state is not
+enough to choose one — it has no way to say "I don't know". And `confidence` does
+**not** correlate with right/wrong (a measured CORRECT case had conf 0.24, below
+a WRONG case at 0.44), so a confidence threshold filters nothing. The result: the
+model gets anchored on a **guessed** direction at step 1 — and a hint without
+evidence is worse than no hint.
 
-The plugin lists candidates by **file name** (one breadth-first `readdir`, ranked
-by tokens matching the task), then asks Jev one `noul` question per **candidate**.
-All questions go in **one request**, so 13 batched questions cost 271ms — the
-same as a single question. The host compares against `contextFileThreshold`
-(0.6), sorts by probability, and cuts to `contextMaxFiles` (3).
+Two changes:
 
-Why N `noul` questions instead of one multi-branch `choice`: the file list is
-dynamic per repo, whereas `choice.criteria` must be fixed in code — you cannot
-build branches for a list unknown ahead of time.
+1. A **`no-op`** branch in the `approach` criteria: Jev can say *"the task text
+   alone is not enough evidence to recommend any approach"* — a valid answer, not
+   a failure.
+2. An **evidence gate over the DISTRIBUTION**, not over `confidence`. A `choice`
+   response carries full `probabilities`, so the host hints **only when**:
+   `max(probabilities) >= approachTopProbability` (0.5) **and**
+   `max − second_max >= approachProbabilityMargin` (0.15) **and** the winner is
+   not `no-op` **and** `choice` matches the argmax. Otherwise → **silent**.
+   Design example: `parallel .86 / script .22 / one .10` → hint; `script .48 /
+   parallel .43 / one .39` → silent.
+
+Every silent branch logs its own reason — `silent_no_op`, `silent_insufficient_evidence`,
+`silent_ambiguous` — with `topProbability` and `margin`, so you can read **why**
+it stayed silent. `approachConfidenceThreshold` is now only a **fallback** when a
+response lacks `probabilities`.
+
+### Why the "Context choice" layer exists (Layer 5) — REBUILT ON EVIDENCE
+
+> **Status 2026-10-05: `enableContextTriage` still defaults to `false`** — the
+> code is rebuilt, but it has **not been A/B-tested on a real session** yet, so it
+> is not enabled by default. See "Open debt" below.
+
+The old version asked Jev "is this file worth reading?" from the **file name +
+path only**, with no file content — Jev had to guess from the name. Measured on a
+real session (`777a1746`): the agent acted on a filename hint **0/4 times**. A
+hint without evidence is worse than no hint: it anchors the model on a guess at
+step 1.
+
+The new version (§8, 4 stages):
+
+1. **Deterministic candidate generation** — `listCandidateFiles`: one breadth-first
+   `readdir`, ranked by tokens matching the task (reads no file content).
+2. **Cheap evidence extraction** — `lib/evidence.mjs` reads each file **at most
+   once** and keeps only `import`/`require` lines, `export` lines, and the lines
+   matching task tokens (with line numbers). It never loads a whole file into
+   context.
+3. **Jev ranks ON the evidence** — `preStepQuestion` puts the excerpts in
+   `state.candidate_evidence`, and the `file_N` question points straight at them:
+   "judge from this excerpt, not from the name". Still one `noul` question per
+   candidate, all in **one request**.
+4. **Inject path + excerpt to the agent** — no more bare filename list. The agent
+   sees `src/auth.ts (p=0.90)` plus `imports:`/`exports:`/`matching line N:` so it
+   can decide immediately without opening the file to check.
+
+Safety (§8, `lib/evidence.mjs`): only **relative paths inside the workspace root**
+are read; absolute paths, `..`, and anything whose `realpath` escapes the root are
+refused; **symlinks**, **binary** files (NUL probe in the first 8 KB), files
+**> 256 KiB**, and unreadable files are skipped — returning `null`, never
+throwing. File reads only happen when `enableContextTriage` is on.
+`contextEvidence: false` restores the old filename-only behaviour, so an A/B can
+separate "does evidence help" from "does the layer help".
+
+**Priority when the injection budget is tight (§22).** The file-evidence block has
+its own tier `evidence`, ranked **above** the generic approach hint (`advisory`):
+`safety > recovery > completion > evidence > advisory`. At the default 500-token
+cap the approach hint (~84 tokens) and one file's evidence (~171 tokens) do not
+both fit the half-cap reserved for step-1 tiers (250) — so **evidence wins**, and
+if it is still tight the evidence is **truncated** (logged as
+`context_budget.truncated`) rather than dropped: a short excerpt is still evidence,
+whereas dropping it loses the agent's only lead. The §23 escape clause ("this is a
+hint, not an instruction") sits at the **head** of the block so truncation cannot
+cut it off.
+
+**No duplicate injection (§22).** Each turn keeps a fingerprint of what has already
+been injected (whitespace collapsed, lower-cased), so the same hint never enters
+context twice. This applies to `evidence`/`advisory` only; `recovery`/`completion`
+are exempt because they have their own per-turn caps and re-asserting at a later
+step is deliberate; `safety`/`consent`/`real_user` are exempt too — repeating a
+safety constraint beats staying silent.
+
+**Open debt (not done):** (a) a real A/B of `contextEvidence: true|false` on
+sessions whose task names a file, measuring whether the agent opens the right file
+— that is the precondition for enabling it by default; (b) import-graph /
+symbol-`ripgrep` evidence (the extended stage 2) — this version only uses the
+file's own `imports`/`exports`/matching lines, with no cross-file tracing.
 
 ### Why the "Source-search escalation" layer exists (Layer 8)
+
+> **Status 2026-10-05: `enableJevgrepEscalation` defaults to `false`.** Measured:
+> **41/41 escalations were `fail_open`** — it never returned a hint, only added
+> overhead (a NEW query is cold at 66s–2m5s). Phase-4 rule: only a layer with
+> proven net-positive stays default-on. Re-enable with
+> `enableJevgrepEscalation: true` once a benefit is measured.
 
 Layer 5 lists candidates by **file NAME**. Measured on a real session
 (`777a1746`): the agent took the file hint **0/4 times** — the hint sat in
@@ -321,9 +447,12 @@ Jev "where does this behaviour live" and returns **verbatim source excerpts**.
 Two branches:
 
 - **A. `agent/pre-step` (step 1)** — when the user's task reads as "where does X
-  live" (`looksLikeSearchTask`).
+  live" (`looksLikeSearchTask`). This branch is a **string guess**, not evidence
+  the agent is actually searching, so it is split out as
+  `jevGrepSearchTaskHeuristic` and defaults **OFF**.
 - **B. `tools/post-execute`** — after `jevGrepSearchTaskThreshold` (3) consecutive
-  raw search commands (`isRawSearchCommand`).
+  raw search commands (`isRawSearchCommand`). This is measured evidence, so it is
+  the default branch.
 
 The threshold 3 is grounded in measurement: the longest consecutive search run in
 the real session — search turns 1/3/4/5/7/8 all **≥3**; short turns 2/9/10 only
@@ -336,12 +465,47 @@ timeout in the await hook is wrong (low never runs, high hangs the turn). Why no
 replace Layer 5 entirely: `jg` measured at ~0.9s warm / ~2.6s cold, added to every
 turn is wasteful.
 
+**A background result is injected only while the task is unchanged.** Each
+background run stores the original task fingerprint + root + turn; before
+injecting, the plugin compares the current task fingerprint and root against the
+originals. A mismatch **caches the result, does NOT inject** (logged as
+`skip_stale`); if the user returns to that same task, the hint is reused. Why: a
+background `jg` run can finish **after the user switched tasks** — query A "where
+is the authentication middleware" finishes after the user moved on to "debug the
+billing webhook"; injecting A's result into the new turn is wrong context +
+anchoring noise, not a merely "slightly stale" hint.
+
+**The pending slot is keyed by `session + hash(query) + root`** (not session alone).
+Why: with a session-only key, an in-flight background run for task A would
+**block a NEW task B from escalating** until A finished (measured: "task B
+escalation blocked by old task A run: true"). The normalized query hash and root
+give a new task or workspace its own slot, while the same query in the same
+workspace still never runs twice.
+
 ### Why the "Tool-failure recovery" layer exists (Layer 6)
 
 A tool error is a cheap and strong signal: it says the previous step was wrong.
-Layer 6 asks Jev one `choice` question — retry, change approach, diagnose, or
-report — and injects a hint for the next step. The cap `failureMaxPerTurn` (2)
-prevents repeated nagging.
+The cap `failureMaxPerTurn` (2) prevents repeated nagging.
+
+**KNOWN failures are classified deterministically, with NO Jev round-trip.** Most
+tool errors fall into a few classes whose handling is already clear from the
+error code:
+
+| Signal | Branch |
+|---|---|
+| `ETIMEDOUT` / `ECONNRESET` / `socket hang up` | `retry` |
+| `ENOENT` / `command not found` | `alternate` |
+| `EADDRINUSE` | `alternate` |
+| `SyntaxError` / `Unexpected token` | `alternate` |
+| `EACCES` / `EPERM` / `permission denied` | `diagnose` |
+
+Only errors that match **no** class are sent to Jev (the ambiguous tail). Errors
+raised by the plugin itself (`JEV_*`) are never classified here.
+
+**Loop floor**: the plugin counts how often the SAME failure recurs, keyed by a
+normalized signature `(tool, command shape, error fingerprint)` scoped per
+session. When the same failure repeats, `retry` is no longer valid and is raised
+to **`alternate`** — blocking the `retry → retry → retry` spiral.
 
 This layer **skips** commands blocked by Layer 1 itself: those are not tool
 failures but gate blocks, and Layer 1 already has its own message. Detected via
@@ -404,9 +568,12 @@ dsh-jev-gate
 │       │   ├── one-command-scan   ──► "run a single command, do not split the work"
 │       │   ├── scripted-analysis  ──► "write a short script and read the result"
 │       │   ├── parallel-workers   ──► "split across subagents in parallel"
-│       │   └── guided-interview   ──► "ask the user to clarify first"
-│       │       (silent when conf < 0.3; the model decides, the plugin does not act)
-│       └── noul ×N "should this file be read?" (Layer 5)
+│       │   ├── guided-interview   ──► "ask the user to clarify first"
+│       │   └── no-op              ──► Jev declares "not enough evidence" (silent)
+│       │       (hint only when top prob ≥ 0.5 AND beats runner-up by ≥ 0.15;
+│       │        low top, thin margin, or no-op winning → silent;
+│       │        the model decides, the plugin does not act)
+│       └── noul ×N "should this file be read?" (Layer 5 — DEFAULT OFF)
 │           ├── the plugin lists candidates by FILE NAME (BFS readdir + ranking)
 │           └── injects "read file X" when p ≥ 0.6, at most 3 files
 │
@@ -487,8 +654,11 @@ export TYPESAFE_API_KEY="apikey_..."
 #     TYPESAFE_API_KEY: "apikey_..."
 ```
 
-> No key? The plugin **fails open** — every gate stays silent and allows, never
-> blocking wrongly. Set the key and restart to enable it.
+> No key? Proven read-only commands still pass. Otherwise Layer 1 defaults to
+> an explicit consent card (`gateFailureMode: ask`); without a working consent
+> channel, it denies. `block` denies immediately; `auto_allow` is an opt-in
+> legacy mode. Other advisory layers skip their hints. Set the key and restart
+> to enable Jev.
 
 ### Layer 8 also needs the `jg` CLI (optional)
 
@@ -497,15 +667,16 @@ itself off silently — no error, no blocking. Install `jg` and put it on `PATH`
 
 ## Operating principles
 
-- **Absolute fail-open.** Jev errors, is slow, or returns garbage → the action
-  proceeds as if Jev never existed. Jev must not turn its own incident into a
-  workflow incident. The only exceptions: the **catastrophic floor** (Layer 1₀)
-  and **Layer 1b** — both fail-closed because they are defensive. For Layer 1b
-  specifically, when provenance is unproven it **asks the user via a floating
-  card and waits**; every answer that is not an explicit approval (including
-  timeout / dismissal / no channel) DENIES.
-- **Short timeout.** The destructive gate sits on the critical path of every tool
-  call: 2s. Slower than that and it fails open.
+- **Layer 1 fails closed on Jev outage by default.** `gateFailureMode: ask`
+  asks for explicit consent; refusal, timeout, or an unavailable channel denies.
+  `block` denies immediately; `auto_allow` opts into legacy fail-open behavior.
+  The deterministic catastrophic floor runs in both pre-execute and the
+  monotonic `ctx.tools.guard`. Advisory layers skip hints on Jev failure.
+  The floor scans the **entire shell command text**, so even a catastrophic
+  literal inside a heredoc being written can trigger it; use a file-edit tool
+  when authoring such test data instead of embedding it in a shell command.
+- **Short timeout.** The gate waits at most 2s for Jev, then applies
+  `gateFailureMode` instead of silently allowing an unclassified shell command.
 - **Pin the model.** `jev-1.13.0` rather than `jev-latest`, because an alias
   drifts when a new version ships and answers can change without notice.
 - **Thresholds by consequence.** The destructive gate (0.7) differs from the
@@ -522,19 +693,37 @@ itself off silently — no error, no blocking. Install `jg` and put it on `PATH`
 
 Edit in the profile (`~/.dsh/profiles/web/cordis.patch.yml`) or via the Plugins
 page. The list below matches `DEFAULTS` and `Config` in `lib/index.mjs`.
+Set `profile: safe` for guard/consent/completion only; `balanced` adds
+routing/recovery/review; `experimental` also opts into advisory layers 4/5/8.
+Named profiles keep the destructive gate and catastrophic guard enabled, but
+preserve stricter user settings (`block` on outage, disabled automatic
+provenance/consent, or a lower destructive threshold). The default `custom`
+profile preserves all granular configuration.
+`shadowGateThreshold` only logs `destructive_gate_shadow` (`would_flag` versus
+`enforced_flag`) on requests already evaluated by Jev; it never changes the
+actual decision and cannot establish end-to-end agent benefit.
 
 ```yaml
 - id: jev-gate
   name: dsh-jev-gate
   config:
+    profile: custom             # safe | balanced | experimental; defaults to custom
     destructiveThreshold: 0.7   # p >= this means destructive
+    shadowGateThreshold:          # optional 0..1; counterfactual log only, never bypasses actual gate
     completionThreshold: 0.5    # p < this means not done
     evidenceThreshold: 0.5      # p < this means insufficient evidence
     executionThreshold: 0.5     # p >= this means the goal needs execution
-    approachConfidenceThreshold: 0.3
+    approachConfidenceThreshold: 0.3  # FALLBACK confidence gate (only when the response has no probabilities)
+    approachTopProbability: 0.5       # evidence gate: top of the distribution must be >= this to hint
+    approachProbabilityMargin: 0.15   # evidence gate: top must beat runner-up by >= this, else stay silent
     contextFileThreshold: 0.6   # p >= this means the file should be read
     contextCandidateLimit: 12   # max candidates given to Jev to grade
     contextMaxFiles: 3          # max files named in the hint
+    contextEvidence: true       # §8: attach REAL excerpts (imports/exports/task-matching lines) — off = old filename-only behaviour (for A/B)
+    jevBudgetEnabled: true      # §16: shared budget; the safety gate always runs despite exhaustion
+    jevMaxCallsPerTurn: 4       # initial cap; calibrate against real sessions
+    jevMaxCallsPerSession: 100  # initial cap; calibrate against real sessions
+    maxPluginContextTokensPerTurn: 500  # §22: per-turn cap on plugin-injected text (≈ chars/4); safety/consent/real_user are NEVER truncated
     failureMaxPerTurn: 2        # max recovery hints per turn
     completionMaxPerTurn: 2     # max completion checks per turn
     reviewMinChangedLines: 20   # smaller diffs are not reviewed
@@ -551,11 +740,15 @@ page. The list below matches `DEFAULTS` and `Config` in `lib/index.mjs`.
     effortDecision: input      # 'input' = Jev reads the user message; 'deterministic' = signal rule
     effortJevChoices: [low, high] # levels Jev may pick (input mode)
     effortFallback: medium     # applied when Jev fails/cannot decide (input mode)
+    effortAbstain: false        # true = ask two noul questions (routine/hard); medium is a VALID abstain
+    effortRoutineThreshold: 0.5 # routine-axis threshold in abstain mode
+    effortHardThreshold: 0.5    # hard-axis threshold in abstain mode
     effortDefault: low          # default level in deterministic mode
     effortEscalateTo: high      # escalate level on previous-turn failure (deterministic + the input-mode FLOOR)
     effortEscalateToolErrors: 2   # escalate/floor on ≥2 tool errors in the previous turn (all modes)
     effortEscalateTestFailures: 1 # escalate/floor on ≥1 test failure in the previous turn (all modes)
     jevGrepSearchTaskThreshold: 3  # consecutive grep/find/rg commands to escalate; 0 = disable branch B
+    jevGrepSearchTaskHeuristic: false # branch A (task "sounds like search"); default OFF, see rationale below
     jevGrepMaxPerTurn: 1        # max jevgrep escalations per turn
     jevGrepTimeoutMs: 120000     # budget for one `jg` run (a NEW query is cold, 66s–2m5s); on timeout, fail open
     jevGrepFailureBreaker: 3    # after N consecutive jg failures, disable Layer 8 for the session
@@ -569,27 +762,59 @@ page. The list below matches `DEFAULTS` and `Config` in `lib/index.mjs`.
     gateVerdictCacheMax: 500            # max cache entries (FIFO + LRU-touch)
     gateVerdictCacheMargin: 0.1         # do not cache when |p - threshold| <= margin (Jev is non-deterministic)
     enableAuthorizationOverride: true   # layer 1b provenance — off restores block-everything behaviour
+    gateFailureMode: ask                 # Jev outage: ask (default), block, or opt-in legacy auto_allow
     enableDestructiveConsent: true      # layer 1b — when provenance is unproven, ask the user via a floating card
     consentTimeoutMs: 120000            # a consent card past its deadline is treated as a refusal (DENY)
     enableCompletionCheck: true
     enableEffortRouting: true
-    enableSpawnHint: true
-    enableContextTriage: true           # context file-selection layer
+    enableSpawnHint: false             # opt in for approach advice after trajectory A/B validation
+    enableContextTriage: false          # context file-selection layer (default OFF: needs re-A/B with real file evidence, see §8)
     enableFailureRecovery: true         # tool-failure recovery layer
     enableQualityReview: true           # auto-calls jev_review when a turn ends
-    enableJevgrepEscalation: true       # source-search escalation via `jg` (needs the jevgrep skill)
+    enableJevgrepEscalation: false      # experimental source-search layer; enable once benefit is measured; needs `jg`
 ```
 
 Retired keys (`effortReuseConfidence`, `effortMaxReuseSteps`,
 `authorizationTimeoutMs`) are **warned about loudly** on load, never ignored
 silently.
 
+### Jev budgets and paired trajectory measurement
+
+`jevMaxCallsPerTurn: 4` and `jevMaxCallsPerSession: 100` are starting caps,
+not yet calibrated on real sessions. The shared budget sheds advisory calls
+first and reserves capacity for completion and recovery; the destructive gate
+always runs, and an unavailable Jev still requires consent. `jev_budget` logs
+layer and skip reason. `maxPluginContextTokensPerTurn: 500` covers **plugin-added**
+text only, never real user input or safety denial reasons; chars/4 is an
+approximation, not the model tokenizer's token count.
+
+`tools/benchmark-trajectory.mjs` reads independently collected JSONL, pairs
+runs by `(task_id, seed)`, and compares `vanilla` / `core` / `experimental` on
+success, tests, elapsed time, calls, tokens, cost, retries, consent, and safety:
+
+```bash
+node tools/benchmark-trajectory.mjs trajectories.jsonl --baseline vanilla --treatments core,experimental --json
+```
+
+Any missing arm, safety label, success/test outcome, or **real held-out** record
+yields an `unknown` outcome (except a newly detected false-allow in a paired
+task, which is reported as `regression`). This tool analyzes supplied records; it does not execute DSH
+or verify that a `source: real` field is truthful. Independently labeled live
+A/B runs are needed before enabling experimental layers by default.
+
 ## Verify
 
 ```bash
-bash verify.sh                    # 8 sections (0–7), needs DSH running + TYPESAFE_API_KEY
-node tests/offline.mjs            # 360 checks, no secret needed
+bash verify.sh                    # offline checks, profile, live API and consent; needs DSH + key
+node tests/offline.mjs            # all-layer regression, no secret needed
 node tests/attack-corpus.mjs      # independent attack corpus — requires 0 leaks
+node tests/benchmark.mjs          # independent-label benchmark, no network or shell execution
+node tests/metrics.mjs            # decision-metric contract and unlabeled/canary distinction
+node tests/profiles.mjs           # safe/balanced/experimental and stricter settings
+node tests/budget.mjs             # shared Jev turn/session cap and safety priority
+node tests/context.mjs            # plugin text cap and priority
+node tests/evidence.mjs           # bounded file excerpts and batched reranking
+node tests/trajectory.mjs         # offline paired A/B; unknown for missing evidence
 node tests/live-check.mjs         # 10 checks, needs TYPESAFE_API_KEY + network
 node tests/consent-integration.mjs # 10 checks, needs a local DSH (skipped if absent)
 ```
@@ -597,7 +822,7 @@ node tests/consent-integration.mjs # 10 checks, needs a local DSH (skipped if ab
 - `verify.sh` — 8 sections: location, structure, syntax, dependency resolution,
   profile registration, real boot log, real Jev call with a known answer, and the
   consent card through the real `UserQuestionService`. Exit 1 if any fails.
-- `tests/offline.mjs` — 360 checks with no secret: fail-open, model invariance,
+- `tests/offline.mjs` — offline regression: gate outage modes, model invariance,
   shell-tool-only gating, Layer 4 guard, real-user-message filtering, export
   contract, the `for` loop prefilter, the verdict cache (safety invariants, no
   caching near the threshold), 1b provenance and the consent card end-to-end
@@ -650,11 +875,11 @@ drift; each row states its snapshot.
 
 | Measurement | Result |
 |---|---|
-| Offline tests (`tests/offline.mjs`) | **360 checks** PASS, 0 failures |
+| Offline tests (`tests/offline.mjs`) | **450+ checks** PASS, 0 failures |
 | Attack corpus (`tests/attack-corpus.mjs`) | **83 commands** — **0 leaks** |
 | Safety invariants (offline) | **329 destructive commands** — 0 leak; fuzz 384+39 — 0 leak |
 | Prefilter coverage on the real log (3,369 `allow` commands, 2026-10-02) | **13.6%** (459 commands) — before v0.10.0 it was 0.03% |
-| Verdict cache savings on the real log | **~6.2%** of gate calls (byte-identical commands) |
+| Historical repeated commands (not cache hits) | **~6.2%** in an earlier sample; **4 actual `cached:true` rows** in the operational log on 2026-10-04 |
 | Gate usefulness (`gate_useful_ratio`, 12,166 records) | **0.96%** — 117 denies / 12,166 runs |
 | Layer 1b — Jev calls per blocked command | **1** (destructive); before v0.9.0 it was 2 |
 | Layer 1b — provenance unproven | **0** extra Jev calls; asks the user via a floating card and waits for explicit approval |
@@ -668,7 +893,7 @@ drift; each row states its snapshot.
 | Destructive gate on 20 real commands | 20/20 correct (recall 100%, precision 100%) |
 | Does a deny actually block execution? | yes — a canary survives after a denied `rm -rf` |
 | Completion check: evidence vs bare claims | 3/3 branches correct |
-| Layer 1 fail-open (missing key / broken store / no llm) | 3/3 pass |
+| Layer 1 fail-open (legacy version; default is now `ask`) | 3/3 at the historical snapshot, not the current default |
 | Approach choice | 9/10 correct (disk scan → 1 command; 5 topics → parallel; vague → ask back) |
 | Context choice — threshold boundary | files to read **0.65–0.98**, irrelevant files **0.02–0.18** |
 | Tool-failure recovery, 6 runs/case | 4/4 cases stable 6/6 each |

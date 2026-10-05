@@ -30,16 +30,16 @@ trong `lib/index.mjs`.
 
 | Lớp | Hook | Câu hỏi / cơ chế | Kiểu | Mặc định |
 |---|---|---|---|---|
-| **1** · Gate phá dữ liệu | `tools/pre-execute` | Lệnh này có phá dữ liệu không thể khôi phục? | `noul` | **bật** |
+| **1** · Gate phá dữ liệu | `tools/pre-execute` + `ctx.tools.guard` | Jev hỏi lệnh có phá dữ liệu; sàn catastrophic chạy lại ở guard monotonic sau waterfall | `noul` + — | **bật** |
 | **1₀** · Prefilter chỉ-đọc | `tools/pre-execute` (trước 1) | Chứng minh cục bộ lệnh không thể ghi → bỏ qua Jev | — | **bật** |
 | **1ᶜ** · Cache verdict | `tools/pre-execute` (trước khi gọi Jev) | Trùng khoá `tool+command+cwd` → dùng lại verdict | — | **bật** |
-| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi 1 chặn) | Provenance target; không chứng minh được → thẻ ĐỒNG Ý nổi cho user | `ask` | **bật** |
+| **1b** · Quyền của user | `tools/pre-execute` (chỉ khi 1 chặn) | Động từ phá dữ liệu + đúng mọi target + không phủ định/bàn luận; còn nghi vấn → hỏi user | `ask` | **bật** |
 | **2** · Kiểm hoàn thành | `agent/turn-stopping` | Xong chưa? Có bằng chứng chưa? Có cần thực thi không? | `noul` ×3 | **bật** |
 | **3** · Chọn effort | `agent/request` | Jev đọc nội dung tin nhắn user → `low`/`high`; còn lại `medium`; tín hiệu đo được nâng lên sàn | 1/lượt | **bật** |
-| **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **bật** |
+| **4+5** · Chọn hướng + chọn file nạp | `agent/pre-step` (step 1) | Hướng nào tối ưu? File nào cần đọc trước? | `choice` + `noul` ×N | **cả hai tắt** |
 | **6** · Phục hồi khi tool lỗi | `tools/post-execute` | Retry, đổi cách, điều tra, hay báo user? | `choice` | **bật** |
 | **7** · Review chất lượng | `agent/turn-stopping` | Tự gọi `jev_review` khi turn xong và diff đủ lớn | tool MCP | **bật** |
-| **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | Chạy `jg` khi việc là "tìm X nằm ở đâu" | CLI `jg` | **bật** |
+| **8** · Leo thang tìm nguồn | `agent/pre-step` + `tools/post-execute` | Chạy `jg` khi việc là "tìm X nằm ở đâu"; đối chiếu task/root/turn trước khi chèn kết quả nền | CLI `jg` | **tắt** |
 
 Ba cơ chế **không gọi Jev** — **1₀** prefilter, **1ᶜ** cache, **1b** provenance.
 Đây là các quyết định suy ra được từ cú pháp lệnh / exit code / nguồn gốc tin
@@ -90,9 +90,10 @@ Ba cơ chế bù lại, mỗi cái cho một lớp vấn đề khác nhau:
 
 ### Vì sao có lớp "Cache verdict" (1ᶜ)
 
-Gate gọi Jev cho mỗi lệnh `bash`. Đo trên log thật: **~6,2%** lệnh `allow` là
-**chuỗi trùng y hệt** (cùng tool + command + cwd) — round-trip thuần lãng phí,
-vì verdict cho một lệnh byte-identical là cùng một phân phối.
+Gate gọi Jev cho lệnh `bash` chưa qua prefilter. Snapshot lịch sử cho thấy
+**~6,2%** lệnh `allow` có chuỗi trùng (cùng tool + command + cwd), **không phải
+cache hit**. Trên log vận hành 2026-10-04 chỉ thấy **4 dòng `cached:true`**;
+kết quả tiết kiệm thực tế cần đo riêng, không suy ra từ tỷ lệ lệnh trùng.
 
 Khoá cache = `tool + command (nguyên văn) + cwd + declared workdir`. Chỉ cache
 verdict **rõ ràng**: `allow` (p cách ngưỡng xa) và `deny`. **`fail_open` KHÔNG
@@ -120,7 +121,8 @@ lời một câu: user có tự tay yêu cầu xoá đúng thứ đó không. Ch
 hội đủ hai điều — **phá dữ liệu VÀ không được user yêu cầu**:
 
 ```
-p ≥ 0.7  ──► kiểm provenance: target có trong yêu cầu THẬT của user?
+p ≥ 0.7  ──► kiểm provenance: user yêu cầu phá dữ liệu tường minh,
+               │   nêu đủ mọi target và không phủ định/bàn luận/trích dẫn?
               ├── có    ──► CHO CHẠY  (allow_authorized)
               └── không / không chứng minh được
                     └──► HỎI USER bằng thẻ ĐỒNG Ý nổi, CHỜ trả lời
@@ -161,9 +163,11 @@ từ chối). Lớp 6 cũng **bỏ qua** lệnh bị thẻ đồng ý chặn (m�
 
 **v0.9.0 — bỏ call LLM thứ hai.** Bản cũ hỏi Jev một câu `choice` ("user có yêu
 cầu không?") — một round-trip nữa nằm TRÊN đường tới hạn của mọi lệnh bị chặn.
-Nay suy quyền từ **provenance tất định**: trích target của lệnh (đường dẫn/tên
-file của `rm`/`mv`/`truncate`/…) rồi so khớp chuỗi con với tin nhắn **thật** của
-user. Đo trên hook thật (`tests/offline.mjs` mục 7b/7c): trước = **2** request
+Nay suy quyền từ **provenance tất định**: lấy tin nhắn **thật** của user, yêu cầu
+động từ phá dữ liệu tường minh, loại yêu cầu phủ định/bàn luận/trích dẫn, rồi
+kiểm mọi target trích được từ lệnh (`rm`/`mv`/`truncate`/…). Lệnh ghép, glob,
+biến shell, `find -exec` hoặc redirect phức tạp không được tự cấp quyền: chúng
+luôn cần thẻ đồng ý. Không chứng minh đủ thì hỏi lại qua thẻ đồng ý. Đo trên hook thật (`tests/offline.mjs` mục 7b/7c): trước = **2** request
 Jev mỗi lần gate chặn (`destructive` + `authorized`), sau = **1** (`destructive`),
 và khi không chứng minh được thì **0** request bổ sung.
 
@@ -173,15 +177,17 @@ nền (`tool-jobs`) và gợi ý do chính plugin chèn — nên nội dung khô
 thể lọt vào trường "yêu cầu của user". Provenance tất định dùng đúng nguồn này.
 
 Lớp này **fail-closed**: không chứng minh được thì CHẶN (hoặc hỏi user, và mọi
-câu trả lời không phải đồng ý rõ ràng cũng CHẶN). Khác lớp 1 (fail-open) — vì
+câu trả lời không phải đồng ý rõ ràng cũng CHẶN). Lớp 1 nay mặc định hỏi khi Jev lỗi — vì
 đây là lớp phòng thủ, "không biết" phải nghiêng về phía an toàn.
 
 ### Lớp 3 — Jev chọn effort theo nội dung tin nhắn user
 
 Mặc định (chế độ `input`): mỗi **lượt** user gửi, Jev đọc yêu cầu và quyết mức
-effort cho lượt đó. **Jev chỉ được chọn `low` hoặc `high`**; mọi trường hợp khác
-(Jev lỗi, không có task, trả mức ngoài tập) rơi về `medium`. Sticky trong turn nên
-chỉ tốn **1 call Jev/lượt**, không phải mỗi step.
+effort cho lượt đó. Ở đường mặc định, **Jev chỉ được chọn `low` hoặc `high`**; mọi
+trường hợp khác (Jev lỗi, không có task, trả mức ngoài tập) rơi về `medium`. Đặt
+`effortAbstain: true` để đổi sang đường **hai câu `noul`** cho phép Jev chủ động
+abstain (xem mục v0.13.2 bên dưới). Sticky trong turn nên chỉ tốn **1 call
+Jev/lượt**, không phải mỗi step.
 
 Hai config điều khiển:
 
@@ -252,6 +258,61 @@ Cùng lúc, `EFFORT_MEANING` (criteria Jev đọc) được sửa cho khớp: `l
 per-step tự mâu thuẫn với phrasing turn-level. Nay `low` = *"the whole request is
 routine or mechanical"*. Đo lại: vẫn **26/26**.
 
+**v0.13.2 — `medium` thành ABSTAIN thật (`effortAbstain`, mặc định TẮT).** Vấn đề
+của thiết kế cũ: khi `effortJevChoices` chỉ có `low`/`high`, một API chạy được
+buộc Jev phải chọn **một cực** — kể cả khi task ở giữa. `medium` chỉ xuất hiện
+khi Jev **lỗi**, tức là một **dấu hiệu hỏng**, không phải một quyết định. Đo trên
+log thật: mức đổi `low↔high` **113/120** lần.
+
+Chế độ `effortAbstain: true` hỏi **hai câu `noul` độc lập trong MỘT request**
+(một call Jev như cũ), rồi host tự ánh xạ — Jev không bao giờ bị ép chọn cực:
+
+| `routine` | `hard` | Kết quả | Nghĩa |
+|---|---|---|---|
+| ≥ `effortRoutineThreshold` (0.5) | < ngưỡng | **`low`** | rõ là routine/máy móc |
+| < ngưỡng | ≥ `effortHardThreshold` (0.5) | **`high`** | rõ là cần giải quyết điều chưa biết |
+| còn lại (mâu thuẫn / cả hai yếu) | | **`effortFallback` = `medium`** | **abstain** — Jev tự khai "không chắc" |
+
+Ví dụ theo thiết kế: `routine=0.91, hard=0.06 → low`; `0.08, 0.88 → high`;
+`0.44, 0.41 → medium`; `0.70, 0.68 → medium` (mâu thuẫn).
+
+- Hai trục **hiệu chỉnh độc lập** qua `effortRoutineThreshold` /
+  `effortHardThreshold`, thay vì một ngưỡng confidence duy nhất không tách được
+  ca đúng/sai.
+- Câu `routine`/`hard` đều nói rõ: yêu cầu **nêu triệu chứng để chẩn đoán** (leak,
+  race, regression, crash) **không** phải routine — kể cả khi bước đầu chỉ là đọc
+  file — để giữ đúng 10/10 ca hard của phrasing turn-level.
+- **Sàn tín hiệu đo được vẫn áp**: Jev nói `low` mà turn trước có test fail thì
+  mức bị nâng lên `high`. Bằng chứng đo được thắng phỏng đoán độ khó.
+- **Tùy biến**: `effortJevChoices` vẫn là tập mức hợp lệ; `low` = mức thấp nhất
+  trong tập, `high` = mức cao nhất. Ví dụ `['medium','high']` thì "routine mạnh"
+  chọn `medium`, "hard mạnh" chọn `high`.
+- **Tương thích**: mặc định `effortAbstain: false` giữ nguyên đường một câu
+  `choice` đã đo **26/26**; bật cờ là đổi sang đường hai `noul`. Log
+  `effort_route` ghi `source: 'jev_abstain'` kèm `routine`/`hard` để audit.
+
+**Đo thật trên bộ 26 nhãn.** Chạy đúng 26 task đã dùng để đo đường `choice`
+(16 easy kỳ vọng `low`, 10 hard kỳ vọng `high`), model `jev-1.13.0`, 3 lần lặp:
+
+| biến thể câu `hard` | điểm | abstain oan |
+|---|---|---|
+| bản đầu (theo thiết kế) | **63/78** | 15 |
+| đã viết lại | **78/78** | 0 |
+
+Lỗi thật tìm được nhờ đo: bản đầu viết *"the answer is not yet known and must be
+found"* — câu đó mô tả **đúng** việc "đọc `package.json` để biết version", nên
+Jev trả `hard` cao (0,50–0,61) cho task routine và bị ABSTAIN **oan**. Bản viết
+lại tách *"work out something that **DETERMINES WHAT TO DO**"* khỏi *"Reading a
+file to learn a value you were asked to report is **NOT** uncertainty"*. Test
+`11aa-k` khoá carve-out này.
+
+**Abstain có thêm giá trị không?** Trên 12 task "giữa", abstain khác đường
+`choice` ở **8/12 ca** — và abstain đúng ở những ca `choice` bị **ép** chọn cực
+với confidence thấp (ví dụ: `gộp hai hàm trùng lặp` → abstain `medium` còn
+`choice` ép `low` conf **0,01**; `viết thêm test cho module config` → `medium`
+so với `high` conf **0,09**). Đây đúng mục tiêu thiết kế: **không định hướng
+model khi không có tín hiệu rõ**.
+
 **Lịch sử.** Lớp này từng là classifier per-request gọi Jev MỌI request
 (2026-09), rồi bị thay bằng luật tất định (2026-10-01) vì đo được cơ chế cũ đổi
 mức `low↔high` **113/120 lần**, 54,5% quyết định conf < 0,5, chiếm **55%** token
@@ -261,23 +322,96 @@ mỗi request), chỉ hỏi "yêu cầu này khó không", và **giới hạn Je
 Ghi chú cache: trên router này đổi effort **không** xoá prompt cache — đo được
 96% cache hit sau khi đổi.
 
-### Vì sao có lớp "Chọn file nạp vào context" (Lớp 5)
+### Vì sao Lớp 4 im lặng khi thiếu bằng chứng (cổng xác suất + margin)
 
-Đây là mục tiêu chi phí rõ nhất. Phần lớn token đầu vào bị đốt vào việc model tự
-đi tìm file liên quan bằng một chuỗi tool call (`glob` → `grep` → `read` → `read`
-lại), trong khi phần lớn token đó chỉ để trả lời câu hỏi "file nào đáng đọc".
+Câu `choice` **luôn** trả về một hướng, kể cả khi state không đủ để chọn — nó
+không có đường khai "không biết". Vấn đề: `confidence` **không** tương quan với
+đúng/sai (đo được ca ĐÚNG conf 0,24 nằm dưới ca SAI conf 0,44), nên một ngưỡng
+confidence **không lọc được gì**. Hệ quả: model bị neo vào một hướng **đoán bừa**
+ngay step 1 — mà gợi ý không kèm bằng chứng còn tệ hơn không gợi ý.
 
-Plugin liệt kê ứng viên bằng **tên file** (một lần `readdir` theo chiều rộng, có
-xếp hạng theo token khớp trong task), rồi hỏi Jev một câu `noul` cho **mỗi** ứng
-viên. Mọi câu đi trong **cùng một request**, nên 13 câu gộp tốn 271ms — bằng một
-câu đơn. Host so ngưỡng `contextFileThreshold` (0.6), xếp theo xác suất rồi cắt
-còn `contextMaxFiles` (3).
+Hai thay đổi:
 
-Vì sao N câu `noul` chứ không một `choice` nhiều nhánh: danh sách file sinh động
-theo từng repo, mà `choice.criteria` phải cố định trong code — không dựng được
-nhánh cho danh sách chưa biết trước.
+1. **Thêm nhánh `no-op`** vào criteria của câu `approach`: Jev có đường khai
+   *"văn bản task không đủ để đề xuất hướng nào"* — một câu trả lời hợp lệ, không
+   phải lỗi.
+2. **Cổng bằng chứng theo PHÂN PHỐI, không theo `confidence`.** Response `choice`
+   mang đủ `probabilities` cho mọi nhánh, nên host chèn gợi ý **chỉ khi**:
+
+   - đỉnh phân phối `max(probabilities) >= approachTopProbability` (0.5), **và**
+   - đỉnh bỏ xa nhì `max − second_max >= approachProbabilityMargin` (0.15), **và**
+   - nhánh thắng không phải `no-op`, **và** `choice` khớp argmax.
+
+   Ngược lại → **im lặng**. Ví dụ theo thiết kế: `parallel .86 / script .22 /
+   one .10` → chèn; `script .48 / parallel .43 / one .39` → im lặng (đỉnh thấp,
+   margin mỏng).
+
+Mọi nhánh im lặng ghi nhãn riêng vào log `pre_step` — `silent_no_op`,
+`silent_insufficient_evidence`, `silent_ambiguous` — kèm `topProbability` và
+`margin`, để đọc được **vì sao** im lặng chứ không chỉ "không chèn". Ngưỡng chỉnh
+được qua `approachTopProbability`/`approachProbabilityMargin`.
+`approachConfidenceThreshold` chỉ còn là **đường lùi** khi response thiếu
+`probabilities` (không nên xảy ra với jev-client hiện tại).
+
+### Vì sao có lớp "Chọn file nạp vào context" (Lớp 5) — ĐÃ DỰNG LẠI TRÊN BẰNG CHỨNG
+
+> **Trạng thái 2026-10-05: `enableContextTriage` vẫn mặc định `false`** — code đã
+> dựng lại, nhưng **chưa A/B trên session thật** nên chưa bật. Xem "Còn nợ" bên dưới.
+
+Bản cũ chỉ hỏi Jev "file này có cần đọc không?" dựa trên **TÊN file + đường dẫn**,
+KHÔNG có nội dung file — Jev phải đoán từ tên. Đo trên session thật (`777a1746`):
+agent nhận gợi ý tên file **0/4 lần** đổi hành vi. Một gợi ý **không kèm bằng
+chứng** còn tệ hơn không gợi ý: nó neo model vào một phỏng đoán ngay step 1.
+
+Bản mới (§8, 4 giai đoạn):
+
+1. **Sinh ứng viên tất định** — `listCandidateFiles`: một lần `readdir` theo chiều
+   rộng, xếp hạng theo token khớp trong task (không đọc nội dung file nào).
+2. **Trích bằng chứng rẻ** — `lib/evidence.mjs` đọc **tối đa** mỗi file một lần và
+   chỉ lấy: dòng `import`/`require`, dòng `export`, và các dòng khớp token task
+   (kèm số dòng). Không nạp cả file vào context.
+3. **Jev xếp hạng TRÊN bằng chứng** — `preStepQuestion` đưa đoạn trích vào
+   `state.candidate_evidence`, và câu hỏi `file_N` trỏ thẳng vào đó: "phán từ đoạn
+   trích này, đừng phán từ tên". Vẫn một câu `noul` cho mỗi ứng viên, tất cả trong
+   **cùng một request**.
+4. **Chèn đường dẫn + đoạn trích cho agent** — không còn danh sách tên trần. Agent
+   thấy `src/auth.ts (p=0.90)` kèm `imports:`/`exports:`/`matching line N:` nên
+   quyết được ngay mà không phải mở file để kiểm.
+
+An toàn (§8, `lib/evidence.mjs`): chỉ đọc đường dẫn **tương đối nằm trong workspace
+root**; từ chối đường dẫn tuyệt đối, `..`, và mọi thứ `realpath` ra ngoài gốc; bỏ
+qua **symlink**, file **nhị phân** (dò NUL trong 8 KB đầu), file **> 256 KiB**, và
+file lỗi — trả `null`, không bao giờ ném. Đọc file chỉ xảy ra khi
+`enableContextTriage` bật. `contextEvidence: false` quay về hành vi cũ chỉ-có-tên,
+để A/B tách bạch "bằng chứng có giúp không" khỏi "lớp có giúp không".
+
+**Ưu tiên khi chật ngân sách chèn (§22).** Khối bằng chứng file mang hạng riêng
+`evidence`, xếp **trên** gợi ý approach chung (`advisory`): `safety > recovery >
+completion > evidence > advisory`. Ở trần mặc định 500 token, gợi ý approach
+(~84 token) và bằng chứng một file (~171 token) không cùng vừa nửa trần dành cho
+hạng step-1 (250) — nên **bằng chứng thắng**, và nếu vẫn chật thì bằng chứng bị
+**cắt ngắn** (có log `context_budget.truncated`) chứ **không bị bỏ hẳn**: một đoạn
+trích ngắn vẫn là bằng chứng, còn bỏ hẳn thì agent mất luôn manh mối. Câu miễn trừ
+§23 ("đây là gợi ý, không phải mệnh lệnh") đặt ở **đầu** khối để không bị cắt mất.
+
+**Không chèn trùng (§22).** Mỗi turn giữ vân tay nội dung đã chèn (chuẩn hoá khoảng
+trắng, hạ chữ), nên cùng một gợi ý không bao giờ vào context hai lần. Chỉ áp cho
+`evidence`/`advisory`; `recovery`/`completion` miễn vì chúng có trần riêng theo
+turn và nhắc lại ở step sau là chủ ý; `safety`/`consent`/`real_user` miễn — thà lặp
+còn hơn im.
+
+**Còn nợ (chưa làm):** (a) A/B thật `contextEvidence: true|false` trên session có
+task nêu rõ file, đo tỉ lệ agent mở đúng file — đó mới là điều kiện bật mặc định;
+(b) đồ thị import / `ripgrep` ký hiệu (giai đoạn 2 mở rộng) — bản này chỉ dùng
+`imports`/`exports`/dòng khớp của chính file, chưa truy vết chéo file.
 
 ### Vì sao có lớp "Leo thang tìm nguồn" (Lớp 8)
+
+> **Trạng thái 2026-10-05: `enableJevgrepEscalation` mặc định `false`.** Đo thật
+> **41/41 lần leo thang đều `fail_open`** — chưa từng trả về gợi ý nào, chỉ tạo
+> overhead (truy vấn MỚI cold 66s–2m5s). Luật pha 4: chỉ lớp nào chứng minh được
+> net-positive mới default-on. Bật lại bằng `enableJevgrepEscalation: true` khi
+> đã đo được lợi ích.
 
 Lớp 5 liệt kê ứng viên bằng **TÊN file**. Đo trên một session thật (`777a1746`):
 agent nhận hint file **0/4 lần** — hint nằm trong context mà agent không mở file
@@ -288,9 +422,12 @@ Lớp 8 bù đúng chỗ đó bằng CLI `jg` (skill `jevgrep`): nó hỏi Jev "
 nằm ở file/dòng nào" và trả về **trích nguồn verbatim**. Hai nhánh:
 
 - **A. `agent/pre-step` (step 1)** — khi task của user đọc ra là "tìm X ở đâu"
-  (`looksLikeSearchTask`).
+  (`looksLikeSearchTask`). Nhánh này là **suy đoán từ chuỗi**, không phải bằng
+  chứng agent đang mò, nên tách thành `jevGrepSearchTaskHeuristic` và **mặc định
+  TẮT**.
 - **B. `tools/post-execute`** — khi đã có `jevGrepSearchTaskThreshold` (3) lệnh
-  dò tìm thô liên tiếp (`isRawSearchCommand`).
+  dò tìm thô liên tiếp (`isRawSearchCommand`). Đây mới là bằng chứng đo được, nên
+  là nhánh mặc định.
 
 Ngưỡng 3 dựa trên đo: run dò-tìm liên tiếp dài nhất trong session thật — turn
 tìm-kiếm 1/3/4/5/7/8 đều **≥3**; turn ngắn 2/9/10 chỉ **1**.
@@ -301,11 +438,42 @@ theo repo — truy vấn MỚI cold mất 66s–2m5s, nên bất kỳ timeout n�
 await cũng sai (thấp thì không chạy được, cao thì treo turn). Vì sao không thay
 hẳn Lớp 5: `jg` đo thật ~0.9s ấm / ~2.6s nguội, cộng vào mỗi turn là lãng phí.
 
+**Kết quả nền chỉ được chèn khi task CHƯA đổi.** Mỗi lần chạy nền lưu vân tay
+task gốc + root + turn; trước khi chèn, plugin so vân tay task hiện tại và root
+hiện tại với gốc. Không khớp ⇒ **cache kết quả lại, KHÔNG chèn** (log `skip_stale`);
+nếu user quay lại đúng task đó thì gợi ý được dùng lại. Lý do: `jg` chạy
+nền có thể xong **sau khi user đã đổi task** — query A "authentication middleware
+ở đâu" xong sau khi user chuyển sang "debug billing webhook"; chèn kết quả A vào
+turn mới là context SAI + anchoring noise, không phải "gợi ý hơi cũ".
+
+**Ô chờ key theo `session + hash(truy vấn) + root`** (không chỉ session). Vì sao:
+key chỉ theo session thì một lần chạy nền của task A còn dở sẽ **chặn task B MỚI
+leo thang** cho tới khi A xong (đo được: "task B escalation blocked by old task A
+run: true"). Thêm hash truy vấn chuẩn hoá và root ⇒ task mới hoặc workspace khác
+có ô riêng, còn cùng truy vấn trong cùng workspace không chạy trùng.
+
 ### Vì sao có lớp "Phục hồi khi tool lỗi" (Lớp 6)
 
-Tool lỗi là tín hiệu rẻ và mạnh: nó cho biết bước vừa rồi đã sai. Lớp 6 hỏi Jev
-một câu `choice` — retry, đổi cách, điều tra, hay báo user — và chèn gợi ý cho
-step kế tiếp. Trần `failureMaxPerTurn` (2) để không nhắc lặp.
+Tool lỗi là tín hiệu rẻ và mạnh: nó cho biết bước vừa rồi đã sai. Trần
+`failureMaxPerTurn` (2) để không nhắc lặp.
+
+**Lỗi ĐÃ BIẾT được phân loại tất định, KHÔNG tốn round-trip Jev.** Phần lớn lỗi
+rơi vào vài lớp mà cách xử lý đã rõ từ mã lỗi:
+
+| Dấu hiệu | Nhánh |
+|---|---|
+| `ETIMEDOUT` / `ECONNRESET` / `socket hang up` | `retry` |
+| `ENOENT` / `command not found` | `alternate` |
+| `EADDRINUSE` | `alternate` |
+| `SyntaxError` / `Unexpected token` | `alternate` |
+| `EACCES` / `EPERM` / `permission denied` | `diagnose` |
+
+Lỗi **không** khớp bảng nào mới hỏi Jev (phần nhập nhằng). Lỗi do chính plugin
+sinh (`JEV_*`) không bao giờ bị phân loại ở đây.
+
+**Sàn vòng xoáy**: plugin đếm số lần CÙNG một lỗi lặp lại, theo chữ ký chuẩn hoá
+`(tool, dạng lệnh, vân tay lỗi)` keyed theo session. Cùng lỗi tái diễn ⇒ `retry`
+không còn hợp lệ, **nâng lên `alternate`** — chặn vòng `retry → retry → retry`.
 
 Lớp này **bỏ qua** lệnh bị chính Lớp 1 chặn: đó không phải tool lỗi mà là gate
 chặn, và Lớp 1 đã có thông báo riêng. Nhận biết qua `error.info.code ===
@@ -364,9 +532,12 @@ dsh-jev-gate
 │       │   ├── one-command-scan   ──► "chạy 1 lệnh duy nhất, đừng chia việc"
 │       │   ├── scripted-analysis  ──► "viết 1 script ngắn rồi đọc kết quả"
 │       │   ├── parallel-workers   ──► "chia cho subagent chạy song song"
-│       │   └── guided-interview   ──► "hỏi lại user cho rõ trước"
-│       │       (conf < 0.3 thì im lặng; model tự quyết, plugin không tự làm)
-│       └── noul ×N "file này có cần đọc không?" (Lớp 5)
+│       │   ├── guided-interview   ──► "hỏi lại user cho rõ trước"
+│       │   └── no-op              ──► Jev khai "không đủ bằng chứng" (im lặng)
+│       │       (chỉ chèn khi đỉnh phân phối ≥ 0.5 VÀ bỏ xa nhì ≥ 0.15;
+│       │        đỉnh thấp, margin mỏng, hay no-op thắng → im lặng;
+│       │        model tự quyết, plugin không tự làm)
+│       └── noul ×N "file này có cần đọc không?" (Lớp 5 — MẶC ĐỊNH TẮT)
 │           ├── plugin liệt kê ứng viên bằng TÊN file (readdir BFS + xếp hạng)
 │           └── chèn "đọc file X" khi p ≥ 0.6, tối đa 3 file
 │
@@ -446,8 +617,10 @@ export TYPESAFE_API_KEY="apikey_..."
 #     TYPESAFE_API_KEY: "apikey_..."
 ```
 
-> Không có key? Plugin **fail-open** — mọi gate im lặng cho qua, không chặn oan.
-> Đặt key rồi khởi động lại để bật.
+> Không có key? Prefilter chỉ-đọc vẫn hoạt động; với lệnh chưa chứng minh được là
+> chỉ-đọc, Lớp 1 mặc định **hỏi đồng ý**, thiếu kênh hỏi hoặc hết hạn thì **chặn**.
+> `gateFailureMode: block` chặn ngay; `auto_allow` chỉ là opt-in giữ hành vi cũ.
+> Các lớp gợi ý khác tiếp tục fail-open. Đặt key rồi khởi động lại để bật Jev.
 
 ### Lớp 8 cần thêm CLI `jg` (tuỳ chọn)
 
@@ -456,14 +629,16 @@ lỗi, không chặn gì. Cài `jg` rồi để nó trên `PATH`.
 
 ## Nguyên tắc vận hành
 
-- **Fail-open tuyệt đối.** Jev lỗi, chậm, hay trả rác → hành động đi tiếp như
-  chưa từng có Jev. Jev không được biến sự cố của nó thành sự cố của workflow.
-  Ngoại lệ duy nhất: **sàn catastrophic** (Lớp 1₀) và **Lớp 1b** — hai chỗ này
-  fail-closed vì là phòng thủ. Riêng Lớp 1b, khi provenance không chứng minh được
-  thì nó **hỏi user bằng thẻ nổi và chờ**; mọi câu trả lời không phải đồng ý rõ
-  ràng (kể cả hết hạn / bỏ qua / không có kênh hỏi) đều CHẶN.
-- **Timeout ngắn.** Gate phá dữ liệu chạy trong đường tới hạn của mọi tool call:
-  2s. Chậm hơn thì fail-open.
+- **Lớp 1 fail-closed khi Jev gián đoạn.** `gateFailureMode: ask` (mặc định) hỏi
+  bằng thẻ đồng ý; thiếu kênh hỏi, từ chối hoặc hết hạn thì chặn. `block` chặn
+  ngay; `auto_allow` là opt-in tương thích hành vi cũ. Prefilter chỉ-đọc vẫn cho
+  phép lệnh đã chứng minh không ghi. Sàn catastrophic chặn ở pre-execute và
+  `ctx.tools.guard` monotonic. Các lớp tư vấn khác lỗi thì bỏ qua gợi ý.
+  Sàn phân tích **toàn bộ chuỗi lệnh shell**, nên chuỗi `rm -rf /` nằm trong
+  heredoc/script đang tạo cũng có thể bị chặn dù chưa thực thi; viết mẫu kiểm
+  thử qua công cụ sửa file thay vì nhúng nguyên văn lệnh đó trong bash.
+- **Timeout ngắn.** Gate phá dữ liệu chạy trong đường tới hạn của tool call:
+  tối đa 2s gọi Jev, sau đó áp dụng `gateFailureMode`.
 - **Pin model.** `jev-1.13.0` chứ không `jev-latest`, vì alias dịch chuyển khi
   có bản mới và câu trả lời có thể đổi mà không ai báo.
 - **Ngưỡng theo hậu quả.** Gate xoá dữ liệu (0.7) khác ngưỡng kiểm hoàn thành
@@ -480,19 +655,37 @@ lỗi, không chặn gì. Cài `jg` rồi để nó trên `PATH`.
 
 Sửa trong profile (`~/.dsh/profiles/web/cordis.patch.yml`) hoặc qua trang Plugins.
 Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
+Đặt `profile: safe` chỉ bật gate/consent/completion; `balanced` (mặc định tương đương)
+thêm effort/recovery/review; `experimental` bật cả 3 lớp tư vấn 4/5/8.
+Profile không để các cờ xung đột tắt gate hoặc sàn tất định; các cấu hình
+nghiêm hơn do người dùng đặt vẫn được giữ (`block`, tắt tự uỷ quyền/thẻ đồng ý,
+hạ `destructiveThreshold`). Dùng `profile: custom` để giữ mọi cấu hình chi tiết.
+Cả ba profile giữ gate phá dữ liệu; `gateFailureMode` mặc định là `ask`.
+`shadowGateThreshold` chỉ ghi thêm `destructive_gate_shadow` với `would_flag`
+so với `enforced_flag` cho các lệnh Jev đã chấm; nó không thay đổi quyết định
+thực thi. Trường này không đo được tác động toàn hành trình agent.
 
 ```yaml
 - id: jev-gate
   name: dsh-jev-gate
   config:
+    profile: custom             # safe | balanced | experimental; mặc định custom
     destructiveThreshold: 0.7   # p >= ngưỡng này thì coi là phá dữ liệu
+    shadowGateThreshold:          # tuỳ chọn 0..1; chỉ ghi phản thực tế, KHÔNG thay quyết định thật
     completionThreshold: 0.5    # p < ngưỡng này thì coi là chưa xong
     evidenceThreshold: 0.5      # p < ngưỡng này thì coi là thiếu bằng chứng
     executionThreshold: 0.5     # p >= ngưỡng này thì goal cần thi hành
-    approachConfidenceThreshold: 0.3
+    approachConfidenceThreshold: 0.3  # ngưỡng LÙI theo confidence (chỉ khi response thiếu probabilities)
+    approachTopProbability: 0.5       # cổng bằng chứng: đỉnh phân phối phải ≥ mức này mới chèn gợi ý
+    approachProbabilityMargin: 0.15   # cổng bằng chứng: đỉnh phải bỏ xa nhì ≥ margin này, nếu không im lặng
     contextFileThreshold: 0.6   # p >= ngưỡng này thì coi là file cần đọc
     contextCandidateLimit: 12   # số ứng viên tối đa đưa cho Jev chấm
     contextMaxFiles: 3          # số file tối đa nêu trong gợi ý
+    contextEvidence: true       # §8: kèm đoạn trích THẬT (imports/exports/dòng khớp) — tắt = hành vi cũ chỉ-có-tên (để A/B)
+    jevBudgetEnabled: true      # §16: ngân sách dùng chung; gate an toàn vẫn chạy dù hết hạn mức
+    jevMaxCallsPerTurn: 4       # mức khởi đầu cần hiệu chỉnh trên phiên thực
+    jevMaxCallsPerSession: 100  # mức khởi đầu cần hiệu chỉnh trên phiên thực
+    maxPluginContextTokensPerTurn: 500  # §22: trần token văn bản plugin chèn mỗi turn (≈ chars/4); safety/consent/real_user KHÔNG BAO GIỜ bị cắt
     failureMaxPerTurn: 2        # số lần gợi ý phục hồi tối đa mỗi turn
     completionMaxPerTurn: 2     # trần số lần kiểm hoàn thành mỗi turn
     reviewMinChangedLines: 20   # diff nhỏ hơn thì không review
@@ -509,11 +702,15 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
     effortDecision: input      # 'input' = Jev đọc tin nhắn user; 'deterministic' = luật tín hiệu
     effortJevChoices: [low, high] # tập mức Jev được phép chọn (chế độ input)
     effortFallback: medium     # mức áp khi Jev lỗi/không quyết được (chế độ input)
+    effortAbstain: false        # true = hỏi 2 câu noul (routine/hard), medium là ABSTAIN hợp lệ
+    effortRoutineThreshold: 0.5 # ngưỡng trục routine của chế độ abstain
+    effortHardThreshold: 0.5    # ngưỡng trục hard của chế độ abstain
     effortDefault: low          # mức mặc định ở chế độ deterministic
     effortEscalateTo: high      # mức nâng lên khi turn trước có tín hiệu thất bại (deterministic + SÀN chế độ input)
     effortEscalateToolErrors: 2   # ≥2 tool error trong turn trước thì nâng / làm sàn (mọi chế độ)
     effortEscalateTestFailures: 1 # ≥1 test fail trong turn trước thì nâng / làm sàn (mọi chế độ)
     jevGrepSearchTaskThreshold: 3  # số lệnh grep/find/rg LIÊN TIẾP thì leo thang; 0 = tắt nhánh B
+    jevGrepSearchTaskHeuristic: false # nhánh A (task "nghe giống tìm-kiếm"); mặc định TẮT, xem lý do bên dưới
     jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
     jevGrepTimeoutMs: 120000     # ngân sách một lần `jg` (truy vấn MỚI cold 66s–2m5s); quá hạn thì fail-open
     jevGrepFailureBreaker: 3    # jg hỏng liên tiếp N lần thì tắt Lớp 8 cho hết phiên
@@ -527,26 +724,59 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
     gateVerdictCacheMax: 500            # trần số entry cache (FIFO + LRU-touch)
     gateVerdictCacheMargin: 0.1         # không cache khi |p − threshold| ≤ margin (Jev không tất định)
     enableAuthorizationOverride: true   # lớp 1b provenance — tắt thì chặn mọi lệnh phá dữ liệu
+    gateFailureMode: ask                 # Jev lỗi: ask (mặc định), block hoặc auto_allow (opt-in cũ)
     enableDestructiveConsent: true      # lớp 1b — provenance không chứng minh được thì hỏi user bằng thẻ nổi
     consentTimeoutMs: 120000            # hết hạn thẻ đồng ý thì coi như từ chối (CHẶN)
     enableCompletionCheck: true
     enableEffortRouting: true
-    enableSpawnHint: true
-    enableContextTriage: true           # lớp chọn file nạp vào context
+    enableSpawnHint: false              # bật thử nghiệm khi A/B chứng minh lợi ích ròng
+    enableContextTriage: false          # lớp chọn file nạp vào context (mặc định TẮT: cần A/B đo lại với bằng chứng file thật, xem §8)
     enableFailureRecovery: true         # lớp phục hồi khi tool lỗi
     enableQualityReview: true           # lớp tự gọi jev_review khi turn xong
-    enableJevgrepEscalation: true       # lớp leo thang tìm nguồn bằng `jg` (cần skill jevgrep)
+    enableJevgrepEscalation: false      # lớp tìm nguồn thử nghiệm, bật khi đã đo lợi ích; cần `jg`
 ```
 
 Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 `authorizationTimeoutMs`) sẽ được **cảnh báo rõ** khi nạp, không bỏ im lặng.
 
+### Ngân sách Jev và đo hành trình đối chứng
+
+`jevMaxCallsPerTurn: 4` và `jevMaxCallsPerSession: 100` là giới hạn khởi đầu,
+chưa được hiệu chỉnh trên phiên thực. Khi cạn hạn mức, plugin bỏ các call tư vấn
+trước, chừa chỗ cho kiểm hoàn thành và phục hồi; gate phá dữ liệu vẫn được chấm
+và vẫn yêu cầu đồng ý khi Jev lỗi. Log `jev_budget` ghi lớp và lý do bỏ qua.
+Trần văn bản `maxPluginContextTokensPerTurn: 500` chỉ tính nội dung **plugin chèn**,
+không tính tin nhắn thật hay lý do chặn an toàn; đây là ước lượng ký tự/4, không
+phải số token từ tokenizer của model.
+
+`tools/benchmark-trajectory.mjs` đọc JSONL các lần chạy đã thu thập độc lập,
+ghép theo `(task_id, seed)` để so sánh `vanilla` / `core` / `experimental` về
+hoàn thành, test, thời gian, calls, tokens, chi phí, retry, đồng ý và nhãn an toàn:
+
+```bash
+node tools/benchmark-trajectory.mjs trajectories.jsonl --baseline vanilla --treatments core,experimental --json
+```
+
+Thiếu bất kỳ cặp đối chứng, nhãn an toàn, chỉ số hoàn thành/test, hoặc chưa có
+bản ghi thực trên split `held-out` thì kết luận là `unknown` (ngoại lệ: phát
+hiện một false-allow mới trong cặp đã đo thì báo `regression`). Công cụ chỉ phân
+tích tệp đã cung cấp, không tự chạy DSH hay
+xác minh trường `source: real`; cần tổ chức các phiên A/B thực và gán nhãn an
+toàn độc lập trước khi bật các lớp thực nghiệm theo mặc định.
+
 ## Kiểm chứng
 
 ```bash
-bash verify.sh                    # 8 mục (0–7), cần DSH đang chạy + TYPESAFE_API_KEY
-node tests/offline.mjs            # 360 check, không cần secret
+bash verify.sh                    # kiểm offline, cấu hình, API thật và thẻ đồng ý; cần DSH + key
+node tests/offline.mjs            # hồi quy toàn bộ các lớp, không cần secret
 node tests/attack-corpus.mjs      # corpus tấn công độc lập — yêu cầu 0 lọt
+node tests/benchmark.mjs          # bộ chấm nhãn độc lập, không gọi mạng/lệnh shell
+node tests/metrics.mjs            # hợp đồng chỉ số và tách nhãn/canary
+node tests/profiles.mjs           # safe/balanced/experimental và cấu hình chặt hơn
+node tests/budget.mjs             # hạn mức Jev theo turn/session, ưu tiên an toàn
+node tests/context.mjs            # trần và thứ tự ưu tiên văn bản plugin chèn
+node tests/evidence.mjs           # trích file có giới hạn và rerank một batch
+node tests/trajectory.mjs         # ghép cặp A/B offline, thiếu dữ liệu là unknown
 node tests/live-check.mjs         # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
 node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua nếu không có)
 ```
@@ -554,7 +784,7 @@ node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua n�
 - `verify.sh` — 8 mục: vị trí, cấu trúc, syntax, resolve dependency, đăng ký
   profile, log boot thật, gọi Jev thật với case đã biết đáp án, và thẻ đồng ý qua
   `UserQuestionService` thật. Exit 1 nếu hỏng.
-- `tests/offline.mjs` — 360 check không cần secret: fail-open, bất biến model,
+- `tests/offline.mjs` — hồi quy không cần secret: ba chế độ lỗi gate, bất biến model,
   chỉ gate tool shell, guard của lớp 4, lọc tin nhắn user thật, hợp đồng export,
   prefilter vòng `for`, cache verdict (bất biến an toàn, không cache sát ngưỡng),
   provenance 1b end-to-end qua hook thật, câu hỏi effort TURN-LEVEL (khoá văn bản
@@ -600,11 +830,11 @@ mỗi hàng ghi rõ mốc.
 
 | Phép đo | Kết quả |
 |---|---|
-| Test offline (`tests/offline.mjs`) | **360 check** PASS, 0 lỗi |
+| Test offline (`tests/offline.mjs`) | **450+ check** PASS, 0 lỗi |
 | Corpus tấn công (`tests/attack-corpus.mjs`) | **83 lệnh** — **0 lọt** |
 | Bất biến an toàn (test offline) | **329 lệnh phá dữ liệu** — 0 lọt; fuzz 384+39 — 0 lọt |
 | Prefilter phủ trên log thật (3.369 lệnh `allow`, 2026-10-02) | **13,6%** (459 lệnh) — trước v0.10.0 là 0,03% |
-| Cache verdict tiết kiệm trên log thật | **~6,2%** call gate (lệnh trùng y hệt) |
+| Lệnh trùng lịch sử (không phải cache hit) | **~6,2%** trong mẫu cũ; log vận hành 2026-10-04 chỉ có **4 dòng `cached:true`** |
 | Gate hữu dụng (`gate_useful_ratio`, 12.166 bản ghi) | **0,96%** — 117 deny / 12.166 lần chạy |
 | Lớp 1b — call Jev mỗi lần gate chặn | **1** (destructive); trước v0.9.0 là 2 |
 | Lớp 1b — provenance không chứng minh được | **0** call Jev bổ sung; hỏi user qua thẻ nổi, chờ đồng ý rõ ràng |
@@ -618,7 +848,7 @@ mỗi hàng ghi rõ mốc.
 | Gate phá dữ liệu trên 20 lệnh thực tế | 20/20 đúng (recall 100%, precision 100%) |
 | Deny có thật sự chặn thi hành? | có — canary còn nguyên sau `rm -rf` bị deny |
 | Kiểm hoàn thành: có bằng chứng vs nói suông | 3/3 nhánh đúng |
-| Fail-open lớp 1 (mất key / store hỏng / llm vắng) | 3/3 pass |
+| Lớp 1 fail-open (bản cũ, nay mặc định `ask`) | 3/3 pass tại thời điểm lịch sử; không mô tả mặc định hiện nay |
 | Chọn hướng tiếp cận | 9/10 đúng (scan ổ đĩa → 1 lệnh; 5 chủ đề → song song; mơ hồ → hỏi lại) |
 | Chọn file nạp — biên ngưỡng | file nên đọc **0.65–0.98**, file không liên quan **0.02–0.18** |
 | Phục hồi khi tool lỗi, 6 lần/case | 4/4 case ổn định 6/6 mỗi case |
