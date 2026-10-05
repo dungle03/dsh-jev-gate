@@ -70,19 +70,29 @@ export function assertCredentials(mode = 'normal', env = process.env) {
   }
 }
 
-/** Đọc version DSH thật từ CLI; `null` nếu không chạy được (không đoán). */
-export function dshVersion(env = process.env) {
-  const result = spawnSync('dsh', ['--version'], { encoding: 'utf8', timeout: 30_000, env });
+/**
+ * Đọc version DSH thật từ CLI; `null` nếu không chạy được (không đoán).
+ *
+ * `run` tiêm được để test offline chạy được trên máy KHÔNG cài `dsh` toàn cục.
+ */
+export function dshVersion(env = process.env, run = spawnSync) {
+  const result = run('dsh', ['--version'], { encoding: 'utf8', timeout: 30_000, env });
   const text = result?.stdout?.trim();
   return text && result.status === 0 ? text.split('\n')[0].trim() : null;
 }
 
-/** Preflight THẬT cho hạ tầng ngoài: executable `jg` và review tool trong composition. */
-export function preflightCapabilities({ env = process.env, reviewServerName = 'jev-review' } = {}) {
+/**
+ * Preflight THẬT cho hạ tầng ngoài: executable `jg` và review tool trong composition.
+ *
+ * `review_tool` có BA trạng thái: `true`/`false` khi kiểm được composition,
+ * `null` khi KHÔNG kiểm được (không có `dsh`). "Chưa kiểm" khác "không có" —
+ * gộp chúng lại sẽ biến thiếu bằng chứng thành bằng chứng tiêu cực.
+ */
+export function preflightCapabilities({ env = process.env, reviewServerName = 'jev-review', dump = spawnSync } = {}) {
   let reviewTool = null;
-  const dump = spawnSync('dsh', ['--profile', 'headless', '--dump-config'],
+  const out = dump('dsh', ['--profile', 'headless', '--dump-config'],
     { encoding: 'utf8', timeout: 60_000, env });
-  if (dump.status === 0) reviewTool = String(dump.stdout).includes(reviewServerName);
+  if (out?.status === 0) reviewTool = String(out.stdout).includes(reviewServerName);
   return {
     executables: { jg: executableAvailable('jg', env) },
     review_tool: reviewTool,

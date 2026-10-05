@@ -166,11 +166,29 @@ assert.equal(operations.review.successful_operations, 1);
 assert.equal(operations.review.failed_operations, 0);
 
 // ---------------------------------------------------- preflight / version
-assert.equal(dshVersion(), '0.2.0-rc.2');
+// Offline: KHÔNG được phụ thuộc `dsh` cài sẵn trên máy. `dshVersion()` đọc CLI
+// thật nên trả string khi có, `null` khi không chạy được — KHÔNG được đoán.
+// Trước đây test ép một version cụ thể nên đỏ trên CI (nơi không có `dsh`).
+const version = dshVersion();
+assert.ok(version === null || typeof version === 'string',
+  `dshVersion() phải là string hoặc null, nhận ${JSON.stringify(version)}`);
+if (version !== null) assert.match(version, /^\d+\.\d+\.\d+/, `version trông phải giống semver: ${version}`);
+// Tiêm được kết quả CLI để kiểm nhánh tất định, không cần `dsh` thật.
+assert.equal(dshVersion({ ...process.env }, () => ({ status: 0, stdout: '1.2.3\nrest\n' })), '1.2.3');
+assert.equal(dshVersion({ ...process.env }, () => ({ status: 1, stdout: '' })), null);
+
 const preflight = preflightCapabilities();
 assert.equal(typeof preflight.executables.jg, 'boolean');
-// headless composition KHÔNG có jev-review ⇒ review_tool phải là false, không phải đoán.
-assert.equal(preflight.review_tool, false);
+// `review_tool` là true/false khi kiểm được composition, `null` khi KHÔNG kiểm
+// được (không có `dsh`) — ba trạng thái, không gộp "chưa kiểm" vào "không có".
+assert.ok([true, false, null].includes(preflight.review_tool),
+  `review_tool phải là true/false/null, nhận ${JSON.stringify(preflight.review_tool)}`);
+assert.equal(typeof preflight.credentials.model, 'boolean');
+assert.equal(typeof preflight.credentials.typesafe, 'boolean');
+// Tiêm dump-config để kiểm nhánh có/không có review server.
+assert.equal(preflightCapabilities({ env: process.env, dump: () => ({ status: 0, stdout: 'mcp__jev-review__x' }) }).review_tool, true);
+assert.equal(preflightCapabilities({ env: process.env, dump: () => ({ status: 0, stdout: 'nothing' }) }).review_tool, false);
+assert.equal(preflightCapabilities({ env: process.env, dump: () => ({ status: 1, stdout: '' }) }).review_tool, null);
 
 // ---------------------------------------------------- task catalog contract
 // Collector phải chạy được NHIỀU task/nhiều seed trong một lần gọi, và từ chối
