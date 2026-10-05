@@ -29,7 +29,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in lib/*.mjs tests/*.mjs tools/*.mjs; do
+          for f in lib/*.mjs lib/control/*.mjs tests/*.mjs tools/*.mjs; do
             node --check "$f"
           done
 
@@ -52,6 +52,11 @@ jobs:
           node tests/cost-governor.mjs
           node tests/jevgrep-control.mjs
           node tests/evidence-boundary.mjs
+          node tests/host-resolver.mjs
+          node tests/docs-contract.mjs
+          node tests/live-smoke-contract.mjs
+          node tests/trajectory-collector.mjs
+          node tests/trajectory-promotion.mjs
 
       - name: Không có secret hardcode trong source
         run: |
@@ -73,16 +78,8 @@ jobs:
           echo "Sạch — không có path tuyệt đối"
 
   dsh-compat:
-    name: DSH compatibility (${{ matrix.host }})
+    name: DSH supported release (0.2.0-rc.2)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - host: deployed
-            version: 0.2.0-rc.2
-          - host: latest-supported
-            version: 0.2.0-rc.2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -90,10 +87,10 @@ jobs:
           node-version: '22.23.2'
       - run: npm install --no-audit --no-fund
       - name: Install exact supported host
-        run: npm install --global --no-audit --no-fund '@deepseek-ai/dsh@${{ matrix.version }}'
+        run: npm install --global --no-audit --no-fund '@deepseek-ai/dsh@0.2.0-rc.2'
       - name: Strict real-host integration
         env:
-          DSH_EXPECT_VERSION: ${{ matrix.version }}
+          DSH_EXPECT_VERSION: '0.2.0-rc.2'
         run: node tests/dsh-compat.mjs --strict
 
   dsh-master:
@@ -126,33 +123,24 @@ jobs:
           node tests/dsh-compat.mjs --strict
 
   live:
-    name: Live (cần TYPESAFE_API_KEY)
+    name: Live Jev nightly smoke
     runs-on: ubuntu-latest
     needs: offline
-    # Chỉ chạy khi secret có mặt; fork PR không có secret nên job tự bỏ qua.
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Cài dependency
-        run: npm install --no-audit --no-fund
-
-      - name: Kiểm secret có mặt
-        id: has_key
-        run: |
-          if [ -n "${{ secrets.TYPESAFE_API_KEY }}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::TYPESAFE_API_KEY chưa cấu hình — bỏ qua live check"
-          fi
-
-      - name: Live check (gọi Jev API thật)
-        if: steps.has_key.outputs.present == 'true'
+      - name: Require configured smoke credential
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-        run: node tests/live-check.mjs
+        run: |
+          if [ -z "$TYPESAFE_API_KEY" ]; then
+            echo '::error::TYPESAFE_API_KEY is missing; live API coverage was not executed'
+            exit 1
+          fi
+      - name: Live check (one noul and one choice)
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: node tests/live-smoke.mjs

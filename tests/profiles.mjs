@@ -27,6 +27,8 @@ assert.equal(resolveProfile({}, defaults).enableSpawnHint, false);
 assert.equal(defaults.shadowGateThreshold, undefined);
 assert.equal(parse({ shadowGateThreshold: 0.6 }).shadowGateThreshold, 0.6);
 assert.equal(resolveProfile({ profile: 'custom', enableSpawnHint: true }, defaults).enableSpawnHint, true);
+assert.equal(resolveProfile({ profile: 'custom', effortAbstain: true }, defaults).effortAbstain, true);
+assert.equal(resolveProfile({}, defaults).effortAbstain, false);
 for (const profile of ['safe', 'balanced', 'experimental']) {
   const resolved = resolveProfile(parse({ profile, gateFailureMode: 'auto_allow', enableCatastrophicFloor: false, destructiveThreshold: 1 }), defaults);
   assert.equal(resolved.gateFailureMode, 'ask');
@@ -39,6 +41,9 @@ for (const profile of ['safe', 'balanced', 'experimental']) {
   assert.equal(resolved.enableSpawnHint, profile === 'experimental');
   assert.equal(resolved.enableContextTriage, profile === 'experimental');
   assert.equal(resolved.enableJevgrepEscalation, profile === 'experimental');
+  assert.equal(resolved.effortAbstain, profile === 'experimental');
+  assert.equal(resolveProfile(parse({ profile, effortAbstain: true }), defaults).effortAbstain,
+    profile === 'experimental');
   assert.equal(resolved.enableEffortRouting, profile !== 'safe');
   assert.equal(resolved.enableFailureRecovery, profile !== 'safe');
   assert.equal(resolved.enableQualityReview, profile !== 'safe');

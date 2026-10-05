@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { createRequire } from 'node:module';
+import { createHostResolver } from './host-resolver.mjs';
 import { pathToFileURL } from 'node:url';
 
 // Real host services; only external Jev/model responses and the UI answerer are fixtures.
@@ -19,19 +19,30 @@ function hostPackage() {
   }
   return join(homedir(), '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
 }
-let requireHost;
+let pkg;
 try {
-  const pkg = hostPackage();
+  pkg = hostPackage();
   const metadata = JSON.parse(readFileSync(pkg, 'utf8'));
   assert.equal(metadata.name, '@deepseek-ai/dsh');
   if (!process.env.DSH_COMPAT_MASTER) assert.equal(metadata.version, process.env.DSH_EXPECT_VERSION ?? supported);
-  requireHost = createRequire(pkg);
   console.log(`DSH COMPAT host=${metadata.name}@${metadata.version} entry=${join(dirname(pkg), metadata.bin.dsh)}`);
 } catch (error) {
   console.log(`DSH COMPAT ${strict ? 'FAIL' : 'SKIP'}: ${error.message}`);
   process.exit(strict ? 1 : 0);
 }
-const load = async (name) => import(pathToFileURL(requireHost.resolve(`@deepseek-ai/${name}`)).href);
+let phase = 'host imports';
+process.on('uncaughtExceptionMonitor', (error) => {
+  console.error(`DSH COMPAT FAIL phase=${phase}: ${error.message}`);
+});
+// A discovered host's workspace/resolver failure is never a local SKIP.
+phase = 'workspace package discovery';
+const resolveHost = createHostResolver(pkg, Boolean(process.env.DSH_COMPAT_MASTER));
+const load = async (name) => {
+  phase = `resolve @deepseek-ai/${name}`;
+  const entry = resolveHost(name);
+  phase = `import @deepseek-ai/${name}`;
+  return import(pathToFileURL(entry).href);
+};
 // A present supported host with broken imports is a failure, never a skip.
 const { Context } = await load('cordis');
 const { SystemPrompt } = await load('dsh-system-prompt');
@@ -44,6 +55,7 @@ const { SessionProjectionRegistry } = await load('dsh-session-projection');
 const { UserQuestionService } = await load('dsh-user-questions');
 const { apply } = await import('../lib/index.mjs');
 const root = mkdtempSync(join(tmpdir(), 'jev-dsh-compat-'));
+phase = 'construct Context and host services';
 const ctx = new Context();
 new SystemPrompt(ctx, {});
 new ToolRuntime(ctx);
@@ -127,9 +139,11 @@ globalThis.fetch = async (url, init) => {
   return new Response(JSON.stringify({ model: 'jev-fixture', answers, usage: { input_tokens: 1, output_tokens: 1 } }));
 };
 try {
+  phase = 'plugin apply';
   apply(ctx, { logDir: root, enableSpawnHint: false, enableContextTriage: false,
     enableJevgrepEscalation: false, enableFailureRecovery: false,
     enableQualityReview: true, reviewMinChangedLines: 1, reviewReportToAgent: false });
+  phase = 'AgentLoop.create / completion continuation / effort resolution';
   const agent = await ctx.agentLoop.create('compat-session', { provider: 'compat', model: 'scripted' }, { cwd: root });
   agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Verify the compatibility task and its actual executed evidence.' }], source: { kind: 'user' } }));
   let timer;
@@ -146,6 +160,7 @@ try {
   assert.equal((await ctx.llm.resolveCallConfig({ provider: 'compat', model: 'scripted', reasoningEffort: 'high' })).reasoningEffort, 'high');
   console.log('PASS boot / completion continuation / real agent hooks / effort resolution');
 
+  phase = 'UserQuestionService consent / ToolRuntime monotonic guard';
   let approve = false;
   let questions = 0;
   ctx.on('user-questions/request', (request) => {
@@ -167,6 +182,7 @@ try {
   assert.equal(questions, 2);
   console.log('PASS real consent service / monotonic guard (no shell commands executed)');
 
+  phase = 'quality review through tools.execute';
   agent.session.append('workspace/changes', { turn: 3, cwd: root });
   await agentEvents(ctx, agent).serial('agent/turn-stopping', { turn: 3, signal: new AbortController().signal });
   assert.equal(reviewCalls, 1, 'quality hook must execute through real host tool validation');

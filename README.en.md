@@ -19,6 +19,17 @@ Jev does not generate text, plan, or write code. It grades one closed question
 and returns a probability. This plugin uses Jev as a **checkpoint**, not a second
 brain.
 
+## Version and support contract
+
+Release `0.14.0` supports exactly DSH `0.2.0-rc.2`, matching `engines.dsh`
+and the blocking real-host CI test. One tested release does not establish
+support for older DSH versions or every future release.
+
+| Host | Contract |
+|---|---|
+| DSH `0.2.0-rc.2` | Supported; real-host CI is blocking |
+| DSH master | Observational only; non-blocking job, outside the support contract |
+
 ## The layers
 
 Eight moments where Jev is asked, plus deterministic mechanisms that never call
@@ -208,7 +219,7 @@ Default (`input` mode): on every user **turn**, Jev reads the request and decide
 that turn's effort level. On the default path **Jev may only pick `low` or
 `high`**; everything else (Jev error, no task, out-of-set choice) falls back to
 `medium`. Set `effortAbstain: true` to switch to the **two-`noul`** path that lets
-Jev abstain deliberately (see the v0.13.2 note below). Sticky within a turn, so it
+Jev abstain deliberately (see the v0.14.0 note below). Sticky within a turn, so it
 costs **1 Jev call/turn**, not per step.
 
 Two config keys control it:
@@ -722,7 +733,11 @@ actual decision and cannot establish end-to-end agent benefit.
     contextEvidence: true       # §8: attach REAL excerpts (imports/exports/task-matching lines) — off = old filename-only behaviour (for A/B)
     jevBudgetEnabled: true      # §16: shared budget; the safety gate always runs despite exhaustion
     jevMaxCallsPerTurn: 4       # initial cap; calibrate against real sessions
-    jevMaxCallsPerSession: 100  # initial cap; calibrate against real sessions
+    jevMaxCallsPerSession: 100  # direct Jev calls only
+    maxDecisionCostPerTurn: 16  # direct=1, review=2, jg=8
+    maxDecisionCostPerSession: 120
+    reviewMaxPerSession: 20
+    jevGrepMaxPerSession: 10
     maxPluginContextTokensPerTurn: 500  # §22: per-turn cap on plugin-injected text (≈ chars/4); safety/consent/real_user are NEVER truncated
     failureMaxPerTurn: 2        # max recovery hints per turn
     completionMaxPerTurn: 2     # max completion checks per turn
@@ -730,7 +745,10 @@ actual decision and cannot establish end-to-end agent benefit.
     reviewMaxPerTurn: 1         # max reviews per turn
     reviewMaxDiffChars: 24000   # max diff chars sent to review
     reviewServerName: jev-review
-    reviewReportToAgent: true   # report scores back to the agent via steer
+    reviewReportToAgent: true   # legacy fallback when reviewMode is omitted
+    # reviewMode: agent-feedback # telemetry | agent-feedback; disable via enableQualityReview
+    reviewContextReserveTokens: 120
+    reviewTimeoutMs: 15000
     gateTimeoutMs: 2000
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
@@ -751,7 +769,11 @@ actual decision and cannot establish end-to-end agent benefit.
     jevGrepSearchTaskHeuristic: false # branch A (task "sounds like search"); default OFF, see rationale below
     jevGrepMaxPerTurn: 1        # max jevgrep escalations per turn
     jevGrepTimeoutMs: 120000     # budget for one `jg` run (a NEW query is cold, 66s–2m5s); on timeout, fail open
-    jevGrepFailureBreaker: 3    # after N consecutive jg failures, disable Layer 8 for the session
+    jevGrepFailureBreaker: 3    # per session/root; 0 disables the breaker
+    jevGrepBreakerCooldownMs: 60000 # one half-open probe after cooldown
+    jevGrepMaxConcurrentPerSession: 1 # only 0 or 1; 0 disables, latest-query-wins
+    jevGrepMaxConcurrentGlobal: 2 # plugin-wide cap
+    jevGrepPendingMax: 20
     jevGrepBackground: true     # run jg in the BACKGROUND, never blocking the turn
     jevGrepExcerptCap: 4000     # max excerpt characters injected into context
     logDir:                     # log directory; empty = ~/.local/share/dsh-jev-gate (the isolation hook for tests)
@@ -780,6 +802,41 @@ silently.
 
 ### Jev budgets and paired trajectory measurement
 
+The shared governor reserves logical cost synchronously before work: direct Jev
+costs 1 unit, review costs 2, and every `jg` run costs 8. Runtime does not verify
+cache status, so there is no separate cached-query rate. Safety calls bypass
+these limits; the old direct-call caps remain independent. A reservation stays
+spent after an early failure to prevent retry storms. Logs distinguish reserved
+cost, actual invocation, and successful result; logical units are not billed API
+charges. The same `operation_id` connects `reserved_cost`, `actual_invocation`,
+and `operation_finished`. `reserved_units` is charged once; `actual_invocations`
+counts each HTTP attempt (including retries), review tool execution, or process
+spawn, distinguished by `invocation_kind`. `completed` means the call returned
+successfully, not that the main agent used its feedback. `jg` cache status remains
+`unknown`.
+
+Review reserves feedback context before its RPC and releases it in `finally`.
+`telemetry` does not inject feedback and therefore needs no context reservation.
+Omitting `reviewMode` preserves `reviewReportToAgent`. Completion and review
+combine a live host signal with their own timeout; an already-aborted legacy
+stopping signal uses only the private timeout.
+
+Layer 8 uses latest-query-wins: each session keeps only its newest repository
+query and cancels the previous one. `jevGrepMaxConcurrentPerSession` accepts only
+1, or 0 to disable source search for a session; values above 1 are not supported.
+The plugin-wide default is 2 processes and at most 20 pending hints. The breaker
+is scoped to session/root and admits one probe after cooldown. Cancellation does
+not count as a service failure. Slots release after process close; a temporary
+cap or open breaker permits retry at a later hook without bypassing execution
+count or cost limits.
+
+Layers 5/8 escape repository excerpts and wrap them as untrusted evidence, never
+instructions. Destructive authorization requires a complete imperative, the same
+action, and every exact target. Paths are case-sensitive. An explicit revocation
+without a path also invalidates an older request. Questions, suggestions, quotes,
+mixed keep/delete requests, unresolved expansion, or additional writes use consent.
+
+
 `jevMaxCallsPerTurn: 4` and `jevMaxCallsPerSession: 100` are starting caps,
 not yet calibrated on real sessions. The shared budget sheds advisory calls
 first and reserves capacity for completion and recovery; the destructive gate
@@ -804,6 +861,33 @@ task, which is reported as `regression`). This tool analyzes supplied records; i
 or verify that a `source: real` field is truthful. Independently labeled live
 A/B runs are needed before enabling experimental layers by default.
 
+`tools/collect-trajectory.mjs` executes an isolated four-arm repository-navigation
+pilot through the real DSH headless CLI. Set `TRAJECTORY_MODEL_KEY` for the explicit
+model route and optionally `TRAJECTORY_MODEL` / `TRAJECTORY_BASE_URL`, then run
+`node tools/collect-trajectory.mjs pilot.jsonl`. It stores real events and labels
+records `validation`, not held-out evidence. A replication seed identifies the
+run and rotates arm order; it does not seed provider randomness. Missing metrics
+remain `null`. One pilot does not establish a performance benefit.
+
+The P2 analyzer `tools/trajectory-matrix.mjs` pairs all four arms,
+`vanilla/safe/balanced/experimental`, by exact `(task_id, seed, repo_state, model)`.
+Duplicate arms or missing identities are not selected arbitrarily. Missing
+measurements stay `null`, and the verdict stays `unknown`. Its self-test uses
+synthetic data, not real A/B evidence. Real trajectories have not established
+lower token usage, cost, or elapsed time without a quality regression.
+
+```bash
+node tools/trajectory-matrix.mjs measured.jsonl
+node tools/trajectory-matrix.mjs --self-test
+node tests/dsh-compat.mjs --strict
+```
+
+Real-host integration covers ToolRuntime, UserQuestionService, ReactLoopAgent,
+completion continuation, review hooks, and effort resolution. External model/Jev
+responses, UI answers, and workspace diffs use explicit fixtures. Adding a CI
+configuration does not prove remote CI or live Jev passed. Read each job result;
+a live check skipped for a missing secret is not a successful live run.
+
 ## Verify
 
 ```bash
@@ -817,6 +901,7 @@ node tests/budget.mjs             # shared Jev turn/session cap and safety prior
 node tests/context.mjs            # plugin text cap and priority
 node tests/evidence.mjs           # bounded file excerpts and batched reranking
 node tests/trajectory.mjs         # offline paired A/B; unknown for missing evidence
+node tests/docs-contract.mjs      # complete bilingual config keys/values, language and support contract
 node tests/live-check.mjs         # 10 checks, needs TYPESAFE_API_KEY + network
 node tests/consent-integration.mjs # 10 checks, needs a local DSH (skipped if absent)
 ```
@@ -873,7 +958,7 @@ Measurements on the **real API** (`jev-1.13.0`) and the **real decision log**
 (`~/.local/share/dsh-jev-gate/decisions.jsonl`). The log is a live file — numbers
 drift; each row states its snapshot.
 
-### Current mechanisms (v0.13.x)
+### Current mechanisms (v0.14.0)
 
 | Measurement | Result |
 |---|---|

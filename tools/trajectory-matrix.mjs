@@ -9,7 +9,9 @@ import { METRICS, metricValue, provenance } from './benchmark-trajectory.mjs';
 // P2 measurements use snake_case keys below; effort is the actual resolved effort.
 // Read measured JSONL only: this command never runs tasks or enables plugin features.
 export const ARMS = Object.freeze(['vanilla', 'safe', 'balanced', 'experimental']);
-const EXTRA = ['task_quality', 'reasoning_tokens', 'generations', 'repeated_tool_calls',
+const EXTRA = ['task_quality', 'reasoning_tokens', 'generations', 'main_llm_generations',
+  'main_llm_input_tokens', 'main_llm_output_tokens', 'wall_time_ms', 'failed_tool_calls',
+  'search_calls', 'jev_direct_calls', 'human_consent_prompts', 'repeated_tool_calls',
   'jev_latency_ms', 'review_count', 'review_time_ms', 'jevgrep_count', 'jevgrep_time_ms',
   'context_injected_tokens', 'false_allow', 'false_deny', 'searches_before_target_read',
   'unnecessary_file_reads', 'target_in_top_n'];
@@ -22,6 +24,36 @@ const valueOf = (row, key) => {
 };
 const mean = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const keyOf = (row) => JSON.stringify([row.task_id, row.seed, row.repo_state, row.model]);
+
+export function promotion(groups, arm, { minPairs = 10, minClasses = 2 } = {}) {
+  const real = groups.filter((group) => ARMS.every((name) => provenance(group.get(name)) === 'held-out-real'));
+  const reasons = [];
+  if (real.length < minPairs) reasons.push('insufficient-held-out-pairs');
+  const classes = new Set(real.map((g) => g.get(arm).task_class).filter((c) => typeof c === 'string' && c.trim()));
+  if (classes.size < minClasses) reasons.push('insufficient-task-classes');
+  const required = ['success', 'test_pass_rate', 'walltime_ms', 'cost_usd', 'false_allow', 'false_deny'];
+  const missing = real.some((g) => required.some((key) => [g.get('vanilla'), g.get(arm)].some((row) => valueOf(row, key) === null)));
+  if (missing) reasons.push('missing-required-measurements');
+  const regressed = real.some((g) => ['false_allow', 'false_deny'].some((key) => {
+    const a = valueOf(g.get('vanilla'), key); const b = valueOf(g.get(arm), key);
+    return a !== null && b !== null && b > a;
+  }));
+  if (regressed) reasons.push('safety-regression');
+  if (real.some((g) => ['success', 'test_pass_rate'].some((key) => {
+    const a = valueOf(g.get('vanilla'), key); const b = valueOf(g.get(arm), key);
+    return a !== null && b !== null && b < a;
+  }))) reasons.push('quality-regression');
+  for (const taskClass of classes) {
+    const pairs = real.filter((g) => g.get(arm).task_class === taskClass);
+    if (['walltime_ms', 'cost_usd'].some((key) => {
+      const deltas = pairs.map((g) => [valueOf(g.get('vanilla'), key), valueOf(g.get(arm), key)]);
+      return deltas.some(([a, b]) => a === null || b === null) || mean(deltas.map(([a, b]) => b - a)) > 0;
+    })) reasons.push(`no-nonregressing-latency-and-cost:${taskClass}`);
+  }
+  return { status: regressed ? 'regression' : reasons.length ? 'hold' : 'eligible-for-review',
+    held_out_pairs: real.length, task_classes: classes.size, min_pairs: minPairs, min_classes: minClasses,
+    reasons, automatic_promotion: false };
+}
 
 export function matrix(text) {
   const groups = new Map();
@@ -76,7 +108,8 @@ export function matrix(text) {
   return { schema: 'trajectory-matrix-v1', arms: ARMS, complete_groups: complete.length,
     held_out_real_groups: complete.filter((group) => ARMS.every((arm) => provenance(group.get(arm)) === 'held-out-real')).length,
     verdict: 'unknown', note: 'Descriptive measurements only; missing metrics stay null. No trajectory benefit inferred.',
-    comparisons, by_effort: byEffort, incomplete, rejected };
+    comparisons, by_effort: byEffort, incomplete, rejected,
+    promotion: Object.fromEntries(ARMS.slice(1).map((arm) => [arm, promotion(complete, arm)])) };
 }
 
 function selfTest() {

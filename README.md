@@ -19,6 +19,17 @@ Jev không sinh văn bản, không lập kế hoạch, không viết code. Nó c
 hỏi đóng và trả về xác suất. Plugin này dùng Jev làm **chốt chặn**, không phải
 bộ não thứ hai.
 
+## Phiên bản và phạm vi hỗ trợ
+
+Bản phát hành `0.14.0` hỗ trợ chính xác DSH `0.2.0-rc.2`, khớp
+`engines.dsh` và kiểm thử host thật bắt buộc trong CI. Không suy ra hỗ trợ các
+bản DSH cũ hoặc mọi bản tương lai từ một phiên bản đã kiểm chứng.
+
+| Host | Hợp đồng |
+|---|---|
+| DSH `0.2.0-rc.2` | Được hỗ trợ, kiểm thử CI bắt buộc |
+| DSH master | Chỉ quan sát, job không chặn phát hành; không nằm trong phạm vi hỗ trợ |
+
 ## Các lớp
 
 Tám khoảnh khắc Jev được hỏi, cộng các cơ chế **tất định không gọi Jev** (đánh dấu
@@ -186,7 +197,7 @@ Mặc định (chế độ `input`): mỗi **lượt** user gửi, Jev đọc y�
 effort cho lượt đó. Ở đường mặc định, **Jev chỉ được chọn `low` hoặc `high`**; mọi
 trường hợp khác (Jev lỗi, không có task, trả mức ngoài tập) rơi về `medium`. Đặt
 `effortAbstain: true` để đổi sang đường **hai câu `noul`** cho phép Jev chủ động
-abstain (xem mục v0.13.2 bên dưới). Sticky trong turn nên chỉ tốn **1 call
+abstain (xem mục v0.14.0 bên dưới). Sticky trong turn nên chỉ tốn **1 call
 Jev/lượt**, không phải mỗi step.
 
 Hai config điều khiển:
@@ -258,7 +269,7 @@ Cùng lúc, `EFFORT_MEANING` (criteria Jev đọc) được sửa cho khớp: `l
 per-step tự mâu thuẫn với phrasing turn-level. Nay `low` = *"the whole request is
 routine or mechanical"*. Đo lại: vẫn **26/26**.
 
-**v0.13.2 — `medium` thành ABSTAIN thật (`effortAbstain`, mặc định TẮT).** Vấn đề
+**v0.14.0 — `medium` thành ABSTAIN thật (`effortAbstain`, mặc định TẮT).** Vấn đề
 của thiết kế cũ: khi `effortJevChoices` chỉ có `low`/`high`, một API chạy được
 buộc Jev phải chọn **một cực** — kể cả khi task ở giữa. `medium` chỉ xuất hiện
 khi Jev **lỗi**, tức là một **dấu hiệu hỏng**, không phải một quyết định. Đo trên
@@ -684,8 +695,8 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     contextEvidence: true       # §8: kèm đoạn trích THẬT (imports/exports/dòng khớp) — tắt = hành vi cũ chỉ-có-tên (để A/B)
     jevBudgetEnabled: true      # §16: ngân sách dùng chung; gate an toàn vẫn chạy dù hết hạn mức
     jevMaxCallsPerTurn: 4       # mức khởi đầu cần hiệu chỉnh trên phiên thực
-    jevMaxCallsPerSession: 100  # direct Jev calls only
-    maxDecisionCostPerTurn: 16  # direct=1, review=2, jg cold=8 / proven warm=3
+    jevMaxCallsPerSession: 100  # chỉ đếm call Jev trực tiếp
+    maxDecisionCostPerTurn: 16  # Jev trực tiếp=1, review=2, jg=8
     maxDecisionCostPerSession: 120
     reviewMaxPerSession: 20
     jevGrepMaxPerSession: 10
@@ -696,8 +707,8 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     reviewMaxPerTurn: 1         # trần số lần review mỗi turn
     reviewMaxDiffChars: 24000   # trần ký tự diff gửi cho review
     reviewServerName: jev-review
-    reviewReportToAgent: true   # legacy fallback when reviewMode is omitted
-    # reviewMode: agent-feedback # telemetry | agent-feedback; disable with enableQualityReview
+    reviewReportToAgent: true   # giữ hành vi cũ khi không đặt reviewMode
+    # reviewMode: agent-feedback # telemetry | agent-feedback; tắt review bằng enableQualityReview
     reviewContextReserveTokens: 120
     reviewTimeoutMs: 15000
     gateTimeoutMs: 2000
@@ -720,10 +731,10 @@ thực thi. Trường này không đo được tác động toàn hành trình a
     jevGrepSearchTaskHeuristic: false # nhánh A (task "nghe giống tìm-kiếm"); mặc định TẮT, xem lý do bên dưới
     jevGrepMaxPerTurn: 1        # trần số lần leo thang jevgrep mỗi turn
     jevGrepTimeoutMs: 120000     # ngân sách một lần `jg` (truy vấn MỚI cold 66s–2m5s); quá hạn thì fail-open
-    jevGrepFailureBreaker: 3    # per session/root; 0 disables the breaker
-    jevGrepBreakerCooldownMs: 60000 # one half-open probe after cooldown
-    jevGrepMaxConcurrentPerSession: 1
-    jevGrepMaxConcurrentGlobal: 2
+    jevGrepFailureBreaker: 3    # riêng theo session/root; 0 tắt breaker
+    jevGrepBreakerCooldownMs: 60000 # một lần thăm dò sau cooldown
+    jevGrepMaxConcurrentPerSession: 1 # chỉ nhận 0 hoặc 1; 0 tắt, truy vấn mới nhất thắng
+    jevGrepMaxConcurrentGlobal: 2 # trần toàn plugin
     jevGrepPendingMax: 20
     jevGrepBackground: true     # chạy jg NỀN, không chặn turn (cold ~2 phút/truy vấn mới)
     jevGrepExcerptCap: 4000     # trần ký tự đoạn trích chèn vào context
@@ -752,22 +763,39 @@ Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 
 ### Ngân sách Jev và đo hành trình đối chứng
 
-统一成本控制在执行前同步预占：direct Jev = 1、quality review = 2、
-冷 jevgrep = 8（有明确暖缓存证据时为 3）。保护性判定豁免这些额度，
-旧 direct-call 上限独立保留。review 在 RPC 前预占反馈上下文，
-通过 `finally` 释放；`telemetry` 不消耗反馈上下文。
-省略 `reviewMode` 时保持旧 `reviewReportToAgent` 语义。
-completion 和 review 合并 live host signal 与独立超时；
-旧 host 已中止的 stopping signal 仅使用独立超时。
+Bộ quản lý chi phí giữ hạn mức đồng bộ trước khi chạy: Jev trực tiếp tốn 1 đơn vị,
+review tốn 2 và mỗi lần `jg` tốn 8. Runtime chưa xác nhận trạng thái cache nên
+không có mức chi phí riêng cho truy vấn đã được cache. Gate an toàn được miễn
+hạn mức này; trần số call Jev trực tiếp cũ vẫn độc lập. Hạn mức đã giữ được tính
+là đã tiêu kể cả khi thao tác lỗi sớm, để tránh vòng lặp thử lại. Nhật ký tách
+chi phí giữ trước, việc gọi thực tế và kết quả thành công; số đơn vị không phải
+số tiền API đã thanh toán. Cùng `operation_id` nối `reserved_cost`,
+`actual_invocation` và `operation_finished`. `reserved_units` chỉ tính một lần;
+`actual_invocations` đếm từng lần thử HTTP (kể cả retry), gọi tool review hoặc
+khởi tạo tiến trình, phân biệt bằng `invocation_kind`. `completed` chỉ có nghĩa
+lời gọi trả về thành công, không chứng minh agent chính đã dùng phản hồi.
+Trạng thái cache của `jg` vẫn là `unknown`.
 
-Layer 8 设会话/全局并发上限和 pending hint 数量上限。
-断路器按 session/root 隔离，冷却后仅放行一次半开探测。
-被新查询取代的请求会取消，取消不计服务故障。
-Layer 5/8 的仓库片段转义并包裹为不可信证据，内容不作为指令。
-破坏性操作的来源判定要求完整祈使请求与命令动作相同，且覆盖每个精确目标；
-目标保留大小写，最新明确撤回即使没有路径也使旧请求失效。
-疑问、建议、引用、混合保留/删除、未解析展开或附加写入仍走用户确认。
-阈值检索遇临时并发或断路限制后，可在后续钩子重试；成功次数和成本上限仍生效。
+Review giữ chỗ cho phản hồi trong context trước RPC và giải phóng trong `finally`.
+Chế độ `telemetry` không chèn phản hồi nên không giữ chỗ context. Khi bỏ qua
+`reviewMode`, plugin giữ hành vi của `reviewReportToAgent`. Completion và review
+kết hợp signal còn hoạt động của host với timeout riêng; signal đã hủy của host
+cũ chỉ dùng timeout riêng.
+
+Lớp 8 dùng quy tắc truy vấn mới nhất thắng: mỗi session chỉ giữ truy vấn repository
+mới nhất, truy vấn cũ bị hủy. `jevGrepMaxConcurrentPerSession` chỉ nhận 1, hoặc 0
+để tắt tìm nguồn trong session; không hỗ trợ giá trị lớn hơn 1. Trần toàn plugin
+mặc định là 2 tiến trình, với tối đa 20 kết quả chờ. Breaker tách theo session/root,
+cho một lần thăm dò sau cooldown. Hủy truy vấn không tính là lỗi dịch vụ. Giới hạn
+được giải phóng sau khi tiến trình đóng; giới hạn tạm thời hoặc breaker mở không
+làm mất cơ hội thử lại ở hook sau, nhưng trần lần chạy và chi phí vẫn áp dụng.
+
+Đoạn nguồn của lớp 5/8 được escape và bọc thành dữ liệu repository không tin cậy,
+không phải chỉ thị. Quyền chạy lệnh phá dữ liệu đòi hỏi yêu cầu mệnh lệnh đầy đủ,
+đúng loại hành động và mọi target chính xác. Đường dẫn phân biệt chữ hoa/thường;
+lời rút lại rõ ràng dù không nêu path vẫn làm yêu cầu cũ mất hiệu lực. Câu hỏi,
+gợi ý, trích dẫn, yêu cầu vừa giữ vừa xóa, expansion chưa hiểu hoặc thao tác ghi
+thêm target đều đi qua thẻ xác nhận.
 
 
 `jevMaxCallsPerTurn: 4` và `jevMaxCallsPerSession: 100` là giới hạn khởi đầu,
@@ -795,10 +823,20 @@ tích tệp đã cung cấp, không tự chạy DSH hay
 xác minh trường `source: real`; cần tổ chức các phiên A/B thực và gán nhãn an
 toàn độc lập trước khi bật các lớp thực nghiệm theo mặc định.
 
-四档 P2 分析使用 `tools/trajectory-matrix.mjs`，严格按
-`(task_id, seed, repo_state, model)` 配对 `vanilla/safe/balanced/experimental`。
-重复 arm 或身份缺失不会任意选一条，缺指标保持 `null`，结论保持 `unknown`。
-自检是合成数据验证，不是实际 A/B 收益。
+`tools/collect-trajectory.mjs` chạy pilot tìm nguồn với bốn nhánh trong thư mục
+cô lập qua DSH headless thật. Đặt `TRAJECTORY_MODEL_KEY` cho route model rõ ràng,
+tùy chọn `TRAJECTORY_MODEL` / `TRAJECTORY_BASE_URL`, rồi chạy
+`node tools/collect-trajectory.mjs pilot.jsonl`. Công cụ lưu event thật và ghi
+split `validation`, không tự nhận dữ liệu held-out. Seed nhận diện lượt lặp và
+xoay thứ tự nhánh, không điều khiển ngẫu nhiên của provider. Chỉ số thiếu giữ
+`null`; một pilot chưa chứng minh lợi ích hiệu năng.
+
+Phân tích P2 dùng `tools/trajectory-matrix.mjs`, ghép đúng
+`(task_id, seed, repo_state, model)` cho bốn nhánh `vanilla/safe/balanced/experimental`.
+Nhánh trùng hoặc thiếu định danh không được chọn tùy tiện; chỉ số chưa đo giữ
+`null`, kết luận giữ `unknown`. Tự kiểm dùng dữ liệu tổng hợp, không chứng minh
+lợi ích A/B thật. Chưa thu thập đủ trajectory thật để kết luận plugin giảm token,
+chi phí hoặc thời gian mà vẫn giữ chất lượng.
 
 ```bash
 node tools/trajectory-matrix.mjs measured.jsonl
@@ -806,10 +844,11 @@ node tools/trajectory-matrix.mjs --self-test
 node tests/dsh-compat.mjs --strict
 ```
 
-真实宿主兼容测试覆盖 ToolRuntime、UserQuestionService、ReactLoopAgent、
-completion continuation、review hook 和 effort routing；外部 model/Jev、
-UI 回答和 workspace diff 明确使用测试替身。CI 的 deployed/latest-supported
-固定为 `0.2.0-rc.2`，master 夜间观察任务非阻断。远端 CI 尚待实际运行。
+Kiểm thử host thật bao phủ ToolRuntime, UserQuestionService, ReactLoopAgent,
+việc tiếp tục turn, hook review và chọn effort. Phản hồi model/Jev bên ngoài,
+câu trả lời UI và diff workspace dùng dữ liệu thay thế được ghi rõ. Việc tạo
+được cấu hình CI không có nghĩa là CI từ xa hoặc live Jev đã PASS. Phải đọc kết
+quả từng job; thiếu secret khiến live check bị bỏ qua, không phải chạy thành công.
 
 ## Kiểm chứng
 
@@ -824,6 +863,7 @@ node tests/budget.mjs             # hạn mức Jev theo turn/session, ưu tiên
 node tests/context.mjs            # trần và thứ tự ưu tiên văn bản plugin chèn
 node tests/evidence.mjs           # trích file có giới hạn và rerank một batch
 node tests/trajectory.mjs         # ghép cặp A/B offline, thiếu dữ liệu là unknown
+node tests/docs-contract.mjs      # hai README đủ khóa/giá trị cấu hình, ngôn ngữ và phạm vi hỗ trợ
 node tests/live-check.mjs         # 10 check, chỉ cần TYPESAFE_API_KEY + mạng
 node tests/consent-integration.mjs # 10 check, cần DSH cục bộ (bỏ qua nếu không có)
 ```
@@ -873,7 +913,7 @@ Số đo trên **API thật** (`jev-1.13.0`) và **log quyết định thật**
 (`~/.local/share/dsh-jev-gate/decisions.jsonl`). Log là file sống — số sẽ trôi;
 mỗi hàng ghi rõ mốc.
 
-### Cơ chế hiện tại (v0.13.x)
+### Cơ chế hiện tại (v0.14.0)
 
 | Phép đo | Kết quả |
 |---|---|

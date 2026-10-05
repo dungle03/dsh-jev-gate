@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { createJevgrepControl, keepBoundedHint, admitRepositoryHint } from '../lib/jevgrep-control.mjs';
 import { runJevgrep, resetAvailabilityCache } from '../lib/jevgrep.mjs';
-import { apply } from '../lib/index.mjs';
+import { apply, Config } from '../lib/index.mjs';
 import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const input = (session = 'a', root = '/repo', query = 'task') => ({ session, root, query });
+for (const value of [2, 3, 0.5, -1]) {
+  assert.throws(() => Config({ jevGrepMaxConcurrentPerSession: value }));
+  assert.throws(() => createJevgrepControl({ maxPerSession: value }), /latest-query-wins/);
+}
+assert.equal(Config({ jevGrepMaxConcurrentPerSession: 0 }).jevGrepMaxConcurrentPerSession, 0);
+assert.equal(Config({}).jevGrepMaxConcurrentPerSession, 1);
 const control = createJevgrepControl();
 const first = control.reserve(input());
 assert.equal(control.reserve(input()).reason, 'skip_duplicate');
@@ -73,7 +79,18 @@ try {
   await writeFile(executable, `#!${process.execPath}\nimport('node:fs').then(({writeFileSync}) => {\nconst query=process.argv[3];\nif(query==='hang') { writeFileSync(process.argv[4], String(process.pid)); setInterval(()=>{},1000); }\nelse if(query==='overflow') { process.stdout.write('x'.repeat(5000)); setInterval(()=>{},1000); }\nelse { process.stdout.write('source evidence'); process.exitCode=query==='incomplete'?2:query==='cancel'?130:0; }\n});\n`);
   await chmod(executable, 0o755);
   process.env.PATH = `${sandbox}:${savedPath ?? ''}`;
-  assert.equal((await runJevgrep({ question: 'incomplete' })).incomplete, true);
+  let actualSpawns = 0;
+  assert.equal((await runJevgrep({ question: 'incomplete', onSpawn: () => { actualSpawns++; } })).incomplete, true);
+  assert.equal(actualSpawns, 1);
+  process.env.PATH = sandbox;
+  const executableSource = await readFile(executable, 'utf8');
+  await rm(executable);
+  const missing = await runJevgrep({ question: 'missing', onSpawn: () => { actualSpawns++; } });
+  assert.equal(missing.ok, false);
+  assert.equal(actualSpawns, 1, 'missing executable never reports actual spawn');
+  await writeFile(executable, executableSource);
+  await chmod(executable, 0o755);
+  process.env.PATH = `${sandbox}:${savedPath ?? ''}`;
   assert.equal((await runJevgrep({ question: 'cancel' })).cancelled, true);
   assert.equal((await runJevgrep({ question: 'overflow', maxBuffer: 1000 })).error, 'output too large');
   const pidFile = join(sandbox, 'pid');
@@ -152,6 +169,21 @@ try {
     assert.match(retry.additionalContexts[0].content[0].text, /<repository-evidence>/);
     await post(search, {}, async () => ({}));
     assert.equal((await readFile(spawnLog, 'utf8')).trim().split('\n').length, 2);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const logs = (await readFile(join(sandbox, 'decisions.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    const finished = logs.filter((row) => row.type === 'cost_governor' && row.layer === 'jevgrep'
+      && row.decision === 'operation_finished' && row.completed);
+    assert.equal(finished.length, 2);
+    for (const row of finished) {
+      assert.equal(row.reserved_units, 8);
+      assert.equal(row.invocation_kind, 'process_spawn');
+      assert.equal(row.cache_state, 'unknown');
+      assert.equal(row.actual_invocations, 1);
+      assert.equal(row.invoked, true);
+      assert.equal(row.cancelled, false);
+      assert.equal(row.failure, null);
+      assert.ok(row.elapsed_ms >= 0);
+    }
   } finally {
     busy.finish({ ok: true });
     busyControl.dispose();

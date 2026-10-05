@@ -3,17 +3,28 @@
 Theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 và [Semantic Versioning](https://semver.org/lang/vi/).
 
-## [Chưa phát hành] — 2026-10-05
+## [0.14.0] - 2026-10-05
 
-### 改进 — 附件 P1 与真实兼容验证
+### Chuyển cấu hình và phạm vi hỗ trợ
 
-- 破坏性操作来源要求完整祈使请求覆盖全部目标及相同动作类别，说明、疑问、引用和混合保留请求走确认；目标路径保留大小写，无路径明确撤回也使旧请求失效。未解析通配/目录展开及 find 附加执行或写入进入确认。
-- direct/review/jevgrep 统一成本预占，保留旧 direct 上限及保护性判定豁免。
-- review 反馈上下文在 RPC 前预占、finally 释放；telemetry 无反馈上下文开销，旧配置保持兼容。
-- jevgrep 会话/全局并发限流、pending 上限、按 session/root 冷却半开断路器；取消不计服务故障，进程退出后才释放额度。
-- Layer 5/8 仓库证据转义并显式包裹；预算截断保留完整警示与开闭边界。
-- stopping signal 兼容旧已中止事件与新 live cancellation。
-- 新增真实 DSH 兼容入口与四档轨迹分析；未收集真实 A/B 数据前保持实验开关关闭。
+- `engines.dsh` chỉ hỗ trợ chính xác `0.2.0-rc.2`, khớp kiểm thử host thật bắt buộc trong CI. DSH master chỉ được quan sát bằng job không chặn phát hành; không suy ra hỗ trợ mọi phiên bản tương lai.
+- Giữ `jevMaxCallsPerTurn` và `jevMaxCallsPerSession` để giới hạn call Jev trực tiếp. Thêm `maxDecisionCostPerTurn: 16`, `maxDecisionCostPerSession: 120`, `reviewMaxPerSession: 20` và `jevGrepMaxPerSession: 10`. Jev trực tiếp tốn 1 đơn vị, review tốn 2, mỗi `jg` tốn 8; runtime chưa có mức riêng cho cache.
+- `reviewMode` là tùy chọn `telemetry` hoặc `agent-feedback`. Bỏ qua khóa này giữ hành vi `reviewReportToAgent` cũ. Phản hồi giữ trước `reviewContextReserveTokens: 120`; timeout review là `reviewTimeoutMs: 15000`. Tắt review bằng `enableQualityReview: false`.
+- `jevGrepMaxConcurrentPerSession` chỉ nhận 0 hoặc 1: 0 tắt tìm nguồn trong session, 1 giữ truy vấn mới nhất và hủy truy vấn cũ. Trần toàn plugin mặc định 2; `jevGrepPendingMax: 20`, `jevGrepBreakerCooldownMs: 60000`. Đổi cấu hình lớn hơn 1 thành 1 trước khi nâng cấp.
+- Hạn mức giữ trước vẫn được tính là đã tiêu khi thao tác lỗi sớm; nhật ký phân biệt chi phí giữ trước, lần gọi thực tế và kết quả thành công. Đơn vị này không phải số tiền API.
+
+### Sửa và bổ sung
+
+- Resolver host workspace tìm package bằng tên trong manifest và `exports`, không phụ thuộc dependency trực tiếp của `apps/cli`. Host đã tìm thấy nhưng thiếu build sẽ báo lỗi theo giai đoạn, không giả bỏ qua kiểm thử.
+- Tách vòng đời thao tác và signal dừng vào `lib/control/operation.mjs`; `operation_id` nối các bản ghi giữ hạn mức, gọi thực tế và kết thúc. Retry HTTP tăng `actual_invocations` nhưng chỉ giữ một lần `reserved_units`.
+- Thêm `tests/live-smoke.mjs` cho nightly: một request thật với một câu `noul` và một câu `choice`; thiếu secret khiến job báo lỗi thay vì coi bước bỏ qua là đạt.
+- Thêm `tools/collect-trajectory.mjs` chạy bốn nhánh headless thật trên workspace cô lập. Pilot thuộc split `validation`; dữ liệu held-out đủ số lượng, nhiều lớp task và không giảm chất lượng/an toàn mới đủ điều kiện xem xét, không tự bật tính năng.
+
+- Quyền chạy lệnh phá dữ liệu cần yêu cầu mệnh lệnh đầy đủ, đúng loại hành động và mọi target chính xác. Đường dẫn phân biệt chữ hoa/thường; lời rút lại rõ ràng không nêu path cũng làm yêu cầu cũ mất hiệu lực. Câu hỏi, trích dẫn, expansion chưa hiểu và thao tác ghi thêm target đều hỏi xác nhận.
+- Review giữ chỗ context trước RPC, giải phóng trong `finally`; `telemetry` không chèn phản hồi. Giữ tương thích signal dừng đã hủy của host cũ và signal còn hoạt động của host mới.
+- Jevgrep có trần session/toàn plugin, giới hạn kết quả chờ và breaker cooldown theo session/root. Hủy không tính là lỗi dịch vụ; tiến trình phải đóng trước khi giải phóng hạn mức. Giới hạn tạm thời cho phép hook sau thử lại.
+- Đoạn nguồn của lớp 5/8 được escape và bọc thành dữ liệu không tin cậy; cắt theo ngân sách vẫn giữ cảnh báo và ranh giới đầy đủ.
+- Thêm kiểm thử host thật, bộ phân tích bốn nhánh trajectory và kiểm tra hợp đồng tài liệu. Dữ liệu tự kiểm là tổng hợp, không phải lợi ích A/B thật; tính năng thử nghiệm vẫn tắt mặc định. CI từ xa và live Jev chỉ được coi là đạt khi job thực tế báo PASS.
 
 ### Sửa — call gate an toàn không còn tiêu ngân sách của lớp khác
 
