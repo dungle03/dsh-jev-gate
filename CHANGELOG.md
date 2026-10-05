@@ -5,6 +5,19 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Chưa phát hành] — 2026-10-05
 
+### Sửa — call gate an toàn không còn tiêu ngân sách của lớp khác
+
+- **Lỗi thật đo trên log vận hành**: gate (Lớp 1) gọi Jev cho MỌI lệnh shell, và
+  `budgetSpend` cộng các call đó vào cùng bộ đếm lượt/session với completion/
+  recovery/effort. Một turn nhiều lệnh đốt hết trần `jevMaxCallsPerTurn: 4`
+  (log ghi `turnUsed=29`; một phiên có 197 lần gate nhưng chỉ 1 `completion_check`),
+  khiến lớp ưu tiên cao bị cắt âm thầm — đúng kiểu "hy sinh lớp ưu tiên cao" mà
+  §16 cấm. Nay safety KHÔNG tiêu trần không-an-toàn (mỗi lần gate vẫn ghi dòng
+  `destructive_gate` để quan sát); gate vẫn luôn chạy bất kể ngân sách.
+- `tests/budget.mjs` §11 khoá bất biến: 6 lệnh gate với trần turn 2 → completion
+  vẫn chạy nguyên vẹn, không có dòng `skip_budget` nào cho `destructive_gate` hay
+  `completion_check`.
+
 ### Thêm — ngân sách và phép đo đối chứng (§16/§18/§22)
 
 - Ngân sách Jev dùng chung `jevBudgetEnabled`, `jevMaxCallsPerTurn: 4`,

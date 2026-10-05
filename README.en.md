@@ -783,8 +783,10 @@ silently.
 `jevMaxCallsPerTurn: 4` and `jevMaxCallsPerSession: 100` are starting caps,
 not yet calibrated on real sessions. The shared budget sheds advisory calls
 first and reserves capacity for completion and recovery; the destructive gate
-always runs, and an unavailable Jev still requires consent. `jev_budget` logs
-layer and skip reason. `maxPluginContextTokensPerTurn: 500` covers **plugin-added**
+always runs, and an unavailable Jev still requires consent. **Safety-gate calls do not consume the non-safety cap**: the
+gate runs on every shell command, so counting them together let one busy turn
+burn the whole completion/effort budget (operational logs recorded `turnUsed=29`
+against a cap of 4). `jev_budget` logs layer and skip reason. `maxPluginContextTokensPerTurn: 500` covers **plugin-added**
 text only, never real user input or safety denial reasons; chars/4 is an
 approximation, not the model tokenizer's token count.
 

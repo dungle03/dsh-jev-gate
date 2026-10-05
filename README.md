@@ -744,7 +744,9 @@ Khoá đã ngừng dùng (`effortReuseConfidence`, `effortMaxReuseSteps`,
 `jevMaxCallsPerTurn: 4` và `jevMaxCallsPerSession: 100` là giới hạn khởi đầu,
 chưa được hiệu chỉnh trên phiên thực. Khi cạn hạn mức, plugin bỏ các call tư vấn
 trước, chừa chỗ cho kiểm hoàn thành và phục hồi; gate phá dữ liệu vẫn được chấm
-và vẫn yêu cầu đồng ý khi Jev lỗi. Log `jev_budget` ghi lớp và lý do bỏ qua.
+và vẫn yêu cầu đồng ý khi Jev lỗi. **Call của gate an toàn (Lớp 1) KHÔNG tiêu trần không-an-toàn**: gate chạy cho mọi lệnh shell, nếu tính
+chung thì một turn nhiều lệnh sẽ đốt hết ngân sách của completion/effort (log vận
+hành từng ghi `turnUsed=29` với trần 4). Log `jev_budget` ghi lớp và lý do bỏ qua.
 Trần văn bản `maxPluginContextTokensPerTurn: 500` chỉ tính nội dung **plugin chèn**,
 không tính tin nhắn thật hay lý do chặn an toàn; đây là ước lượng ký tự/4, không
 phải số token từ tokenizer của model.

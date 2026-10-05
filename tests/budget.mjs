@@ -601,6 +601,72 @@ console.log('\n10. ĐỒNG THỜI: nhiều call song song KHÔNG vượt trần 
   });
 }
 
+console.log('\n11. SAFETY không tiêu ngân sách không-safety (nhiều lệnh shell ≠ cạn ngân sách)');
+
+{
+  const logDir = tmpDir('jev-gate-budget-');
+  /**
+   * Đây là lỗi thật đo được trên log vận hành: gate (safety) gọi Jev cho MỌI
+   * lệnh shell, nên một turn nhiều lệnh cộng dồn vào cùng bộ đếm lượt và đốt hết
+   * trần 4 — completion/effort bị cắt âm thầm (từng thấy `turnUsed=29` với trần
+   * 4, và một phiên 197 lần gate chỉ còn 1 completion_check).
+   *
+   * Bất biến cần khoá: dội N lệnh qua gate KHÔNG được làm cạn phần ngân sách mà
+   * completion cần. Trần turn = 2 (nhỏ để kịch bản rõ), completion phải VẪN chạy
+   * sau khi gate đã chạy 6 lần.
+   */
+  await withCountingJev({ destructive: 0, complete: 1, evidence: 1, needs_execution: 0 }, async (calls) => {
+    const { handlers } = await loadPlugin({
+      logDir,
+      config: {
+        jevMaxCallsPerTurn: 2,
+        jevMaxCallsPerSession: 100,
+        enableDestructiveGate: true,
+        enableCompletionCheck: true,
+        enableEffortRouting: false,
+        enableContextTriage: false,
+        enableReadOnlyPrefilter: false,
+      },
+    });
+    const agent = {
+      id: 'safety-budget-a',
+      cwd: '/tmp',
+      goal: { objective: 'chạy vài lệnh rồi xác nhận hoàn thành' },
+      session: { id: 'sess-safety-budget', snapshotEvents: () => [{ type: 'tool/result', data: { turn: 1 } }] },
+    };
+    const pre = handlers['tools/pre-execute'][0];
+    const turn = 1;
+    // 6 lệnh KHÔNG provably-readonly để buộc gate thật sự hỏi Jev mỗi lần.
+    for (let i = 0; i < 6; i += 1) {
+      await pre(
+        { name: 'bash', arguments: { command: `./step-${i} --run` }, agent, signal: new AbortController().signal, turn },
+        async () => ({ kind: 'allow' }),
+      );
+    }
+    check('11a gate chạy Jev cho cả 6 lệnh (safety không bị chặn)',
+      calls() === 6, `calls=${calls()}`);
+    await sleepMs(200);
+    const safetyCuts = rowsOf(logDir, 'jev_budget').filter((r) => r.layer === 'destructive_gate');
+    check('11b KHÔNG có dòng cắt nào cho safety dù đã vượt trần turn=2',
+      safetyCuts.length === 0, `n=${safetyCuts.length}`);
+
+    // Completion (không-safety) sau đó → phải vẫn còn nguyên ngân sách để chạy.
+    await handlers['agent/turn-stopping'][0](
+      { agent, turn, signal: new AbortController().signal },
+    );
+    check('11c completion VẪN chạy sau 6 lệnh gate (safety không ăn ngân sách)',
+      calls() === 7, `calls=${calls()}`);
+    await sleepMs(200);
+    const compCut = rowsOf(logDir, 'jev_budget').filter((r) => r.layer === 'completion_check');
+    check('11d completion KHÔNG bị ghi skip_budget',
+      compCut.length === 0, `n=${compCut.length}`);
+    const compRow = rowsOf(logDir, 'completion_check').at(-1);
+    check('11e completion thực sự chạy (không fail_open)',
+      compRow !== undefined && compRow.decision !== 'fail_open',
+      JSON.stringify(compRow ?? {}));
+  });
+}
+
 console.log(`\n${'─'.repeat(56)}`);
 console.log(failed === 0 ? 'BUDGET: TẤT CẢ PASS' : `BUDGET: ${failed} MỤC HỎNG`);
 process.exit(failed === 0 ? 0 : 1);
