@@ -2004,6 +2004,73 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
       JSON.stringify(rows.map((r) => r.route)));
   });
 
+  /**
+   * 11z-k3. Chẩn đoán `skip_no_levels` phải thuộc VỀ ĐÚNG lời gọi của nó.
+   *
+   * Bản trước để `supportedEffortsOf` gán một biến module-level
+   * (`lastLookupDiagnostic`) rồi call site đọc lại — out-parameter NGẦM bắc qua
+   * một `await`. Hai `agent/request` chạy đồng thời (agent chính + subagent;
+   * profile này có agent-team) ghi đè chẩn đoán của nhau, nên route A ghi nhầm
+   * lỗi của route B. Đây đúng lớp lỗi `seenBySession` đã sửa; đây là mảnh sót.
+   *
+   * Đo trên bản cũ: route `p/A` tra được info (thiếu levels) nhưng log lại mang
+   * `{"ok":false,"error":"...B..."}` — công cụ gỡ lỗi nói dối đúng lúc cần nhất.
+   *
+   * Bất biến: mỗi route giữ chẩn đoán CỦA CHÍNH NÓ. Ca này FAIL trên bản cũ
+   * (A đọc nhầm của B) và PASS sau khi trả giá trị theo đường trả về.
+   */
+  {
+    const { readFileSync } = await import('node:fs');
+    const logDir = tmpDir('jev-gate-diag-race-');
+    const deferred = () => {
+      let resolve; let reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+    const a = deferred();
+    const b = deferred();
+    // A trả info thiếu levels; B ném lỗi. Giữ cả hai pending để xen kẽ thật.
+    const racingLlm = {
+      resolveModelInfo: async (_provider, model) => (model === 'A' ? a.promise : b.promise),
+    };
+    const { handlers } = await loadPlugin({
+      llm: racingLlm,
+      config: {
+        logDir, enableDestructiveGate: false, enableCompletionCheck: false,
+        enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false,
+      },
+    });
+    const agent = { id: 'a-diag', session: { id: 'sess-diag', snapshotEvents: () => [] } };
+    const call = (model) => handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model }),
+    );
+    const pa = call('A');
+    await new Promise((resolve) => setImmediate(resolve));
+    const pb = call('B');
+    await new Promise((resolve) => setImmediate(resolve));
+    // Cùng một tick đồng bộ: A ghi chẩn đoán trước, B ghi đè sau.
+    a.resolve({ note: 'AAA-tra-duoc-info-nhung-thieu-levels' });
+    b.reject(new Error('BBB-khong-tra-duoc-model'));
+    await Promise.allSettled([pa, pb]);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      .filter((row) => row.type === 'effort_route' && row.decision === 'skip_no_levels');
+    const rowA = rows.find((row) => row.route === 'p/A');
+    const rowB = rows.find((row) => row.route === 'p/B');
+    check('skip_no_levels: mỗi route ghi ĐỦ một record chẩn đoán',
+      rows.length === 2 && Boolean(rowA) && Boolean(rowB),
+      JSON.stringify(rows.map((r) => r.route)));
+    check('skip_no_levels: route tra-được-info giữ chẩn đoán CỦA NÓ (không đọc chéo lỗi route kia)',
+      rowA?.diagnostic?.ok === true && rowA?.diagnostic?.hasInfo === true,
+      JSON.stringify(rowA?.diagnostic));
+    check('skip_no_levels: route ném lỗi giữ đúng lỗi của nó',
+      rowB?.diagnostic?.ok === false && /BBB-khong-tra-duoc-model/.test(rowB?.diagnostic?.error ?? ''),
+      JSON.stringify(rowB?.diagnostic));
+  }
+
   /** 11z-l. `effortJevChoices` cấu hình được — đổi sang {medium,high} thì Jev chọn medium. */
   await withCountingJev({ effort: 'medium', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({

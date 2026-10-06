@@ -5,6 +5,32 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — chẩn đoán `skip_no_levels` rò chéo giữa hai lời gọi (race thật)
+
+`supportedEffortsOf()` gán một biến **module-level** (`lastLookupDiagnostic`) rồi
+để call site đọc lại — tức một out-parameter NGẦM bắc qua một `await`. Hai
+`agent/request` chạy đồng thời (agent chính + subagent; profile này có
+`dsh-experimental-agent-team`) ghi đè chẩn đoán của nhau, nên route A ghi nhầm
+chẩn đoán của route B. Đây đúng **lớp lỗi `seenBySession` đã sửa** (xem ghi chú
+ở `sessionKeyOf`); `lastLookupDiagnostic` là mảnh sót lại của lớp đó.
+
+Đo được: route `p/A` tra được `info` nhưng thiếu levels, route `p/B` ném lỗi; cho
+B resolve sau A thì log của A mang `{"ok":false,"error":"...B..."}` — công cụ gỡ
+lỗi nói dối đúng lúc cần nó nhất.
+
+Nay `supportedEffortsOf()` **trả `{ levels, diagnostic }`**; call site destructure
+và ghi `diagnostic` của chính lời gọi mình. Không còn state chung để tranh chấp.
+Không đổi hành vi chọn effort (vẫn fail-open, vẫn `skip_no_levels` như cũ).
+
+Mức hại thật nhỏ — chỉ ảnh hưởng chẩn đoán, không ảnh hưởng quyết định: chỉ có
+1 call site, không test/công cụ nào assert biến này, và log thật chỉ có 14 dòng
+`skip_no_levels` (13 ngày 2026-09-27, 1 ngày 2026-10-01; chỉ 1 dòng có diagnostic).
+
+Regression: `tests/offline.mjs` thêm ca **11z-k3** (3 check) — hai lời gọi đồng
+thời, đòi mỗi route giữ chẩn đoán CỦA NÓ. Ca này **FAIL trên code trước fix**
+(đo thật: `exit 1`, đúng 1 check đỏ) và PASS sau fix; chạy 5 lần liên tiếp đều
+`exit 0` (không flaky).
+
 ### Sửa — Lớp 3 hỏng âm thầm: `no_choices` nay có tín hiệu
 
 Trước đây, khi giao của `effortJevChoices` với dải `reasoningEfforts` của model
