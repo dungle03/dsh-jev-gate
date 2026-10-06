@@ -62,7 +62,7 @@ const check = (label, ok, detail) => {
  *   - hàm async nhận (body) → trả object kết quả
  *   - hoặc ném lỗi để kiểm fail-open
  */
-async function loadPlugin({ jevStub, llm, credentials, tools, services, config = {} } = {}) {
+async function loadPlugin({ jevStub, llm, credentials, tools, services, config = {}, warns } = {}) {
   const mod = await import(`${pathToFileURL(PLUGIN).href}?t=${Math.random()}`);
   const handlers = {};
   const captured = [];
@@ -79,7 +79,7 @@ async function loadPlugin({ jevStub, llm, credentials, tools, services, config =
   const ctx = {
     on: (name, fn) => { (handlers[name] ??= []).push(fn); },
     effect: (fn) => { effects.push(fn); return fn; },
-    logger: { info() {}, warn() {}, error() {} },
+    logger: { info() {}, warn: (m) => { warns?.push(m); }, error() {} },
     credentials: credentials ?? { resolve: async () => ({ value: 'test-key' }) },
     llm: llm ?? {
       resolveModelInfo: async () => ({
@@ -1934,6 +1934,57 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
     );
     check('input: chỉ 1 mức hợp lệ → KHÔNG gọi Jev, dùng fallback',
       calls() === 0 && out.reasoningEffort === 'high', `calls=${calls()} effort=${out.reasoningEffort}`);
+  });
+
+  /**
+   * 11z-k2. `no_choices` phải CÓ TÍN HIỆU, không được hỏng âm thầm.
+   *
+   * Đo trên log thật: một profile khai `reasoningEfforts` chỉ `off/high/max`
+   * khiến giao với `{low,high}` còn 1 mức → Lớp 3 rơi vào `no_choices` **8.436
+   * lần trong 2 ngày** (10-04 → 10-06), không cảnh báo, không dấu hiệu nào ngoài
+   * việc grep log. Lớp vẫn ghi record nên trông như "đang chạy", nhưng Jev KHÔNG
+   * BAO GIỜ được hỏi — đúng kiểu hỏng câm mà lớp này từng mắc.
+   *
+   * Bất biến: lần đầu rơi vào `no_choices` trên một route thì phải warn ĐÚNG
+   * MỘT LẦN (không spam mỗi lượt), và record `effort_no_choices` phải nêu đủ
+   * dữ liệu để chẩn đoán (dải model nhận + tập lựa chọn + fallback).
+   */
+  await withCountingJev({ effort: 'high', __confidence: 0.9 }, async () => {
+    const { readFileSync } = await import('node:fs');
+    const logDir = tmpDir('jev-gate-effort-nochoices-');
+    const warns = [];
+    const onlyHigh = {
+      resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'high' }, { id: 'max' }] } }),
+    };
+    const { handlers } = await loadPlugin({
+      llm: onlyHigh,
+      warns,
+      config: { logDir, enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-warn', session: { id: 'sess-warn', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'việc gì đó');
+    for (let step = 1; step <= 3; step += 1) {
+      await handlers['agent/request'][0](
+        { turn: 1, step, signal: new AbortController().signal, agent },
+        async () => ({ provider: 'p', model: 'm' }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const relevant = warns.filter((m) => /Lớp 3 không hỏi được Jev/.test(m));
+    check('no_choices: cảnh báo ĐÚNG MỘT LẦN cho mỗi route (không spam)',
+      relevant.length === 1, `warns=${relevant.length} total=${warns.length}`);
+    check('no_choices: cảnh báo nêu rõ dải model nhận + tập lựa chọn + fallback',
+      /\[high, max\]/.test(relevant[0] ?? '') && /\[low, high\]/.test(relevant[0] ?? '')
+        && /"high"/.test(relevant[0] ?? ''),
+      JSON.stringify(relevant[0]?.slice(0, 160)));
+    const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      .filter((row) => row.type === 'effort_no_choices');
+    check('no_choices: ghi record chẩn đoán (route + supported + choices + fallback)',
+      rows.length === 1 && rows[0].route === 'p/m' && rows[0].fallback === 'high'
+        && JSON.stringify(rows[0].supported) === '["high","max"]'
+        && JSON.stringify(rows[0].choices) === '["high"]',
+      JSON.stringify(rows[0]));
   });
 
   /** 11z-l. `effortJevChoices` cấu hình được — đổi sang {medium,high} thì Jev chọn medium. */

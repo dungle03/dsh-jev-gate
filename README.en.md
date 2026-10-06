@@ -226,7 +226,12 @@ Two config keys control it:
 
 - `effortJevChoices` (default `['low','high']`) — the levels Jev may pick,
   intersected with the model's `reasoningEfforts`. Fewer than 2 valid → Jev is
-  not asked.
+  no longer asked and `effortFallback` is applied directly, **plus a one-time
+  warning per route** (`ctx.logger.warn`) and an `effort_no_choices` log row.
+  This was a long-silent trap: declaring `reasoningEfforts` without
+  `low`/`medium` left the layer "running", still writing `effort_route`, while
+  Jev was **never asked** — the real log recorded 8,436 `no_choices` rows in
+  2 days before this signal existed.
 - `effortFallback` (default `'medium'`) — applied when Jev cannot decide.
 
 Set `effortDecision: 'deterministic'` to return to the old signal rule (default

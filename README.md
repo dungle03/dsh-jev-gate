@@ -203,7 +203,12 @@ Jev/lượt**, không phải mỗi step.
 Hai config điều khiển:
 
 - `effortJevChoices` (mặc định `['low','high']`) — tập mức Jev được phép chọn,
-  giao với dải `reasoningEfforts` của model. Giao còn < 2 mức thì không hỏi Jev.
+  giao với dải `reasoningEfforts` của model. Giao còn < 2 mức thì không hỏi Jev
+  nữa mà dùng thẳng `effortFallback`, **kèm cảnh báo một lần cho mỗi route**
+  (`ctx.logger.warn`) và một dòng `effort_no_choices` trong log. Đây là cái bẫy
+  đã từng im lặng rất lâu: khai `reasoningEfforts` thiếu `low`/`medium` khiến
+  lớp vẫn "chạy", vẫn ghi `effort_route`, nhưng Jev **không bao giờ được hỏi** —
+  log thật ghi nhận 8.436 lần `no_choices` trong 2 ngày trước khi có tín hiệu này.
 - `effortFallback` (mặc định `'medium'`) — mức áp khi Jev không quyết được.
 
 **v0.13.0 — tín hiệu THẤT BẠI đo được là SÀN, không phải nguồn chính.** Yêu cầu

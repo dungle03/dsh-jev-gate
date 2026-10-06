@@ -5,6 +5,32 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — Lớp 3 hỏng âm thầm: `no_choices` nay có tín hiệu
+
+Trước đây, khi giao của `effortJevChoices` với dải `reasoningEfforts` của model
+còn **< 2 mức**, Lớp 3 lặng lẽ dùng `effortFallback` mà không để lại dấu vết nào
+ngoài một dòng `effort_route` trông vẫn bình thường. Hậu quả thật, đo trên
+`decisions.jsonl`: một profile khai `reasoningEfforts` chỉ có `off/high/max` làm
+giao với `['low','high']` còn đúng 1 mức (`high`), nên Jev **không bao giờ được
+hỏi** — **8.436 lần `reason:"no_choices"` trong 2 ngày** (2026-10-04 → 2026-10-06)
+mà chỉ grep log mới thấy.
+
+Nay nhánh đó phát **một cảnh báo cho mỗi route** (`ctx.logger.warn`, nêu route,
+`effortJevChoices`, dải model nhận, số mức còn lại, fallback đang dùng và cách
+sửa) kèm record `effort_no_choices` (`route`/`supported`/`choices`/`fallback`).
+Cảnh báo chỉ bắn lần đầu mỗi route để không thành nhiễu.
+
+**Không đổi hành vi chọn effort**: vẫn dùng `effortFallback`, vẫn **0 call Jev**
+ở nhánh này, nên ngân sách/`costGovernor` không đổi. Cảnh báo là thay đổi thuần
+thêm vào (additive) — không test/schema nào phụ thuộc việc "chỉ có record đã biết".
+
+Regression: `tests/offline.mjs` thêm ca **11z-k2** (3 check) khoá đúng hành vi
+này — cảnh báo bắn **đúng một lần** trên 3 step, nội dung nêu `[high, max]` /
+`[low, high]` / `"high"`, và record `effort_no_choices` ghi đúng
+`route`/`fallback`/`supported`/`choices`. Đo thật: trên code trước fix
+(`lib/index.mjs` = HEAD) bộ offline cho **493 ok / 3 FAIL** (đúng 3 check mới,
+exit 1); sau fix **496 ok / 0 FAIL** (exit 0).
+
 ### Sửa — toàn vẹn bằng chứng (audit 43 mục): cấu hình, capability, định danh, manifest
 
 Không đổi runtime (`lib/**` giữ nguyên). Chỉ sửa measurement/benchmark/promotion.
