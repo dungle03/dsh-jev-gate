@@ -735,25 +735,40 @@ export function verifyManifestAgainstRows(rows, manifest) {
   }
   const distinct = (key) => [...new Set(list.map((row) => canonicalJson(row[key] ?? null)))];
   for (const field of ['split', 'mode', 'collector_version']) {
-    if (manifest[field] === undefined) continue;
+    if (manifest[field] === undefined) { problems.push(`manifest-${field.replace(/_/g, '-')}-missing`); continue; }
     const values = distinct(field);
     if (values.length > 1) problems.push(`rows-mixed-${field.replace(/_/g, '-')}`);
     else if (values.length === 1 && canonicalJson(manifest[field]) !== values[0]) {
       problems.push(`manifest-${field.replace(/_/g, '-')}-mismatch`);
     }
   }
-  // Danh sách task/arm/seed phải khớp CHÍNH XÁC tập hợp trong row.
+  // Danh sách task/arm/seed phải khớp CHÍNH XÁC tập hợp trong row. Thiếu khai báo
+  // KHÔNG được miễn: manifest chỉ có counts+run_id từng qua được cross-check, nên
+  // một manifest bị cắt bỏ `arms`/`tasks`/`seeds` vẫn "verified" (§5/§22/§29).
   const compareSet = (field, rowsOf) => {
-    if (!Array.isArray(manifest[field])) return;
+    if (!Array.isArray(manifest[field])) {
+      problems.push(`manifest-${field}-${manifest[field] === undefined ? 'missing' : 'malformed'}`);
+      return null;
+    }
     const declared = [...new Set(manifest[field].map((value) => canonicalJson(value)))].sort();
     const actual = [...new Set(rowsOf().map((value) => canonicalJson(value)))].sort();
     if (canonicalJson(declared) !== canonicalJson(actual)) {
       problems.push(`manifest-${field}-mismatch`);
     }
+    return manifest[field];
   };
-  compareSet('arms', () => list.map((row) => row.arm));
-  compareSet('tasks', () => list.map((row) => row.task_id));
-  compareSet('seeds', () => list.map((row) => row.seed));
+  const arms = compareSet('arms', () => list.map((row) => row.arm));
+  const tasks = compareSet('tasks', () => list.map((row) => row.task_id));
+  const seeds = compareSet('seeds', () => list.map((row) => row.seed));
+  // `expected_rows` phải bằng tích số khai báo arms × tasks × seeds, không chỉ bằng
+  // `written_rows` — nếu không, một run khai `arms:[vanilla]` mà ghi 4 arm vẫn qua
+  // nếu written_rows khớp số dòng thật (§22).
+  if (Number.isSafeInteger(manifest.expected_rows) && arms && tasks && seeds) {
+    const computed = arms.length * tasks.length * seeds.length;
+    if (manifest.expected_rows !== computed) {
+      problems.push(`manifest-expected-rows-mismatch:${manifest.expected_rows}!=${computed}`);
+    }
+  }
   return { ok: problems.length === 0, problems };
 }
 

@@ -424,6 +424,43 @@ function healthyText(overrides = {}) {
   checked += 6;
 }
 
+// 37. §5/§22/§29 "manifest khai THIẾU khoá" KHÔNG được miễn cross-check. Lỗ thật
+//     bắt ở audit §40 lần hai: `compareSet` cũ `return` sớm khi khoá không phải
+//     mảng, và vòng lặp split/mode/collector_version `continue` khi khoá `undefined`
+//     ⇒ một manifest chỉ có counts+run_id vẫn "verified" ⇒ eligible-for-review.
+{
+  const rows = healthyHeldOut();
+  const text = encode(rows);
+  for (const key of ['arms', 'tasks', 'seeds', 'split', 'mode', 'collector_version']) {
+    const manifest = manifestFor(rows);
+    delete manifest[key];
+    const report = matrix(text, { manifest });
+    for (const arm of TREATMENTS) {
+      assert.notEqual(report.promotion[arm].status, 'eligible-for-review',
+        `[manifest-missing-${key}] manifest khai thiếu "${key}" ⇒ không được promote`);
+    }
+    const expected = key === 'split' || key === 'mode' || key === 'collector_version'
+      ? `manifest-${key.replace(/_/g, '-')}-missing` : `manifest-${key}-missing`;
+    assert(report.run_integrity.problems.includes(expected),
+      `thiếu "${key}" phải nêu ${expected}, nhận ${JSON.stringify(report.run_integrity.problems)}`);
+  }
+  // 37b. `arms` khai KHÔNG phải mảng ⇒ malformed, không im lặng bỏ qua.
+  const malformed = matrix(text, { manifest: manifestFor(rows, { arms: 'vanilla,safe' }) });
+  assert.equal(malformed.promotion.experimental.status, 'hold',
+    '[manifest-arms-malformed] `arms` không phải mảng ⇒ hold');
+  assert(malformed.run_integrity.problems.includes('manifest-arms-malformed'),
+    '`arms` không phải mảng phải nêu `manifest-arms-malformed`');
+  // 37c. `expected_rows` phải bằng tích arms×tasks×seeds, không chỉ bằng số dòng.
+  const wrongProduct = matrix(text, {
+    manifest: manifestFor(rows, { expected_rows: 2, written_rows: rows.length }),
+  });
+  assert.equal(wrongProduct.promotion.experimental.status, 'hold',
+    '[manifest-expected-rows-product] expected_rows sai tích số ⇒ hold');
+  assert(wrongProduct.run_integrity.problems.some((p) => p.startsWith('manifest-expected-rows-mismatch:')),
+    'expected_rows sai tích số phải nêu `manifest-expected-rows-mismatch`');
+  checked += 9;
+}
+
 // ────────────────────────────────────────────────────────── meta: bảng lý do đủ dùng
 {
   // Mọi metric khai trong `promotionMetrics()` phải có `axis` hợp lệ — nếu thêm

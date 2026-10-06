@@ -936,7 +936,11 @@ analyzer does not merely read warning text: it compares `manifest.run_id` with t
 `split`/`mode`/`collector_version`/`arms`/`tasks`/`seeds`, verifies
 `expected_rows == tasks × seeds × selected arms` and `written_rows == the actual
 JSONL line count`. Any mismatch ⇒ `untrusted-run-manifest` and promotion `hold`
-(trusting the warning text alone would be **fail-open**). A dataset containing
+(trusting the warning text alone would be **fail-open**). A manifest that **omits**
+a declaration key (`arms`/`tasks`/`seeds`/`split`/`mode`/`collector_version`) is
+also rejected (`manifest-<key>-missing`/`manifest-arms-malformed`), because a
+manifest carrying only counts+run_id once passed cross-check and reached
+`eligible-for-review` — "not declared" and "declared wrongly" are both not evidence. A dataset containing
 `rejected`/`incomplete` rows also forces promotion `hold` even when the manifest
 declares the full count — "39 valid rows + 1 corrupt row" never becomes evidence
 when the manifest says 40. The report separates `physical_rows` (non-blank lines),

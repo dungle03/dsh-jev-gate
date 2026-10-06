@@ -141,6 +141,16 @@ mutation('manifest-arms-mismatch', (rows, manifest) => { manifest.arms = ['vanil
 mutation('manifest-seeds-mismatch', (rows, manifest) => { manifest.seeds = [999]; });
 mutation('manifest-split-mismatch', (rows, manifest) => { manifest.split = 'validation'; });
 mutation('manifest-status-incomplete', (rows, manifest) => { manifest.status = 'incomplete'; });
+// §5/§22/§29: khai THIẾU khoá (không phải khai sai) từng qua được cross-check vì
+// `compareSet` return sớm / vòng lặp `continue`. Mọi khoá thiếu phải mất eligible.
+mutation('manifest-arms-missing', (rows, manifest) => { delete manifest.arms; });
+mutation('manifest-tasks-missing', (rows, manifest) => { delete manifest.tasks; });
+mutation('manifest-seeds-missing', (rows, manifest) => { delete manifest.seeds; });
+mutation('manifest-split-missing', (rows, manifest) => { delete manifest.split; });
+mutation('manifest-mode-missing', (rows, manifest) => { delete manifest.mode; });
+mutation('manifest-collector-version-missing', (rows, manifest) => { delete manifest.collector_version; });
+mutation('manifest-arms-not-array', (rows, manifest) => { manifest.arms = 'vanilla,safe'; });
+mutation('manifest-expected-rows-not-product', (rows, manifest) => { manifest.expected_rows = 2; });
 // ── 9. Thêm row hỏng (dataset không còn đầy đủ) ──────────────────────────────
 mutation('add-corrupt-row', (rows, manifest) => {
   const next = [...rows, { ...rows[0] }];

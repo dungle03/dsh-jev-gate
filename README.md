@@ -890,7 +890,11 @@ text cảnh báo: nó so `manifest.run_id` với `run_id` của **mọi** row `s
 so `split`/`mode`/`collector_version`/`arms`/`tasks`/`seeds`, kiểm
 `expected_rows == tasks × seeds × số arm ĐÃ CHỌN` và `written_rows == số dòng
 JSONL thật`. Bất kỳ sai lệch nào ⇒ `untrusted-run-manifest` và promotion `hold`
-(chỉ dùng cảnh báo văn bản là **fail-open**). Dataset có row bị `rejected`/
+(chỉ dùng cảnh báo văn bản là **fail-open**). Manifest khai **THIẾU** khoá
+(`arms`/`tasks`/`seeds`/`split`/`mode`/`collector_version`) cũng bị từ chối
+(`manifest-<khoá>-missing`/`manifest-arms-malformed`), vì một manifest chỉ có
+counts+run_id từng lọt cross-check và đạt `eligible-for-review` — "không khai" và
+"khai sai" đều không phải bằng chứng. Dataset có row bị `rejected`/
 `incomplete` cũng khiến promotion `hold` dù manifest khai đủ số — "39 row hợp lệ +
 1 row hỏng" không bao giờ thành bằng chứng nếu manifest nói 40. Báo cáo tách
 `physical_rows` (số dòng khác rỗng), `parse_valid_rows` (JSON hợp lệ),

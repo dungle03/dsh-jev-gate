@@ -9,6 +9,16 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 Không đổi runtime (`lib/**` giữ nguyên). Chỉ sửa measurement/benchmark/promotion.
 
+- **Manifest khai THIẾU khoá bị từ chối** (`tools/trajectory-schema.mjs`
+  `verifyManifestAgainstRows`). `compareSet` cũ `return` sớm khi khoá không phải
+  mảng và vòng lặp `split`/`mode`/`collector_version` `continue` khi khoá
+  `undefined`, nên một manifest chỉ có counts+run_id vẫn "verified" và dataset
+  `real` đạt `eligible-for-review`. Nay mọi khoá khai báo bắt buộc phải CÓ MẶT và
+  đúng kiểu (`manifest-arms-missing`/`manifest-arms-malformed`…), và
+  `expected_rows` phải bằng tích arms×tasks×seeds (`manifest-expected-rows-mismatch`)
+  chứ không chỉ bằng số dòng. Regression: adversarial 54→63, mutation 43→51/51,
+  audit §40 34 ca 0 fail-open; các ca mới FAIL trên code trước fix.
+
 - **§21 — hợp đồng task-capability kiểm TRƯỚC khi spawn.** `incompatibleArmPairs(tasks, arms)`
   (thuần, export) phát hiện cặp (task, arm) không thể đo được: task khai cần
   `capability` mà profile của arm đặt `configKey: false` (ví dụ `safe` tắt
