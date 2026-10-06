@@ -1948,11 +1948,21 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
    * Bất biến: lần đầu rơi vào `no_choices` trên một route thì phải warn ĐÚNG
    * MỘT LẦN (không spam mỗi lượt), và record `effort_no_choices` phải nêu đủ
    * dữ liệu để chẩn đoán (dải model nhận + tập lựa chọn + fallback).
+   *
+   * PHẢI chạy NHIỀU TURN khác nhau: `sticky theo turn` chặn step 2..n trong CÙNG
+   * một turn, nên một test chỉ lặp step sẽ PASS kể cả khi dedupe bị bỏ hoàn toàn
+   * — nó "đúng" vì lý do sai. Đã đo: bỏ `noChoicesWarned` mà vẫn lặp 3 step thì
+   * suite vẫn xanh; đổi sang 3 turn thì FAIL (warns=3). Bất biến chỉ được ghim
+   * khi mỗi lượt là một turn riêng.
+   *
+   * Đồng thời phải chứng minh dedupe là THEO ROUTE, không phải "một lần toàn cục":
+   * route thứ hai cũng phải được cảnh báo (2 route → 2 cảnh báo).
    */
   await withCountingJev({ effort: 'high', __confidence: 0.9 }, async () => {
     const { readFileSync } = await import('node:fs');
     const logDir = tmpDir('jev-gate-effort-nochoices-');
     const warns = [];
+    // Cả hai model chỉ nhận high/max → giao với {low,high} luôn còn 1 mức.
     const onlyHigh = {
       resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'high' }, { id: 'max' }] } }),
     };
@@ -1963,16 +1973,22 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
     });
     const agent = { id: 'a-warn', session: { id: 'sess-warn', snapshotEvents: () => [] } };
     await seedTask(handlers, agent, 'việc gì đó');
-    for (let step = 1; step <= 3; step += 1) {
+    // 3 TURN trên route p/m (mỗi lượt một turn → sticky không che được dedupe).
+    for (let turn = 1; turn <= 3; turn += 1) {
       await handlers['agent/request'][0](
-        { turn: 1, step, signal: new AbortController().signal, agent },
+        { turn, step: turn, signal: new AbortController().signal, agent },
         async () => ({ provider: 'p', model: 'm' }),
       );
     }
+    // Route THỨ HAI cũng phải được cảnh báo (dedupe theo route, không toàn cục).
+    await handlers['agent/request'][0](
+      { turn: 4, step: 4, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm2' }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 250));
     const relevant = warns.filter((m) => /Lớp 3 không hỏi được Jev/.test(m));
-    check('no_choices: cảnh báo ĐÚNG MỘT LẦN cho mỗi route (không spam)',
-      relevant.length === 1, `warns=${relevant.length} total=${warns.length}`);
+    check('no_choices: cảnh báo ĐÚNG MỘT LẦN cho mỗi route qua nhiều turn (không spam)',
+      relevant.length === 2, `warns=${relevant.length} total=${warns.length}`);
     check('no_choices: cảnh báo nêu rõ dải model nhận + tập lựa chọn + fallback',
       /\[high, max\]/.test(relevant[0] ?? '') && /\[low, high\]/.test(relevant[0] ?? '')
         && /"high"/.test(relevant[0] ?? ''),
@@ -1980,11 +1996,12 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
     const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
       .split('\n').filter(Boolean).map((line) => JSON.parse(line))
       .filter((row) => row.type === 'effort_no_choices');
-    check('no_choices: ghi record chẩn đoán (route + supported + choices + fallback)',
-      rows.length === 1 && rows[0].route === 'p/m' && rows[0].fallback === 'high'
+    check('no_choices: ghi record chẩn đoán MỘT LẦN mỗi route (route + supported + choices + fallback)',
+      rows.length === 2 && rows[0].route === 'p/m' && rows[0].fallback === 'high'
         && JSON.stringify(rows[0].supported) === '["high","max"]'
-        && JSON.stringify(rows[0].choices) === '["high"]',
-      JSON.stringify(rows[0]));
+        && JSON.stringify(rows[0].choices) === '["high"]'
+        && rows[1].route === 'p/m2',
+      JSON.stringify(rows.map((r) => r.route)));
   });
 
   /** 11z-l. `effortJevChoices` cấu hình được — đổi sang {medium,high} thì Jev chọn medium. */

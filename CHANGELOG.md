@@ -25,11 +25,21 @@ Cảnh báo chỉ bắn lần đầu mỗi route để không thành nhiễu.
 thêm vào (additive) — không test/schema nào phụ thuộc việc "chỉ có record đã biết".
 
 Regression: `tests/offline.mjs` thêm ca **11z-k2** (3 check) khoá đúng hành vi
-này — cảnh báo bắn **đúng một lần** trên 3 step, nội dung nêu `[high, max]` /
-`[low, high]` / `"high"`, và record `effort_no_choices` ghi đúng
-`route`/`fallback`/`supported`/`choices`. Đo thật: trên code trước fix
-(`lib/index.mjs` = HEAD) bộ offline cho **493 ok / 3 FAIL** (đúng 3 check mới,
-exit 1); sau fix **496 ok / 0 FAIL** (exit 0).
+này. Ca này chạy **3 turn khác nhau + 1 route thứ hai** và đòi hỏi **đúng 2 cảnh
+báo / 2 record** — tức dedupe phải theo ROUTE, không phải "một lần toàn cục".
+
+Vì sao phải nhiều turn: `sticky theo turn` chặn step 2..n trong CÙNG một turn, nên
+một test chỉ lặp `step` sẽ PASS kể cả khi dedupe bị bỏ hoàn toàn — nó "đúng" vì lý
+do sai. Đã đo được điều đó trên bản đầu của ca này (lặp 3 step): bỏ `noChoicesWarned`
+mà suite vẫn xanh. Đổi sang 3 turn thì FAIL (`warns=3`), nên bất biến mới thật sự
+được ghim.
+
+Mutation kiểm chứng độ mạnh của ca (4/4 bắt được, trước đó M1 lọt):
+M1 bỏ dedupe → 2 FAIL; M2 dedupe toàn cục (bỏ qua route thứ hai) → 2 FAIL;
+M3 bỏ `ctx.logger.warn` → 2 FAIL; M4 bỏ record `effort_no_choices` → 1 FAIL.
+
+Đo thật: trên code trước fix (`lib/index.mjs` = HEAD) bộ offline cho
+**493 ok / 3 FAIL** (đúng 3 check mới, exit 1); sau fix **496 ok / 0 FAIL** (exit 0).
 
 ### Sửa — toàn vẹn bằng chứng (audit 43 mục): cấu hình, capability, định danh, manifest
 
