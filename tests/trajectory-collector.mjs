@@ -625,10 +625,11 @@ try {
   await collect({ output: e2eOut, taskIds: ['routine-copy-v1', 'navigation-marker-v1'], seeds: [1],
     arms: ['vanilla', 'safe'], timeoutMs: 60_000 });
 } finally {
+  // CHỈ khôi phục `console.log`. `PATH` (có `dsh` giả) phải GIỮ NGUYÊN cho tới hết
+  // khối e2e: các lần `collect()` sau (held-out, outage) cũng cần `dsh --version`.
+  // Khôi phục sớm làm test phụ thuộc `dsh` cài toàn cục — xanh trên máy dev, đỏ trên
+  // CI (nơi không có `dsh`) với "Unable to determine the DSH version".
   console.log = realLog;
-  for (const [key, value] of Object.entries(saved)) {
-    if (value === undefined) delete process.env[key]; else process.env[key] = value;
-  }
 }
 // 2 task × 1 seed × 2 arm = 4 row ⇒ manifest phải lần lượt khai 0,1,2,3.
 assert.deepEqual((await readFile(probe, 'utf8')).trim().split('\n'), ['0', '1', '2', '3'],
@@ -693,6 +694,11 @@ const outageE2eRows = (await readFile(e2eOutage, 'utf8')).trim().split('\n').map
 assert.equal(outageE2eRows.length, 1);
 assert.equal(outageE2eRows[0].split, 'outage');
 assert.equal(provenance(outageE2eRows[0]), 'real');
+// Hết khối e2e mới khôi phục môi trường (PATH có `dsh` giả + các biến probe).
+for (const [key, value] of Object.entries(saved)) {
+  if (value === undefined) delete process.env[key]; else process.env[key] = value;
+}
+delete process.env.TRAJECTORY_MODEL_KEY;
 await rm(e2eDir, { recursive: true, force: true });
 
 console.log('PASS trajectory collector contract (real functions, offline, no API calls)');
