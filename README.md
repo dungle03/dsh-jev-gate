@@ -863,6 +863,15 @@ số row đã ghi (không khai 0 rồi sửa ở cuối). `trajectory-matrix` đ
 manifest, hoặc khi manifest khai số row **khác** file thật (`stale-run-manifest`)
 — để không phân tích nhầm một lần chạy dở thành bằng chứng.
 
+Cảnh báo manifest **chặn promotion nhưng KHÔNG chặn phân tích**: khi có bất kỳ
+`manifest_warning` nào (thiếu manifest, `status != complete`, `written_rows` khác
+số row thật, hoặc `written_rows != expected_rows`), mọi treatment arm bị ép
+`status: hold` với lý do machine-readable `incomplete-or-untrusted-run-manifest` và
+`automatic_promotion: false` — **không** bị gọi là regression. Diagnostics
+(`arms`, `raw_arms`, `by_effort`, `layer_coverage`, `comparisons`, `incomplete`,
+`rejected`) vẫn được xuất đầy đủ để người đọc xem phần đã đo. Nhờ vậy một dataset
+dở/hỏng không bao giờ đạt `eligible-for-review`.
+
 Mỗi row mang `schema: dsh-jev-gate-trajectory-v2`, một **capability manifest**
 (`configured`/`available`/`invoked` suy từ config boot, decisions.jsonl và preflight
 thật — **không** suy từ tên arm), và **operation telemetry** lấy từ `cost_governor`
@@ -944,7 +953,15 @@ thiếu định danh vào `incomplete`, nhánh trùng bị loại. Hash cấu h�
 lại** từ `benchmark_config`/`profile_config`; row sửa tay hash sẽ bị từ chối
 (`benchmark-config-hash-mismatch`/`profile-config-hash-mismatch`). Một nhóm trộn
 metadata (ví dụ `vanilla` held-out nhưng treatment validation) bị **loại cả nhóm**,
-không gắn nhãn held-out cho nhóm. Promotion **không bao giờ tự
+không gắn nhãn held-out cho nhóm.
+
+**`run_id` là ranh giới của một lần thu thập.** Row `source: real` **bắt buộc** có
+`run_id` non-empty (thiếu ⇒ `missing-run-id`, xếp vào `incomplete`); bốn arm trong
+một nhóm ghép cặp phải **cùng** `run_id`, nếu khác thì cả nhóm bị loại với lý do
+`inconsistent-group-run-id`. Nhờ đó không thể ghép `vanilla`/`safe` của lần chạy A
+với `balanced`/`experimental` của lần chạy B thành một treatment, dù task/seed/model/
+config giống hệt. `created_at` **không** nằm trong identity ghép cặp — nó chỉ để
+truy vết. Promotion **không bao giờ tự
 động**: trần là `eligible-for-review`, cần ≥10 nhóm held-out thật ghép cặp trên ≥2
 lớp task. Hai gate **độc lập**: gate chất lượng/hiệu năng (`success`, `test_pass_rate`,
 `walltime_ms`) chạy trên mọi nhóm, còn gate an toàn (`false_allow`, `false_deny`)
@@ -964,8 +981,16 @@ hình lớp đó" — hợp lệ, không bị loại. Cùng tên arm nhưng
 `profile_config_hash` khác bị coi là treatment khác, không gộp bằng chứng. Chỉ số
 chưa đo vẫn `null` (không tự thành 0), kết luận giữ `unknown`.
 
-Báo cáo còn có `layer_coverage`: với mỗi lớp (capability), đếm riêng
-`configured`/`available`/`invoked` (theo capability manifest của row), `expected`
+**Summary chính chỉ dùng nhóm HỢP LỆ.** Các trường để kết luận hiệu năng —
+`arms`, `by_effort`, `layer_coverage`, `task_classes` — chỉ tổng hợp từ các row
+thuộc nhóm qua `groupConsistency` (cùng `run_id`, cùng split/mode/config/...). Một
+nhóm bị loại vì metadata không nhất quán **không** được kéo mean `walltime_ms`.
+Bản tổng hợp thô của **mọi** row parse hợp lệ vẫn được giữ cho chẩn đoán ở
+`raw_arms`, `raw_by_effort`, `raw_layer_coverage`, `raw_task_classes` (kèm số
+`raw_rows` và `validated_rows`). Nhờ vậy một group cực chậm nhưng không hợp lệ
+hiện trong `raw_*` để điều tra, mà không làm lệch số hiệu năng chính.
+
+Báo cáo còn có `layer_coverage`: với mỗi lớp (capability), đếm riêng`configured`/`available`/`invoked` (theo capability manifest của row), `expected`
 (số row mà task **khai** lớp này trong `expected_capabilities_to_exercise`) và
 `exercised` (số row khai lớp đó **và** `feature_exercised = true`). Điểm cốt lõi:
 `available = true` **không** chứng minh lớp đã chạy — chỉ `exercised` mới là bằng

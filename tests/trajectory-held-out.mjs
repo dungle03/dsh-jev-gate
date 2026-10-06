@@ -52,6 +52,10 @@ const row = (arm, seed, overrides = {}) => {
     dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
     benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
     arm, source: 'real', split: 'validation', mode: 'normal',
+    // `run_id` là ranh giới MỘT lần thu thập (KHÔNG thuộc identity cặp): cả bộ dữ
+    // liệu chia sẻ ĐÚNG một run. Ca "trộn split" ở §4 cố ý lệch `split`, không
+    // phải `run_id`, nên vẫn diễn đạt bất nhất mà không trùng luật run_id.
+    run_id: 'fixture-run-1',
     profile: arm === 'vanilla' ? null : arm,
     profile_config,
     profile_config_hash: profile_config === null ? null : profileConfigHash(profile_config),

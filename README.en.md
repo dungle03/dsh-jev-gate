@@ -906,6 +906,16 @@ manifest is missing, or when the manifest records a **different** row count than
 the file (`stale-run-manifest`), so a partial run is never mistaken for complete
 evidence.
 
+A manifest warning **blocks promotion but NOT analysis**: whenever there is any
+`manifest_warning` (missing manifest, `status != complete`, `written_rows`
+differing from the actual row count, or `written_rows != expected_rows`), every
+treatment arm is forced to `status: hold` with the machine-readable reason
+`incomplete-or-untrusted-run-manifest` and `automatic_promotion: false` — never
+reported as a regression. Diagnostics (`arms`, `raw_arms`, `by_effort`,
+`layer_coverage`, `comparisons`, `incomplete`, `rejected`) are still emitted in
+full so the reader can inspect what was measured. An incomplete or stale dataset
+therefore can never reach `eligible-for-review`.
+
 Every row carries `schema: dsh-jev-gate-trajectory-v2`, a **capability manifest**
 (`configured`/`available`/`invoked` derived from boot config, decisions.jsonl and
 real preflight — **never** from the arm name), and **operation telemetry** taken
@@ -995,7 +1005,16 @@ dropped. Configuration hashes are **recomputed** from
 `benchmark_config`/`profile_config`; a hand-edited hash is rejected
 (`benchmark-config-hash-mismatch`/`profile-config-hash-mismatch`). A group with
 mixed metadata (e.g. `vanilla` held-out but the treatment validation) is **dropped
-entirely**, never labeled held-out. Promotion is **never automatic**: the ceiling
+entirely**, never labeled held-out.
+
+**`run_id` is the boundary of one collection run.** A `source: real` row **must**
+carry a non-empty `run_id` (missing ⇒ `missing-run-id`, placed in `incomplete`); the
+four arms in one paired group must share the **same** `run_id`, otherwise the whole
+group is dropped with the reason `inconsistent-group-run-id`. This makes it
+impossible to pair `vanilla`/`safe` from run A with `balanced`/`experimental` from
+run B as one treatment, even when task/seed/model/config are identical. `created_at`
+is **not** part of the pairing identity — it is only for tracing. Promotion is
+**never automatic**: the ceiling
 is `eligible-for-review`, requiring ≥10 real held-out paired groups across ≥2 task
 classes. There are **two independent gates**: the quality/performance gate
 (`success`, `test_pass_rate`, `walltime_ms`) runs on every group, while the safety
@@ -1017,6 +1036,16 @@ every real vanilla row) means "this arm does not configure that layer" — valid
 rejected. The same arm name with a different `profile_config_hash` is a different
 treatment and its evidence is not pooled. Missing measurements stay `null` (never
 0), and the verdict stays `unknown`.
+
+**The headline summary uses only VALID groups.** The fields used to conclude
+performance — `arms`, `by_effort`, `layer_coverage`, `task_classes` — aggregate
+only rows belonging to groups that passed `groupConsistency` (same `run_id`, same
+split/mode/config/...). A group dropped for inconsistent metadata therefore never
+skews the `walltime_ms` mean. The raw summary over **every** parse-valid row is
+kept for diagnostics in `raw_arms`, `raw_by_effort`, `raw_layer_coverage`,
+`raw_task_classes` (with `raw_rows` and `validated_rows` counts). A very slow but
+invalid group thus shows up in `raw_*` for investigation without distorting the
+headline performance numbers.
 
 The report also carries `layer_coverage`: for each layer (capability) it counts
 `configured`/`available`/`invoked` (from the row's capability manifest), `expected`

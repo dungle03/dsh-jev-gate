@@ -48,6 +48,11 @@ const row = (arm, seed, overrides = {}) => {
     dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
     benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
     arm, source: 'real', split: 'held-out', mode: 'normal',
+    // `run_id` là ranh giới MỘT lần thu thập (KHÔNG thuộc identity cặp): cả bộ dữ
+    // liệu lành mạnh chia sẻ ĐÚNG một run, nên group không bị loại vì run. Test
+    // "nhóm trộn metadata" ở dưới cố ý lệch `split` (không phải `run_id`) để diễn
+    // đạt bất nhất mà không trùng lặp luật run_id.
+    run_id: 'fixture-run-1',
     profile: arm === 'vanilla' ? null : arm,
     profile_config,
     profile_config_hash: profile_config === null ? null : profileConfigHash(profile_config),

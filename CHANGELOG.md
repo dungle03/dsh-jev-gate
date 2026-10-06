@@ -5,6 +5,33 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — tính toàn vẹn lần chạy: manifest chặn promotion, run_id chặn ghép arm, summary chính chỉ dùng nhóm hợp lệ
+
+- **Manifest không hợp lệ nay CHẶN promotion (vẫn cho phân tích).** Trước đây
+  `trajectory-matrix` chỉ gắn `manifest_warning` rồi vẫn có thể trả
+  `eligible-for-review` cho dataset thiếu/hỏng. Nay `matrix(text, { manifestWarning })`:
+  khi có bất kỳ cảnh báo nào (thiếu manifest, `status != complete`,
+  `written_rows` khác số row thật, hoặc `written_rows != expected_rows`), **mọi**
+  treatment arm bị ép `status: hold`, `automatic_promotion: false`, thêm lý do
+  machine-readable `incomplete-or-untrusted-run-manifest`; **không** đổi thành
+  regression. Diagnostics (`arms`, `raw_arms`, `by_effort`, `layer_coverage`,
+  `comparisons`, `incomplete`, `rejected`) vẫn xuất đầy đủ. CLI truyền cảnh báo vào
+  `matrix()` để gate có hiệu lực.
+- **`run_id` chặn ghép arm từ hai lần thu thập khác nhau.** `run_id` được thêm vào
+  `GROUP_COMMON_FIELDS`: bốn arm trong một nhóm ghép cặp phải **cùng** `run_id`,
+  nếu khác cả nhóm bị loại với lý do `inconsistent-group-run-id`. Row
+  `source: real` thiếu `run_id` non-empty bị `validateRow` trả `missing-run-id` và
+  xếp vào `incomplete` (không phải `rejected`, không thành bằng chứng promotion).
+  `created_at` **không** nằm trong identity ghép cặp (chỉ để truy vết). Không thể
+  ghép `vanilla`/`safe` của lần chạy A với `balanced`/`experimental` của lần chạy B
+  dù task/seed/model/config giống hệt.
+- **Summary hiệu năng chính chỉ dùng nhóm HỢP LỆ.** `arms`, `by_effort`,
+  `layer_coverage`, `task_classes` nay chỉ tổng hợp từ row thuộc nhóm qua
+  `groupConsistency`; một nhóm bị loại vì metadata không nhất quán **không** kéo
+  mean `walltime_ms`. Bản thô của mọi row parse hợp lệ vẫn giữ cho chẩn đoán ở
+  `raw_arms`, `raw_by_effort`, `raw_layer_coverage`, `raw_task_classes` (kèm
+  `raw_rows`/`validated_rows`).
+
 ### Sửa — fail-closed cho capability được KHAI nhưng manifest BỎ TRỐNG
 
 - **Lỗ fail-open thật ở `capabilityValidity`.** Một row khai

@@ -350,6 +350,17 @@ export function validateRow(row) {
   if (!ARMS.includes(row.arm)) reasons.push('unknown-arm');
   if (identityOf(row) === null) reasons.push('incomplete-pair-identity');
   if (!SPLITS.includes(row.split)) reasons.push(`unknown-split:${row.split ?? 'missing'}`);
+  // Bằng chứng `real` PHẢI truy được về một lần thu thập cụ thể. Thiếu `run_id`
+  // thì hai lần chạy khác nhau không phân biệt được, nên không có cách nào biết
+  // một cặp arm có thật sự đến từ cùng một lần chạy hay không.
+  //
+  // CHỈ bắt buộc với `source === 'real'`: fixture synthetic không mô phỏng một
+  // lần thu thập nào, nên nó được phép bỏ trống hoặc tự đặt `run_id` riêng. Siết
+  // cả synthetic sẽ là nới luật sai chỗ — điều cần chặn là dữ liệu THẬT không
+  // truy được nguồn.
+  if (row.source === 'real' && (typeof row.run_id !== 'string' || !row.run_id.trim())) {
+    reasons.push('missing-run-id');
+  }
   if (row.arm === 'vanilla') {
     if (row.profile_config !== null) reasons.push('vanilla-must-not-declare-profile-config');
     if (row.profile_config_hash !== null) reasons.push('vanilla-must-not-declare-profile-config-hash');
@@ -437,9 +448,21 @@ export function capabilityValidity(row, expected = null) {
 /**
  * Các trường metadata PHẢI giống nhau trong một nhóm ghép cặp. `profile` và
  * `profile_config_hash` KHÔNG nằm đây: chúng là định danh treatment của arm.
+ *
+ * `run_id` CÓ nằm đây nhưng KHÔNG nằm trong `identityOf`/khoá ghép cặp. Đó là
+ * điểm mấu chốt: `run_id` là RANH GIỚI của một lần thu thập, không phải phần
+ * định danh của cặp. Hai lần chạy CÙNG task/seed (khác `run_id`) vì thế rơi vào
+ * CÙNG một group — nhờ vậy `groupConsistency` mới thấy được rằng group đã trộn
+ * arm từ hai lần thu thập khác nhau và loại nó (`inconsistent-group-run-id`).
+ * Nếu `run_id` vào khoá ghép cặp, hai lần chạy sẽ tách thành hai group riêng và
+ * sự trộn lẫn trở nên VÔ HÌNH — đúng lỗi cần chặn.
+ *
+ * `created_at` CỐ Ý không nằm đây: nó là dấu thời gian của cùng một lần thu thập
+ * (mọi row cùng `run_id` chia sẻ nó), và giữ nó ngoài group giúp group không bị
+ * loại chỉ vì một row lệch mili-giây.
  */
 export const GROUP_COMMON_FIELDS = Object.freeze([
-  'source', 'split', 'mode', 'task_class', 'task_prompt_hash', 'permission_mode',
+  'source', 'split', 'mode', 'run_id', 'task_class', 'task_prompt_hash', 'permission_mode',
   'dsh_version', 'plugin_version', 'benchmark_config_hash', 'measurement_axes',
 ]);
 

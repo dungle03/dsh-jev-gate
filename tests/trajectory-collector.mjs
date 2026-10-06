@@ -58,7 +58,11 @@ const decisions = [
 ];
 const evaluation = await task.evaluate({ workspace: '/nonexistent', events, exitCode: 0, unchanged: true });
 const baseOptions = { task, arm: 'safe', seed: 1, model: 'fixture', elapsed: 1, exitCode: 0,
-  unchanged: true, dsh_version: '0.2.0-rc.2', evaluation, preflight: {} };
+  unchanged: true, dsh_version: '0.2.0-rc.2', evaluation, preflight: {},
+  // `run_id` là ranh giới MỘT lần thu thập. Mọi row `source:'real'` PHẢI có một id
+  // non-empty, nên fixture truyền nó y như collector thật luôn làm; nếu không,
+  // `validateRow` sẽ từ chối với `missing-run-id`.
+  run_id: 'fixture-run-1' };
 const row = summarize(events, decisions, baseOptions);
 
 assert.equal(row.schema, ROW_SCHEMA);
@@ -125,16 +129,36 @@ assert.throws(() => summarize(events, decisions,
 assert.throws(() => summarize(events, decisions,
   { ...baseOptions, task: { ...task, expected_capabilities_to_exercise: undefined } }),
 /missing expected_capabilities_to_exercise/);
-// run_id / created_at / collector_version phải nằm trên row khi collector truyền vào.
-assert.equal(row.run_id, null);
-assert.equal(row.created_at, null);
+// run_id / created_at / collector_version: `summarize` giữ nguyên giá trị caller
+// truyền vào, và mặc định là `null` khi KHÔNG truyền. Với row `source:'real'`,
+// mặc định `null` đó KHÔNG còn hợp lệ (luật `missing-run-id`) — nên nó chỉ được
+// kiểm trên ĐỐI TƯỢNG RAW của `summarize`, không phải trên một row được coi là đã
+// qua `validateRow`. Đây là cách giữ coverage "mặc định là null" mà không hề
+// khẳng định một row real thiếu run_id lại hợp lệ.
+const rawDefaults = summarize(events, decisions,
+  { ...baseOptions, run_id: null, created_at: null });
+assert.equal(rawDefaults.run_id, null, 'summarize giữ mặc định null khi caller không truyền run_id');
+assert.equal(rawDefaults.created_at, null);
 assert.equal(typeof row.collector_version, 'string');
+assert.equal(row.created_at, null, 'created_at vẫn mặc định null khi không truyền');
+// Nhưng row `real` với `run_id: null` PHẢI bị từ chối — nó không truy được về một
+// lần thu thập nào, nên không thể là bằng chứng.
+assert(validateRow(rawDefaults).reasons.includes('missing-run-id'),
+  'row real với run_id null phải bị từ chối với missing-run-id');
+// Row `real` hợp lệ phải MANG run_id — không còn nhánh nào để `null` lọt qua.
+assert.equal(row.run_id, 'fixture-run-1');
+assert.equal(validateRow(row).ok, true, validateRow(row).reasons.join(','));
 // Và khi có giá trị thật thì được ghi nguyên vẹn (collector luôn truyền cả ba).
 const traced = summarize(events, decisions,
   { ...baseOptions, run_id: 'abc123', created_at: '2026-01-01T00:00:00.000Z', collector_version: '9.9.9' });
 assert.equal(traced.run_id, 'abc123');
 assert.equal(traced.created_at, '2026-01-01T00:00:00.000Z');
 assert.equal(traced.collector_version, '9.9.9');
+assert.equal(validateRow(traced).ok, true, validateRow(traced).reasons.join(','));
+// run_id TRỐNG (whitespace) cũng bị từ chối — "có field" không đủ, phải là id thật.
+const blankRunId = summarize(events, decisions, { ...baseOptions, run_id: '   ' });
+assert(validateRow(blankRunId).reasons.includes('missing-run-id'),
+  'run_id rỗng/whitespace KHÔNG được coi là hợp lệ');
 
 // Vanilla KHÔNG khai profile/config (không được bịa config cho arm không plugin).
 const vanilla = summarize(events, [], { ...baseOptions, arm: 'vanilla' });

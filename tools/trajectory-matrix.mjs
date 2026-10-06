@@ -225,10 +225,44 @@ const keyOf = (row) => JSON.stringify([row.task_id, row.seed, row.repo_state, ro
   row.benchmark_config_hash, row.dsh_version, row.plugin_version]);
 
 /**
+ * Tổng hợp `arms`/`by_effort`/`layer_coverage`/`task_classes` trên MỘT tập row.
+ * Tách ra thành hàm riêng để báo cáo chạy được HAI lần trên hai tập khác nhau:
+ * tập đã VALIDATE (kết luận performance) và tập RAW (chỉ để đọc chẩn đoán).
+ */
+function summarizeRows(rows) {
+  const arms = {};
+  for (const arm of ARMS) arms[arm] = armSummary(rows.filter((row) => row.arm === arm));
+  const byEffort = {};
+  for (const row of rows) {
+    const effort = row.effort ?? 'unknown';
+    const bucket = byEffort[effort] ?? (byEffort[effort] = { rows: 0, successes: 0, generations: null,
+      walltime_ms: null, input_tokens: null });
+    bucket.rows += 1;
+    if (row.success === true) bucket.successes += 1;
+  }
+  for (const [effort, bucket] of Object.entries(byEffort)) {
+    const subset = rows.filter((row) => (row.effort ?? 'unknown') === effort);
+    bucket.generations = mean(subset, 'generations');
+    bucket.walltime_ms = mean(subset, 'walltime_ms');
+    bucket.input_tokens = mean(subset, 'input_tokens');
+  }
+  return {
+    arms,
+    by_effort: byEffort,
+    layer_coverage: layerCoverage(rows),
+    task_classes: [...new Set(rows.map((row) => row.task_class))].sort(),
+  };
+}
+
+/**
  * Phân tích JSONL thành báo cáo matrix v2.
  * Row sai schema / thiếu identity bị đưa vào `rejected` (không hiểu nhầm).
+ *
+ * `manifestWarning` (tuỳ chọn): cảnh báo từ `manifestWarning()`. Chuỗi khác rỗng
+ * nghĩa là manifest của run không đầy đủ/không đáng tin ⇒ mọi treatment arm bị
+ * ép `hold` với lý do machine-readable. Bỏ tham số này ⇒ hành vi y hệt bản cũ.
  */
-export function matrix(text) {
+export function matrix(text, { manifestWarning: manifestWarningText = null } = {}) {
   const rows = []; const rejected = []; const incomplete = [];
   const lines = String(text ?? '').split('\n').map((line) => line.trim()).filter(Boolean);
   for (const line of lines) {
@@ -240,7 +274,10 @@ export function matrix(text) {
     }
     const check = validateRow(row);
     if (!check.ok) {
-      (check.reasons.includes('incomplete-pair-identity') ? incomplete : rejected)
+      // Row thiếu identity hoặc thiếu `run_id` (source:'real') chỉ là CHƯA ĐỦ dữ
+      // liệu — không phải dữ liệu hỏng cần cách ly như `rejected`.
+      (check.reasons.includes('incomplete-pair-identity') || check.reasons.includes('missing-run-id')
+        ? incomplete : rejected)
         .push({ schema: row.schema, task_id: row.task_id ?? null, arm: row.arm ?? null, reasons: check.reasons });
       continue;
     }
@@ -280,25 +317,15 @@ export function matrix(text) {
     consistent.push(group);
   }
   const complete = consistent.filter((group) => ARMS.every((arm) => group.arms[arm]));
-  const arms = {};
-  for (const arm of ARMS) {
-    const armRows = unique.filter((row) => row.arm === arm);
-    arms[arm] = armSummary(armRows);
-  }
-  const byEffort = {};
-  for (const row of unique) {
-    const effort = row.effort ?? 'unknown';
-    const bucket = byEffort[effort] ?? (byEffort[effort] = { rows: 0, successes: 0, generations: null,
-      walltime_ms: null, input_tokens: null });
-    bucket.rows += 1;
-    if (row.success === true) bucket.successes += 1;
-  }
-  for (const [effort, bucket] of Object.entries(byEffort)) {
-    const subset = unique.filter((row) => (row.effort ?? 'unknown') === effort);
-    bucket.generations = mean(subset, 'generations');
-    bucket.walltime_ms = mean(subset, 'walltime_ms');
-    bucket.input_tokens = mean(subset, 'input_tokens');
-  }
+  // `rawRows` = mọi row parse hợp lệ (kể cả row thuộc group bị loại vì metadata
+  // không nhất quán) — chỉ dùng cho CHẨN ĐOÁN.
+  const rawRows = unique;
+  // `validatedRows` = row thuộc group đã qua `groupConsistency`. Số liệu dùng để
+  // KẾT LUẬN performance phải lấy từ đây: một group bị loại vì trộn metadata
+  // (ví dụ lệch `split`) không được kéo mean `arms.*` dù chỉ là một mẫu.
+  const validatedRows = consistent.flatMap((group) => Object.values(group.arms));
+  const validated = summarizeRows(validatedRows);
+  const raw = summarizeRows(rawRows);
   const promotionReport = {};
   for (const arm of ARMS) {
     if (arm === 'vanilla') continue;
@@ -306,15 +333,39 @@ export function matrix(text) {
     // held-out/validation mà lọt vào đây sẽ tự gắn nhãn held-out cho cả nhóm.
     promotionReport[arm] = promotion(consistent, arm);
   }
+  // Manifest không đáng tin ⇒ KHÔNG arm treatment nào được coi là ứng viên review.
+  // Đây là gate ở TẦNG BÁO CÁO (không đụng vào số đo): diagnostics vẫn in đầy đủ,
+  // nhưng `status` bị ép `hold` để một run dở dang không thể trôi qua review.
+  if (typeof manifestWarningText === 'string' && manifestWarningText.trim() !== '') {
+    for (const arm of ARMS) {
+      const entry = promotionReport[arm];
+      if (!entry) continue;
+      entry.status = 'hold';
+      entry.automatic_promotion = false;
+      if (!entry.reasons.includes('incomplete-or-untrusted-run-manifest')) {
+        entry.reasons.push('incomplete-or-untrusted-run-manifest');
+      }
+    }
+  }
   const inconsistentGroups = groups.length - consistent.length;
   return {
     schema: MATRIX_SCHEMA,
     row_schema: ROW_SCHEMA,
-    arms,
+    // `arms`/`by_effort`/`layer_coverage`/`task_classes` = chỉ nhóm đã validate.
+    arms: validated.arms,
+    by_effort: validated.by_effort,
+    layer_coverage: validated.layer_coverage,
+    task_classes: validated.task_classes,
+    // Bản RAW song song, giữ lại để đọc mức độ lệch giữa hai tập.
+    raw_arms: raw.arms,
+    raw_by_effort: raw.by_effort,
+    raw_layer_coverage: raw.layer_coverage,
+    raw_task_classes: raw.task_classes,
+    validated_rows: validatedRows.length,
+    raw_rows: rawRows.length,
     complete_groups: complete.length,
     held_out_real_groups: complete.filter((group) => group.provenance === 'held-out-real').length,
     inconsistent_groups: inconsistentGroups,
-    task_classes: [...new Set(unique.map((row) => row.task_class))].sort(),
     supported_task_classes: [...TASK_CLASSES],
     verdict: 'unknown',
     note: 'Measurement analyzer only. Validation rows are not promotion evidence; '
@@ -322,11 +373,11 @@ export function matrix(text) {
     comparisons: complete.map((group) => ({ key: group.key, task_id: group.task_id,
       task_class: group.task_class, provenance: group.provenance,
       arms: Object.fromEntries(ARMS.map((arm) => [arm, armSummary([group.arms[arm]])])) })),
-    by_effort: byEffort,
-    layer_coverage: layerCoverage(unique),
     incomplete,
     rejected,
     promotion: promotionReport,
+    ...(typeof manifestWarningText === 'string' && manifestWarningText.trim() !== ''
+      ? { manifest_warning: manifestWarningText } : {}),
   };
 }
 
@@ -388,6 +439,9 @@ export function selfTest() {
       schema: RS, task_id: 'synthetic-task', task_class: 'routine', seed: 1,
       repo_state: 'fixturehash', model: 'trajectory-router/synthetic', dsh_version: '0.2.0-rc.2',
       plugin_version: '0.14.0', benchmark_config: benchConfig, benchmark_config_hash: benchHash,
+      // `run_id` là boundary của một run: mọi fixture `source:'real'` PHẢI có nó.
+      // Hằng số ở đây vì toàn bộ self-test là MỘT run giả lập.
+      run_id: 'fixture-run-1',
       arm, source: 'synthetic', split: 'held-out', profile: arm === 'vanilla' ? null : arm,
       profile_config: profileConfig,
       // Hash TÍNH SAU khi áp override, nếu không row sửa tay sẽ tự vô hiệu.
@@ -543,6 +597,47 @@ export function selfTest() {
   // Lớp không được cấu hình và không task nào khai ⇒ KHÔNG xuất hiện (tránh hiểu nhầm 0 = đã đo).
   assert(layerCoverage([base('vanilla')]).jevgrep === undefined,
     'untouched layers must be omitted, not reported as zero');
+  const encode = (list) => list.map((row) => JSON.stringify(row)).join('\n');
+  // 8. Manifest KHÔNG đáng tin ⇒ mọi treatment arm `hold`, KHÔNG được `eligible-for-review`.
+  // Dùng lại đúng dữ liệu held-out SẠCH ở 5b: không warning ⇒ eligible; có warning ⇒ hold.
+  const clean = matrix(encode(noCostRows));
+  assert(clean.promotion.experimental.status === 'eligible-for-review',
+    'clean held-out data without a manifest warning must stay eligible-for-review');
+  assert(clean.manifest_warning === undefined, 'no warning passed ⇒ no manifest_warning field');
+  const gated = matrix(encode(noCostRows), { manifestWarning: 'no-run-manifest: synthetic' });
+  assert(gated.manifest_warning === 'no-run-manifest: synthetic', 'warning must be echoed in the report');
+  for (const arm of ARMS) {
+    const entry = gated.promotion[arm];
+    if (arm === 'vanilla') { assert(entry === undefined, 'vanilla has no promotion entry'); continue; }
+    assert(entry.status === 'hold', `${arm}: untrusted manifest must force hold, got ${entry.status}`);
+    assert(entry.automatic_promotion === false, `${arm}: untrusted manifest must not auto-promote`);
+    assert(entry.reasons.includes('incomplete-or-untrusted-run-manifest'),
+      `${arm}: untrusted manifest reason must be present`);
+    // Manifest KHÔNG được bịa ra regression: nó chỉ nói "chưa tin được", không nói "tệ hơn".
+    assert(!entry.reasons.some((reason) => /-regression$/.test(reason)),
+      `${arm}: untrusted manifest must not invent a regression reason`);
+  }
+  // Diagnostics vẫn phải nguyên vẹn khi bị gate.
+  for (const key of ['arms', 'raw_arms', 'by_effort', 'raw_by_effort', 'layer_coverage',
+    'raw_layer_coverage', 'comparisons', 'incomplete', 'rejected', 'promotion', 'verdict',
+    'complete_groups', 'held_out_real_groups', 'inconsistent_groups']) {
+    assert(gated[key] !== undefined, `manifest gate must not drop diagnostics: ${key}`);
+  }
+  // 9. raw vs validated: group lệch `split` bị loại, và nó KHÔNG được kéo mean chính.
+  const validGroup = ARMS.map((arm) => base(arm, { seed: 0, source: 'real', split: 'held-out' }));
+  const droppedGroup = ARMS.map((arm) => base(arm, { seed: 1, source: 'real',
+    split: arm === 'vanilla' ? 'held-out' : 'validation', walltime_ms: 9999 }));
+  const splitReport = matrix(encode([...validGroup, ...droppedGroup]));
+  assert(splitReport.inconsistent_groups === 1, 'the mixed-split group must be dropped');
+  assert(splitReport.raw_rows === 8 && splitReport.validated_rows === 4,
+    `raw/validated counts must diverge, got ${splitReport.raw_rows}/${splitReport.validated_rows}`);
+  assert(splitReport.raw_rows > splitReport.validated_rows, 'raw_rows must exceed validated_rows');
+  assert(splitReport.raw_arms.safe.metrics.walltime_ms > splitReport.arms.safe.metrics.walltime_ms,
+    'raw summary must include the dropped slow group; validated summary must not');
+  assert(splitReport.arms.safe.metrics.walltime_ms === 100,
+    'validated walltime must reflect only the consistent group');
+  assert(splitReport.promotion.safe.held_out_pairs === 1,
+    'promotion must only see the consistent group');
   return true;
 }
 
@@ -560,13 +655,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const text = readFileSync(input, 'utf8');
-    const report = matrix(text);
     // Đếm row THẬT trong file để phát hiện manifest cũ/khai sai số row.
     const actualRows = text.split('\n').filter((line) => line.trim() !== '').length;
     const warning = manifestWarning(manifest, actualRows);
-    // Manifest cho biết file JSONL có đầy đủ không; cảnh báo rõ nhưng KHÔNG chặn
-    // phân tích (người dùng vẫn xem được phần đã đo).
-    if (warning) report.manifest_warning = warning;
+    // Manifest cho biết file JSONL có đầy đủ không. Cảnh báo được TRUYỀN VÀO matrix
+    // để chặn promotion (`hold` + lý do), nhưng KHÔNG chặn phần diagnostics: người
+    // dùng vẫn xem được đầy đủ số đã đo.
+    const report = matrix(text, { manifestWarning: warning });
     console.log(JSON.stringify(report, null, 2));
   }
 }

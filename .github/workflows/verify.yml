@@ -61,6 +61,8 @@ jobs:
           node tests/trajectory-ground-truth.mjs
           node tests/trajectory-consent-capability.mjs
           node tests/trajectory-held-out.mjs
+          node tests/trajectory-run-integrity.mjs
+          node tests/trajectory-summary-integrity.mjs
 
       - name: Không có secret hardcode trong source
         run: |

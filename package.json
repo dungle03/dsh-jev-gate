@@ -50,7 +50,7 @@
     }
   },
   "scripts": {
-    "test": "node tests/offline.mjs && node tests/attack-corpus.mjs && node tests/benchmark.mjs && node tests/metrics.mjs && node tests/profiles.mjs && node tests/trajectory.mjs && node tests/budget.mjs && node tests/context.mjs && node tests/evidence.mjs && node tests/provenance.mjs && node tests/cost-governor.mjs && node tests/jevgrep-control.mjs && node tests/evidence-boundary.mjs && node tests/host-resolver.mjs && node tests/docs-contract.mjs && node tests/live-smoke-contract.mjs && node tests/trajectory-collector.mjs && node tests/trajectory-tasks.mjs && node tests/trajectory-promotion.mjs && node tests/trajectory-ground-truth.mjs && node tests/trajectory-consent-capability.mjs && node tests/trajectory-held-out.mjs && node tools/trajectory-matrix.mjs --self-test"
+    "test": "node tests/offline.mjs && node tests/attack-corpus.mjs && node tests/benchmark.mjs && node tests/metrics.mjs && node tests/profiles.mjs && node tests/trajectory.mjs && node tests/budget.mjs && node tests/context.mjs && node tests/evidence.mjs && node tests/provenance.mjs && node tests/cost-governor.mjs && node tests/jevgrep-control.mjs && node tests/evidence-boundary.mjs && node tests/host-resolver.mjs && node tests/docs-contract.mjs && node tests/live-smoke-contract.mjs && node tests/trajectory-collector.mjs && node tests/trajectory-tasks.mjs && node tests/trajectory-promotion.mjs && node tests/trajectory-ground-truth.mjs && node tests/trajectory-consent-capability.mjs && node tests/trajectory-held-out.mjs && node tests/trajectory-run-integrity.mjs && node tests/trajectory-summary-integrity.mjs && node tools/trajectory-matrix.mjs --self-test"
   },
   "engines": {
     "dsh": "0.2.0-rc.2"
