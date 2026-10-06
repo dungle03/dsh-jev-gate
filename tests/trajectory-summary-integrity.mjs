@@ -120,9 +120,19 @@ try {
   const completeManifest = { status: 'complete', written_rows: CLEAN_ACTUAL_ROWS, expected_rows: CLEAN_ACTUAL_ROWS };
   assert.equal(manifestWarning(completeManifest, CLEAN_ACTUAL_ROWS), null,
     'a complete, count-matching manifest must NOT warn');
+  // Manifest khai `complete` nhưng KHÔNG ghi số row là FAIL-OPEN: nó không thể phân
+  // biệt file đầy với file bị cắt. Collector thật LUÔN ghi cả hai ⇒ thiếu chúng
+  // nghĩa là manifest bị dựng tay, phải bị coi là KHÔNG đáng tin (không được null).
+  const noCountManifest = manifestWarning({ status: 'complete' }, CLEAN_ACTUAL_ROWS);
+  assert.equal(typeof noCountManifest, 'string', 'a count-less complete manifest must warn');
+  assert(noCountManifest.startsWith('untrusted-run-manifest'), `unexpected warning: ${noCountManifest}`);
+  const partialCountManifest = manifestWarning({ status: 'complete', written_rows: CLEAN_ACTUAL_ROWS },
+    CLEAN_ACTUAL_ROWS);
+  assert.equal(typeof partialCountManifest, 'string',
+    'a complete manifest missing expected_rows must warn (cannot prove completeness)');
 
   for (const [label, warning] of [['missing', missingManifest], ['incomplete', incompleteManifest],
-    ['stale', staleManifest]]) {
+    ['stale', staleManifest], ['no-counts', noCountManifest], ['partial-counts', partialCountManifest]]) {
     const gated = matrix(CLEAN_TEXT, { manifestWarning: warning });
     // Cùng dữ liệu, chỉ khác manifest ⇒ kết luận phải đảo chiều.
     assert.equal(gated.manifest_warning, warning, `${label}: warning must be echoed in the report`);

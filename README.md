@@ -865,7 +865,9 @@ manifest, hoặc khi manifest khai số row **khác** file thật (`stale-run-ma
 
 Cảnh báo manifest **chặn promotion nhưng KHÔNG chặn phân tích**: khi có bất kỳ
 `manifest_warning` nào (thiếu manifest, `status != complete`, `written_rows` khác
-số row thật, hoặc `written_rows != expected_rows`), mọi treatment arm bị ép
+số row thật, `written_rows != expected_rows`, **hoặc** manifest khai `complete` mà
+**không ghi** `written_rows`/`expected_rows` — dạng `untrusted-run-manifest`, vì
+thiếu số row thì không thể chứng minh file đầy), mọi treatment arm bị ép
 `status: hold` với lý do machine-readable `incomplete-or-untrusted-run-manifest` và
 `automatic_promotion: false` — **không** bị gọi là regression. Diagnostics
 (`arms`, `raw_arms`, `by_effort`, `layer_coverage`, `comparisons`, `incomplete`,

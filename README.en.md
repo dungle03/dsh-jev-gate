@@ -908,8 +908,10 @@ evidence.
 
 A manifest warning **blocks promotion but NOT analysis**: whenever there is any
 `manifest_warning` (missing manifest, `status != complete`, `written_rows`
-differing from the actual row count, or `written_rows != expected_rows`), every
-treatment arm is forced to `status: hold` with the machine-readable reason
+differing from the actual row count, `written_rows != expected_rows`, **or** a
+manifest claiming `complete` while **not recording** `written_rows`/`expected_rows`
+— the `untrusted-run-manifest` case, because without the counts completeness cannot
+be proven), every treatment arm is forced to `status: hold` with the machine-readable reason
 `incomplete-or-untrusted-run-manifest` and `automatic_promotion: false` — never
 reported as a regression. Diagnostics (`arms`, `raw_arms`, `by_effort`,
 `layer_coverage`, `comparisons`, `incomplete`, `rejected`) are still emitted in

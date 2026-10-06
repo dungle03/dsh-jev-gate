@@ -493,7 +493,10 @@ assert.equal(manifestWarning(null), 'no-run-manifest: completeness of this JSONL
 assert.match(manifestWarning({ status: 'incomplete', expected_rows: 8, written_rows: 3 }), /incomplete-run-manifest/);
 assert.match(manifestWarning({ status: 'complete', expected_rows: 8, written_rows: 3 }), /wrote 3 of 8/);
 assert.equal(manifestWarning({ status: 'complete', expected_rows: 8, written_rows: 8 }), null);
-assert.equal(manifestWarning({ status: 'complete' }), null);
+// Khai `complete` nhưng KHÔNG ghi số row ⇒ không thể chứng minh đầy đủ ⇒ FAIL-CLOSED
+// (coi là không đáng tin), không được trả `null`. Collector thật luôn ghi cả hai số.
+assert.match(manifestWarning({ status: 'complete' }), /untrusted-run-manifest/);
+assert.match(manifestWarning({ status: 'complete', written_rows: 8 }), /untrusted-run-manifest/);
 // Manifest khai số row KHÁC số row thật trong file ⇒ cảnh báo mạnh, không tin số nào.
 assert.match(manifestWarning({ status: 'incomplete', expected_rows: 12, written_rows: 0 }, 5), /stale-run-manifest/);
 assert.match(manifestWarning({ status: 'incomplete', expected_rows: 12, written_rows: 0 }, 5), /records 0 rows but the file has 5/);

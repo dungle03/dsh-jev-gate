@@ -408,8 +408,16 @@ export function manifestWarning(manifest, actualRows = null) {
     const expected = Number.isFinite(manifest.expected_rows) ? manifest.expected_rows : '?';
     return `incomplete-run-manifest: run status is ${JSON.stringify(manifest.status)} (wrote ${wrote} of ${expected} rows)`;
   }
-  if (Number.isFinite(manifest.expected_rows) && Number.isFinite(manifest.written_rows)
-    && manifest.written_rows !== manifest.expected_rows) {
+  // Khai `complete` nhưng THIẾU số row (`written_rows`/`expected_rows`) là manifest
+  // KHÔNG đủ để chứng minh tính đầy đủ: nó không thể phân biệt file đầy với file
+  // bị cắt. Collector thật LUÔN ghi cả hai, nên thiếu chúng nghĩa là manifest bị
+  // sửa/dựng tay ⇒ fail-closed (coi như không đáng tin), KHÔNG được coi là hợp lệ.
+  if (!Number.isFinite(manifest.written_rows) || !Number.isFinite(manifest.expected_rows)) {
+    const wrote = Number.isFinite(manifest.written_rows) ? manifest.written_rows : '?';
+    const expected = Number.isFinite(manifest.expected_rows) ? manifest.expected_rows : '?';
+    return `untrusted-run-manifest: status is complete but row counts are not recorded (wrote ${wrote} of ${expected} rows)`;
+  }
+  if (manifest.written_rows !== manifest.expected_rows) {
     return `incomplete-run-manifest: wrote ${manifest.written_rows} of ${manifest.expected_rows} rows`;
   }
   return null;

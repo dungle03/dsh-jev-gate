@@ -11,12 +11,14 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
   `trajectory-matrix` chỉ gắn `manifest_warning` rồi vẫn có thể trả
   `eligible-for-review` cho dataset thiếu/hỏng. Nay `matrix(text, { manifestWarning })`:
   khi có bất kỳ cảnh báo nào (thiếu manifest, `status != complete`,
-  `written_rows` khác số row thật, hoặc `written_rows != expected_rows`), **mọi**
-  treatment arm bị ép `status: hold`, `automatic_promotion: false`, thêm lý do
-  machine-readable `incomplete-or-untrusted-run-manifest`; **không** đổi thành
-  regression. Diagnostics (`arms`, `raw_arms`, `by_effort`, `layer_coverage`,
-  `comparisons`, `incomplete`, `rejected`) vẫn xuất đầy đủ. CLI truyền cảnh báo vào
-  `matrix()` để gate có hiệu lực.
+  `written_rows` khác số row thật, `written_rows != expected_rows`, hoặc manifest
+  khai `complete` mà **không ghi** số row — `untrusted-run-manifest`, vì thiếu số
+  row thì không chứng minh được file đầy), **mọi** treatment arm bị ép `status: hold`,
+  `automatic_promotion: false`, thêm lý do machine-readable
+  `incomplete-or-untrusted-run-manifest`; **không** đổi thành regression. Diagnostics
+  (`arms`, `raw_arms`, `by_effort`, `layer_coverage`, `comparisons`, `incomplete`,
+  `rejected`) vẫn xuất đầy đủ. CLI truyền cảnh báo vào `matrix()` để gate có hiệu lực.
+  Collector thật luôn ghi `written_rows` + `expected_rows` nên không có dương tính giả.
 - **`run_id` chặn ghép arm từ hai lần thu thập khác nhau.** `run_id` được thêm vào
   `GROUP_COMMON_FIELDS`: bốn arm trong một nhóm ghép cặp phải **cùng** `run_id`,
   nếu khác cả nhóm bị loại với lý do `inconsistent-group-run-id`. Row
