@@ -716,13 +716,18 @@ const noCommitGit = (cmd, args) => {
   if (args.includes('status')) return { status: 128, stdout: '', stderr: '' };
   return { status: 1, stdout: '', stderr: '' };
 };
+// `dsh` probe seam: test này phải chạy được trên máy KHÔNG cài `dsh` (CI). Nếu
+// phụ thuộc `dsh` thật, nó xanh ở máy dev và đỏ ở CI — đúng loại lỗi phụ thuộc
+// môi trường mà bộ test này phải tránh. Stub trả version hợp lệ để đi tiếp tới
+// chốt chặn cần kiểm (git commit / cây bẩn).
+const dshOkRun = () => ({ status: 0, stdout: '0.2.0-rc.2\n', stderr: '' });
 // Không đọc được commit ⇒ TỪ CHỐI ghi row (chốt chặn quan trọng nhất).
-await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: noCommitGit }),
+await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: noCommitGit, dshRun: dshOkRun }),
   /refusing to record a row that cannot be traced to a source revision/);
 // Cây bẩn ⇒ TỪ CHỐI kèm hướng dẫn override.
-await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: dirtyGit }),
+await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: dirtyGit, dshRun: dshOkRun }),
   /dirty; refusing to record unreproducible evidence/);
-await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: dirtyGit }), /--allow-dirty-plugin/);
+await assert.rejects(() => collect({ output: '/tmp/nope.jsonl', gitRun: dirtyGit, dshRun: dshOkRun }), /--allow-dirty-plugin/);
 // Nhánh "cây sạch đi qua" được chứng minh end-to-end ở khối e2e bên dưới (fakeGit
 // trả `status` rỗng): ở đó collector chạy hết và ghi row với plugin_dirty_state:false.
 

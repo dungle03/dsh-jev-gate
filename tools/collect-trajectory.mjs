@@ -880,11 +880,14 @@ export async function truncateOutput(outputPath) {
  * @param {boolean} [options.allowDirtyPlugin] - override TƯỜNG MINH khi cây plugin bẩn
  * @param {number|null} [options.temperature] - nhiệt độ provider, ghi vào metadata (không áp đặt)
  * @param {Function} [options.gitRun] - seam để test: runner cho git probe (mặc định spawnSync)
+ * @param {Function} [options.dshRun] - seam để test: runner cho probe `dsh` (version +
+ *   dump-config). Cùng lý do như `gitRun`: một test offline KHÔNG được phụ thuộc
+ *   `dsh` cài sẵn trên máy, nếu không nó xanh ở máy dev và đỏ ở CI (hoặc ngược lại).
  */
 export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', baseURL = 'http://127.0.0.1:20128/v1',
   seed = 1, seeds, timeoutMs = 180_000, mode = 'normal', split = 'validation', taskId = DEFAULT_TASK, taskIds, arms,
   overwrite = false, allowDirtyPlugin = false, allowIncompatibleArms = false,
-  temperature = null, gitRun = spawnSync } = {}) {
+  temperature = null, gitRun = spawnSync, dshRun = spawnSync } = {}) {
   if (!output) throw new Error('Output JSONL path is required');
   // Split hợp lệ phải được kiểm TRƯỚC credential: một flag sai chính tả là lỗi THAM SỐ,
   // không được báo "thiếu API key" và khiến người dùng đi tìm credential.
@@ -936,7 +939,7 @@ export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', base
   const outputPath = await prepareOutput(output, { overwrite });
   // Không nhận diện được DSH ⇒ từ chối. Chạy TRƯỚC khi truncate để một lần chạy
   // hỏng ngay lập tức không xoá mất dataset cũ của người dùng.
-  const dshVersionValue = dshVersion();
+  const dshVersionValue = dshVersion(process.env, dshRun);
   if (!dshVersionValue) throw new Error('Unable to determine the DSH version; refusing to record an unidentifiable environment');
   // Định danh revision plugin: KHÔNG có commit ⇒ không có row. Đây là chốt chặn
   // quan trọng nhất của bằng chứng — mọi row phải trỏ về một revision cụ thể.
@@ -961,7 +964,7 @@ export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', base
   // DSH là git checkout thì mới có commit; cài từ npm thì `null` — trung thực, không đoán.
   const dshRoot = dshInstallRoot();
   const dshCommit = dshRoot ? gitCommit(dshRoot, gitRun) : null;
-  const preflight = preflightCapabilities();
+  const preflight = preflightCapabilities({ dump: dshRun });
   // Chỉ tới đây mới được phép xoá file cũ: môi trường đã xác nhận chạy được.
   if (overwrite) await truncateOutput(outputPath);
   const root = await mkdtemp(join(tmpdir(), 'jev-trajectory-'));
