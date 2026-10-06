@@ -58,6 +58,9 @@ jobs:
           node tests/trajectory-collector.mjs
           node tests/trajectory-tasks.mjs
           node tests/trajectory-promotion.mjs
+          node tests/trajectory-ground-truth.mjs
+          node tests/trajectory-consent-capability.mjs
+          node tests/trajectory-held-out.mjs
 
       - name: Không có secret hardcode trong source
         run: |

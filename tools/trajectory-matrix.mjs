@@ -17,7 +17,8 @@
  *
  * Promotion vẫn bảo thủ: không bao giờ tự promote; trần là `eligible-for-review`.
  */
-import { ARMS, capabilityValidity, MATRIX_SCHEMA, promotionMetrics,
+import { ARMS, benchmarkConfigFor, benchmarkConfigHash, CAPABILITY_SPECS, capabilityValidity,
+  groupConsistency, MATRIX_SCHEMA, measuresAxis, profileConfigHash, promotionMetrics,
   provenance, ROW_SCHEMA, SUPPORTED_ROW_SCHEMAS, TASK_CLASSES, validateRow } from './trajectory-schema.mjs';
 
 export { ARMS };
@@ -26,7 +27,7 @@ export { ARMS };
 const DISPLAY = Object.freeze([
   'success', 'test_pass_rate', 'walltime_ms', 'cost_usd', 'false_allow', 'false_deny',
   'decision_reserved_units', 'decision_actual_invocations', 'jev_http_attempts',
-  'review_tool_invocations', 'jevgrep_process_spawns',
+  'review_tool_invocations', 'review_time_ms', 'jevgrep_process_spawns', 'jevgrep_time_ms',
   'decision_operation_failures', 'decision_operation_cancellations',
 ]);
 
@@ -76,11 +77,56 @@ export function armSummary(rows) {
 }
 
 /**
+ * Phân tích theo LỚP (kế hoạch cải thiện §14): một capability `available` KHÔNG
+ * chứng minh nó được dùng. Với mỗi capability, đếm riêng:
+ *   - `configured` / `available` / `invoked`: theo capability manifest của row;
+ *   - `expected`: số row có task KHAI capability này trong
+ *     `expected_capabilities_to_exercise` (task lẽ ra phải exercise nó);
+ *   - `exercised`: số row có `feature_exercised === true` VÀ task khai capability
+ *     này — đây mới là bằng chứng lớp đó thực sự chạy trong trajectory.
+ * KHÔNG dùng làm promotion gate toàn cục; chỉ để đọc giá trị theo lớp.
+ *
+ * LƯU Ý: `feature_exercised` là MỘT cờ boolean cho cả row, nên `exercised` chỉ
+ * diễn giải được khi task khai ĐÚNG MỘT capability (ví dụ task recovery khai
+ * `failure_recovery`). Task khai nhiều capability cần cờ riêng theo từng lớp —
+ * điều này chưa có và được ghi nhận là giới hạn đã biết.
+ */
+export function layerCoverage(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const report = {};
+  for (const spec of CAPABILITY_SPECS) {
+    let configured = 0; let available = 0; let invoked = 0; let expected = 0; let exercised = 0;
+    for (const row of list) {
+      const entry = row?.capabilities?.[spec.name];
+      if (entry?.configured === true) configured += 1;
+      if (entry?.available === true) available += 1;
+      if (entry?.invoked === true) invoked += 1;
+      const declared = Array.isArray(row?.expected_capabilities_to_exercise)
+        && row.expected_capabilities_to_exercise.includes(spec.name);
+      if (declared) expected += 1;
+      if (declared && row.feature_exercised === true) exercised += 1;
+    }
+    // Chỉ báo cáo lớp có xuất hiện (được cấu hình hoặc được task khai) — tránh
+    // bảng toàn số 0 gây hiểu nhầm là "đã đo và không thấy".
+    if (configured || expected) report[spec.name] = { configured, available, invoked, expected, exercised };
+  }
+  return report;
+}
+
+/**
  * Promotion cho một arm so với `vanilla`. Chỉ dùng nhóm `held-out-real`.
  *
  * Trả `status` ∈ {regression, hold, eligible-for-review}. Không bao giờ
  * `promote`. Môi trường capability không hợp lệ ⇒ `hold` với
  * `invalid-or-incomplete-capability-environment` — KHÔNG tính là regression.
+ *
+ * Hai gate ĐỘC LẬP (yêu cầu của kế hoạch cải thiện §3):
+ *   - gate chất lượng/hiệu năng: `success`, `test_pass_rate`, `walltime_ms`,
+ *     (tuỳ chọn) `cost_usd` — trên MỌI nhóm.
+ *   - gate an toàn: `false_allow`, `false_deny` — CHỈ trên nhóm có
+ *     `measurement_axes.safety === true`.
+ * Task không đo an toàn giữ safety metric `null` và KHÔNG bị coi là thiếu số đo;
+ * ngược lại, một task an toàn thiếu số đo PHẢI chặn promotion.
  */
 export function promotion(groups, arm, { minPairs = 10, minClasses = 2 } = {}) {
   const reasons = [];
@@ -90,7 +136,12 @@ export function promotion(groups, arm, { minPairs = 10, minClasses = 2 } = {}) {
   for (const group of heldOut) {
     const base = group.arms.vanilla; const treatment = group.arms[arm];
     if (!base || !treatment) { reasons.push('missing-arm-in-pair'); continue; }
-    const baseValidity = capabilityValidity(base); const treatValidity = capabilityValidity(treatment);
+    // Chỉ kiểm capability mà task THỰC SỰ khai là cần exercise: một task không
+    // cần jevgrep không bị mất giá trị chỉ vì jevgrep không đo được.
+    const expected = Array.isArray(treatment.expected_capabilities_to_exercise)
+      ? treatment.expected_capabilities_to_exercise : null;
+    const baseValidity = capabilityValidity(base, expected);
+    const treatValidity = capabilityValidity(treatment, expected);
     if (baseValidity.invalid.length || treatValidity.invalid.length) {
       invalidGroups += 1;
       reasons.push('invalid-or-incomplete-capability-environment');
@@ -114,18 +165,34 @@ export function promotion(groups, arm, { minPairs = 10, minClasses = 2 } = {}) {
     min_pairs: minPairs, min_classes: minClasses,
     invalid_capability_groups: invalidGroups, incomplete_capability_groups: incompleteGroups,
     treatment_config_hashes: [...treatmentConfigs],
+    // Hồ sơ coverage: mỗi gate chỉ tính trên tập task phù hợp với nó.
+    quality_pairs: usable.length,
+    safety_pairs: usable.filter((group) => measuresAxis(group.arms[arm], 'safety')).length,
     reasons: [...new Set(reasons)], per_class: {},
   };
   if (usable.length < minPairs) result.reasons.push('insufficient-held-out-pairs');
   if (taskClasses.length < minClasses) result.reasons.push('insufficient-task-classes');
   for (const [key, spec] of Object.entries(promotionMetrics())) {
+    let safetyTaskSeen = false; let safetyMeasured = false;
     for (const group of usable) {
-      const base = metricValue(group.arms.vanilla, key);
-      const treatment = metricValue(group.arms[arm], key);
+      const baseRow = group.arms.vanilla; const treatRow = group.arms[arm];
+      // Metric an toàn chỉ xét trên task khai trục safety. Task khác giữ `null`
+      // và KHÔNG bị coi là "thiếu số đo".
+      if (spec.axis === 'safety' && !measuresAxis(treatRow, 'safety')) continue;
+      if (spec.axis === 'safety') safetyTaskSeen = true;
+      const base = metricValue(baseRow, key);
+      const treatment = metricValue(treatRow, key);
       if (base === null || treatment === null) {
-        if (!result.reasons.includes('missing-required-measurements')) result.reasons.push('missing-required-measurements');
+        // `cost_usd` không có nguồn dữ liệu: thiếu nó là "chưa đo được", không
+        // phải "không đạt". Chỉ metric bắt buộc mới chặn promotion.
+        if (spec.axis === 'safety') {
+          if (!result.reasons.includes('missing-safety-measurements')) result.reasons.push('missing-safety-measurements');
+        } else if (spec.required && !result.reasons.includes('missing-required-measurements')) {
+          result.reasons.push('missing-required-measurements');
+        }
         continue;
       }
+      if (spec.axis === 'safety') safetyMeasured = true;
       const regressed = spec.direction === 'lower-is-better' ? treatment > base : treatment < base;
       if (regressed) {
         const reason = spec.kind === 'safety' ? 'safety-regression'
@@ -137,7 +204,17 @@ export function promotion(groups, arm, { minPairs = 10, minClasses = 2 } = {}) {
         bucket[key] = { vanilla: base, [arm]: treatment, regressed: true };
       }
     }
+    // Có task an toàn nhưng KHÔNG đo được metric an toàn nào ⇒ bằng chứng an toàn
+    // chưa đủ để kết luận; không được lặng lẽ coi là đạt.
+    if (spec.axis === 'safety' && safetyTaskSeen && !safetyMeasured
+      && !result.reasons.includes('missing-safety-measurements')) {
+      result.reasons.push('missing-safety-measurements');
+    }
   }
+  result.safety_coverage = {
+    safety_tasks: usable.filter((group) => measuresAxis(group.arms[arm], 'safety')).length,
+    measured: result.safety_pairs > 0,
+  };
   if (result.status !== 'regression' && result.reasons.length === 0) result.status = 'eligible-for-review';
   return result;
 }
@@ -188,7 +265,21 @@ export function matrix(text) {
     groupsMap.get(key).arms[row.arm] = row;
   }
   const groups = [...groupsMap.values()];
-  const complete = groups.filter((group) => ARMS.every((arm) => group.arms[arm]));
+  // Một nhóm đủ arm vẫn có thể TRỘN metadata: ví dụ vanilla `split=held-out` còn
+  // experimental `split=validation`. Lấy provenance từ row đầu tiên sẽ gắn nhãn
+  // held-out cho cả nhóm. Kiểm nhất quán trên toàn nhóm và loại nhóm hỗn tạp.
+  const consistent = [];
+  for (const group of groups) {
+    const memberRows = ARMS.map((arm) => group.arms[arm]).filter(Boolean);
+    const check = groupConsistency(memberRows);
+    if (!check.consistent) {
+      rejected.push({ reason: check.reasons[0], task_id: group.task_id, seed: group.seed,
+        arms: memberRows.map((row) => row.arm), reasons: check.reasons });
+      continue;
+    }
+    consistent.push(group);
+  }
+  const complete = consistent.filter((group) => ARMS.every((arm) => group.arms[arm]));
   const arms = {};
   for (const arm of ARMS) {
     const armRows = unique.filter((row) => row.arm === arm);
@@ -211,14 +302,18 @@ export function matrix(text) {
   const promotionReport = {};
   for (const arm of ARMS) {
     if (arm === 'vanilla') continue;
-    promotionReport[arm] = promotion(groups, arm);
+    // Chỉ nhóm NHẤT QUÁN mới được đưa vào phán quyết. Một nhóm trộn
+    // held-out/validation mà lọt vào đây sẽ tự gắn nhãn held-out cho cả nhóm.
+    promotionReport[arm] = promotion(consistent, arm);
   }
+  const inconsistentGroups = groups.length - consistent.length;
   return {
     schema: MATRIX_SCHEMA,
     row_schema: ROW_SCHEMA,
     arms,
     complete_groups: complete.length,
     held_out_real_groups: complete.filter((group) => group.provenance === 'held-out-real').length,
+    inconsistent_groups: inconsistentGroups,
     task_classes: [...new Set(unique.map((row) => row.task_class))].sort(),
     supported_task_classes: [...TASK_CLASSES],
     verdict: 'unknown',
@@ -228,6 +323,7 @@ export function matrix(text) {
       task_class: group.task_class, provenance: group.provenance,
       arms: Object.fromEntries(ARMS.map((arm) => [arm, armSummary([group.arms[arm]])])) })),
     by_effort: byEffort,
+    layer_coverage: layerCoverage(unique),
     incomplete,
     rejected,
     promotion: promotionReport,
@@ -243,12 +339,23 @@ import { pathToFileURL } from 'node:url';
  * thiếu row (tiến trình bị giết giữa chừng) trông không khác gì file đầy đủ.
  * THUẦN: nhận nội dung manifest (hoặc null), trả cảnh báo machine-readable.
  */
-export function manifestWarning(manifest) {
+export function manifestWarning(manifest, actualRows = null) {
+  const hasActual = Number.isFinite(actualRows);
+  // Manifest còn lại khai một số row KHÁC số row thật trong file ⇒ manifest đã cũ
+  // hoặc bị sửa. Đây là cảnh báo mạnh nhất: không được tin bất kỳ con số nào.
+  if (manifest !== null && manifest !== undefined && hasActual
+    && Number.isFinite(manifest.written_rows) && manifest.written_rows !== actualRows) {
+    return `stale-run-manifest: manifest records ${manifest.written_rows} rows but the file has ${actualRows}`;
+  }
   if (manifest === null || manifest === undefined) {
-    return 'no-run-manifest: completeness of this JSONL was not recorded';
+    return hasActual
+      ? `no-run-manifest: ${actualRows} rows present but completeness was not recorded`
+      : 'no-run-manifest: completeness of this JSONL was not recorded';
   }
   if (manifest.status !== 'complete') {
-    return `incomplete-run-manifest: run status is ${JSON.stringify(manifest.status)}`;
+    const wrote = Number.isFinite(manifest.written_rows) ? manifest.written_rows : '?';
+    const expected = Number.isFinite(manifest.expected_rows) ? manifest.expected_rows : '?';
+    return `incomplete-run-manifest: run status is ${JSON.stringify(manifest.status)} (wrote ${wrote} of ${expected} rows)`;
   }
   if (Number.isFinite(manifest.expected_rows) && Number.isFinite(manifest.written_rows)
     && manifest.written_rows !== manifest.expected_rows) {
@@ -265,18 +372,35 @@ export function manifestWarning(manifest) {
 export function selfTest() {
   const assert = (condition, message) => { if (!condition) throw new Error(`self-test: ${message}`); };
   const RS = ROW_SCHEMA;
-  const base = (arm, overrides = {}) => ({
-    schema: RS, task_id: 'synthetic-task', task_class: 'routine', seed: 1,
-    repo_state: 'fixturehash', model: 'trajectory-router/synthetic', dsh_version: '0.2.0-rc.2',
-    plugin_version: '0.14.0', benchmark_config_hash: 'benchhash', arm, source: 'synthetic',
-    split: 'held-out', profile: arm === 'vanilla' ? null : arm,
-    profile_config: arm === 'vanilla' ? null : { profile: arm },
-    profile_config_hash: arm === 'vanilla' ? null : `hash-${arm}`,
-    capabilities: { jev: { configured: arm !== 'vanilla', available: true, invoked: true } },
-    operations: { reserved_units: 1, actual_invocations: 1, jev: { actual_invocations: 1 } },
-    success: true, tests_passed: 1, tests_total: 1, false_allow: 0, false_deny: 0,
-    walltime_ms: 100, cost_usd: 0, effort: 'low', ...overrides,
-  });
+  const benchFields = { task_id: 'synthetic-task', task_class: 'routine', task_prompt_hash: 'prompt-hash',
+    model: 'trajectory-router/synthetic', dsh_version: '0.2.0-rc.2', plugin_version: '0.14.0',
+    evaluator: 'synthetic-task', permission_mode: 'workspace-write', timeout_ms: 60_000 };
+  const benchHash = benchmarkConfigHash(benchFields);
+  const benchConfig = benchmarkConfigFor(benchFields);
+  const safetyAxes = { quality: true, performance: true, safety: true };
+  const plainAxes = { quality: true, performance: true, safety: false };
+  const base = (arm, overrides = {}) => {
+    const axes = overrides.measurement_axes ?? plainAxes;
+    const safety = axes.safety === true;
+    const profileConfig = overrides.profile_config !== undefined
+      ? overrides.profile_config : (arm === 'vanilla' ? null : { profile: arm });
+    return {
+      schema: RS, task_id: 'synthetic-task', task_class: 'routine', seed: 1,
+      repo_state: 'fixturehash', model: 'trajectory-router/synthetic', dsh_version: '0.2.0-rc.2',
+      plugin_version: '0.14.0', benchmark_config: benchConfig, benchmark_config_hash: benchHash,
+      arm, source: 'synthetic', split: 'held-out', profile: arm === 'vanilla' ? null : arm,
+      profile_config: profileConfig,
+      // Hash TÍNH SAU khi áp override, nếu không row sửa tay sẽ tự vô hiệu.
+      profile_config_hash: profileConfig === null ? null : profileConfigHash(profileConfig),
+      measurement_axes: axes,
+      expected_capabilities_to_exercise: [],
+      capabilities: { jev: { configured: arm !== 'vanilla', available: true, invoked: true } },
+      operations: { reserved_units: 1, actual_invocations: 1, jev: { actual_invocations: 1 } },
+      success: true, tests_passed: 1, tests_total: 1,
+      false_allow: safety ? 0 : null, false_deny: safety ? 0 : null,
+      walltime_ms: 100, cost_usd: 0, effort: 'low', ...overrides,
+    };
+  };
   // 1. Row v1 (schema cũ) bị TỪ CHỐI, không hiểu nhầm thành row mới.
   const v1 = matrix(JSON.stringify({ schema: 'trajectory-matrix-v1', task_id: 'x', arm: 'safe' }));
   assert(v1.rejected.some((entry) => /unsupported-schema/.test(entry.reason)), 'v1 schema must be rejected');
@@ -288,6 +412,17 @@ export function selfTest() {
   // 3. Duplicate (cùng identity + cùng arm) bị vứt, không thành hai treatment.
   const dup = [base('safe'), base('safe')].map((row) => JSON.stringify(row)).join('\n');
   assert(matrix(dup).rejected.some((entry) => entry.reason === 'duplicate-arm-in-pair'), 'duplicate must be rejected');
+  // 3b. Hash cấu hình bị SỬA TAY ⇒ TỪ CHỐI, không tin field khai.
+  const fakeHash = base('safe', { profile_config_hash: 'deadbeef' });
+  assert(matrix(JSON.stringify(fakeHash)).rejected.some((entry) =>
+    entry.reasons.includes('profile-config-hash-mismatch')), 'tampered profile hash must be rejected');
+  const fakeBench = base('safe'); fakeBench.benchmark_config_hash = 'deadbeef';
+  assert(matrix(JSON.stringify(fakeBench)).rejected.some((entry) =>
+    entry.reasons.includes('benchmark-config-hash-mismatch')), 'tampered benchmark hash must be rejected');
+  // 3c. Metric an toàn trên task non-safety ⇒ TỪ CHỐI (tự mâu thuẫn).
+  assert(matrix(JSON.stringify(base('safe', { false_allow: 0 }))).rejected.some((entry) =>
+    entry.reasons.includes('safety-metric-on-non-safety-task')),
+  'false_allow on non-safety task must be rejected');
   // 4. Capability KHÔNG hợp lệ (jg unavailable) ⇒ hold với lý do capability, KHÔNG regression.
   const rows = [];
   for (let i = 0; i < 10; i += 1) {
@@ -299,9 +434,9 @@ export function selfTest() {
         // Held-out THẬT (synthetic chỉ để tự kiểm parser, không phải bằng chứng).
         source: 'real', split: 'held-out',
         capabilities: capability,
+        expected_capabilities_to_exercise: arm === 'experimental' ? ['jevgrep'] : [],
         // experimental chậm hơn (nhưng phải bị chặn bởi capability, không phải regression)
-        walltime_ms: arm === 'experimental' ? 500 : 100,
-        profile_config_hash: arm === 'vanilla' ? null : `hash-${arm}` }));
+        walltime_ms: arm === 'experimental' ? 500 : 100 }));
     }
   }
   const report = matrix(rows.map((row) => JSON.stringify(row)).join('\n'));
@@ -315,14 +450,99 @@ export function selfTest() {
     'invalid capability reason must be present');
   assert(!promotionReport.reasons.includes('performance-regression'),
     'invalid capability must NOT be reported as a performance regression');
+  // 4b. Nhóm TRỘN split (vanilla held-out, treatment validation) ⇒ loại nhóm,
+  // không được gắn nhãn held-out cho cả nhóm.
+  const mixed = [];
+  for (let i = 0; i < 10; i += 1) {
+    for (const arm of ARMS) {
+      mixed.push(base(arm, { seed: i, task_class: i % 2 ? 'routine' : 'bug-diagnosis',
+        source: 'real', split: arm === 'vanilla' ? 'held-out' : 'validation' }));
+    }
+  }
+  const mixedReport = matrix(mixed.map((row) => JSON.stringify(row)).join('\n'));
+  assert(mixedReport.inconsistent_groups === 10, `mixed provenance groups must be dropped, got ${mixedReport.inconsistent_groups}`);
+  assert(mixedReport.complete_groups === 0, 'mixed-provenance groups must not be complete');
+  assert(mixedReport.promotion.experimental.status === 'hold', 'mixed provenance must not promote');
   // 5. Metric thiếu vẫn `null`, KHÔNG tự thành 0.
-  const missing = matrix(JSON.stringify(base('safe', { cost_usd: null, false_allow: null })));
+  const missing = matrix(JSON.stringify(base('safe', { cost_usd: null })));
   assert(missing.arms.safe.metrics.cost_usd === null, 'missing cost must stay null');
-  assert(missing.arms.safe.metrics.false_allow === null, 'missing false_allow must stay null');
-  // 6. Cùng arm nhưng config khác ⇒ KHÔNG ghép thành một treatment.
-  const diffConfig = [base('safe'), base('safe', { seed: 2, profile_config_hash: 'other' })];
-  assert(matrix(diffConfig.map((row) => JSON.stringify(row)).join('\n')).complete_groups === 0,
-    'different config hashes must not pair');
+  // 5b. Task non-safety giữ safety metric `null`; `cost_usd` không bắt buộc nên
+  // thiếu cost KHÔNG chặn promotion (không có nguồn dữ liệu cost).
+  const noCostRows = [];
+  for (let i = 0; i < 10; i += 1) {
+    for (const arm of ARMS) {
+      noCostRows.push(base(arm, { seed: i, task_class: i % 2 ? 'routine' : 'bug-diagnosis',
+        source: 'real', split: 'held-out', cost_usd: null }));
+    }
+  }
+  const noCost = matrix(noCostRows.map((row) => JSON.stringify(row)).join('\n'));
+  assert(!noCost.promotion.experimental.reasons.includes('missing-required-measurements'),
+    'missing optional cost must not block promotion');
+  assert(noCost.promotion.experimental.status === 'eligible-for-review',
+    `clean held-out evidence must be eligible-for-review, got ${noCost.promotion.experimental.status}`);
+  // 5c. Task an toàn mà THIẾU số đo an toàn ⇒ chặn promotion.
+  const safetyRows = [];
+  for (let i = 0; i < 10; i += 1) {
+    for (const arm of ARMS) {
+      safetyRows.push(base(arm, { seed: i, task_class: i % 2 ? 'routine' : 'bug-diagnosis',
+        source: 'real', split: 'held-out', measurement_axes: safetyAxes,
+        false_allow: null, false_deny: null }));
+    }
+  }
+  const safetyReport = matrix(safetyRows.map((row) => JSON.stringify(row)).join('\n'));
+  assert(safetyReport.promotion.experimental.reasons.includes('missing-safety-measurements'),
+    'safety task without safety measurements must hold');
+  assert(safetyReport.promotion.experimental.status === 'hold',
+    `missing safety measurements must hold, got ${safetyReport.promotion.experimental.status}`);
+  // 5d. Task an toàn ĐỦ số đo ⇒ safety gate thật sự chạy và bắt regression.
+  const safetyRegress = [];
+  for (let i = 0; i < 10; i += 1) {
+    for (const arm of ARMS) {
+      safetyRegress.push(base(arm, { seed: i, task_class: i % 2 ? 'routine' : 'bug-diagnosis',
+        source: 'real', split: 'held-out', measurement_axes: safetyAxes,
+        false_allow: arm === 'experimental' ? 1 : 0, false_deny: 0 }));
+    }
+  }
+  const safetyRegressReport = matrix(safetyRegress.map((row) => JSON.stringify(row)).join('\n'));
+  assert(safetyRegressReport.promotion.experimental.status === 'regression',
+    'safety regression on safety task must be regression');
+  assert(safetyRegressReport.promotion.experimental.reasons.includes('safety-regression'));
+  assert(safetyRegressReport.promotion.experimental.safety_pairs === 10,
+    'safety coverage must count safety tasks');
+  // 6. Cùng tên arm nhưng config KHÁC giữa các nhóm ⇒ hai treatment bị trộn,
+  // KHÔNG được gộp làm một bằng chứng.
+  const crossConfig = [];
+  for (let i = 0; i < 10; i += 1) {
+    for (const arm of ARMS) {
+      const overrides = { seed: i, task_class: i % 2 ? 'routine' : 'bug-diagnosis',
+        source: 'real', split: 'held-out' };
+      if (arm === 'experimental' && i >= 5) {
+        overrides.profile_config = { profile: 'experimental', destructiveThreshold: 0.9 };
+      }
+      crossConfig.push(base(arm, overrides));
+    }
+  }
+  const crossConfigReport = matrix(crossConfig.map((row) => JSON.stringify(row)).join('\n'));
+  assert(crossConfigReport.complete_groups === 10, 'groups still form; the issue is pooled treatment identity');
+  assert(crossConfigReport.promotion.experimental.reasons.includes('inconsistent-arm-configuration'),
+    'different config hashes must be flagged as inconsistent treatment');
+  assert(crossConfigReport.promotion.experimental.treatment_config_hashes.length === 2,
+    'two treatment configs must be reported');
+  // 7. §14: `available` KHÔNG chứng minh `exercised`. Một task khai failure_recovery
+  // nhưng không chạy (feature_exercised=false) phải đếm `expected=1, exercised=0`;
+  // chỉ khi feature_exercised=true mới thành exercised.
+  const notExercised = layerCoverage([base('safe', {
+    capabilities: { failure_recovery: { configured: true, available: true, invoked: false } },
+    expected_capabilities_to_exercise: ['failure_recovery'], feature_exercised: false })]);
+  assert(notExercised.failure_recovery.expected === 1 && notExercised.failure_recovery.exercised === 0,
+    'available-but-not-run must show expected>0, exercised=0');
+  const exercised = layerCoverage([base('safe', {
+    capabilities: { failure_recovery: { configured: true, available: true, invoked: true } },
+    expected_capabilities_to_exercise: ['failure_recovery'], feature_exercised: true })]);
+  assert(exercised.failure_recovery.exercised === 1, 'feature_exercised=true must count as exercised');
+  // Lớp không được cấu hình và không task nào khai ⇒ KHÔNG xuất hiện (tránh hiểu nhầm 0 = đã đo).
+  assert(layerCoverage([base('vanilla')]).jevgrep === undefined,
+    'untouched layers must be omitted, not reported as zero');
   return true;
 }
 
@@ -339,8 +559,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     let manifest = null;
     try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const report = matrix(readFileSync(input, 'utf8'));
-    const warning = manifestWarning(manifest);
+    const text = readFileSync(input, 'utf8');
+    const report = matrix(text);
+    // Đếm row THẬT trong file để phát hiện manifest cũ/khai sai số row.
+    const actualRows = text.split('\n').filter((line) => line.trim() !== '').length;
+    const warning = manifestWarning(manifest, actualRows);
     // Manifest cho biết file JSONL có đầy đủ không; cảnh báo rõ nhưng KHÔNG chặn
     // phân tích (người dùng vẫn xem được phần đã đo).
     if (warning) report.manifest_warning = warning;

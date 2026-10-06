@@ -1,7 +1,27 @@
 /**
- * benchmark-trajectory.mjs — so sánh A/B theo TRAJECTORY (paired), chạy hoàn
- * toàn OFFLINE: chỉ ĐỌC một file JSONL, không mạng, không gọi Jev, KHÔNG chạy
- * lệnh shell nào.
+ * benchmark-trajectory.mjs — CÔNG CỤ v1, ĐÃ LỖI THỜI. Chỉ giữ để đọc file cũ.
+ *
+ * ⚠️ DÙNG `tools/trajectory-matrix.mjs` CHO MỌI PHÂN TÍCH MỚI.
+ *
+ * Vì sao v1 không còn dùng để ra quyết định:
+ *   - Bộ arm của v1 là `vanilla | core | experimental`, KHÁC bộ arm thật của
+ *     plugin (`vanilla | safe | balanced | experimental`). Hai bộ tên arm trùng
+ *     nhau ở `vanilla`/`experimental` nhưng nghĩa khác — trộn hai định dạng
+ *     trong cùng một pipeline sẽ ghép nhầm treatment.
+ *   - v1 ghép cặp chỉ theo `(task_id, seed)`, bỏ qua `dsh_version`,
+ *     `plugin_version` và `benchmark_config_hash`; v2 ghép theo identity đầy đủ.
+ *   - v1 không có khái niệm `measurement_axes`, `capability manifest`, hay
+ *     `run manifest`; v2 có.
+ *
+ * Công cụ này TỪ CHỐI đọc row khai schema v2 (`dsh-jev-gate-trajectory-v2`) và
+ * cảnh báo người dùng chuyển sang `tools/trajectory-matrix.mjs`.
+ *
+ * ---------------------------------------------------------------------------
+ *
+ * ## Lịch sử (giữ nguyên mô tả gốc)
+ *
+ * So sánh A/B theo TRAJECTORY (paired), chạy hoàn toàn OFFLINE: chỉ ĐỌC một file
+ * JSONL, không mạng, không gọi Jev, KHÔNG chạy lệnh shell nào.
  *
  * ## Vì sao có file này
  *

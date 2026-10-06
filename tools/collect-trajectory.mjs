@@ -19,14 +19,16 @@
  * promotion từ chối.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { aggregateOperations, ARMS, benchmarkConfigHash, benchmarkRelevant, deriveCapabilities,
-  executableAvailable, profileConfigHash, ROW_SCHEMA, sha256 } from './trajectory-schema.mjs';
+import { aggregateOperations, ARMS, benchmarkConfigFor, benchmarkConfigHash, benchmarkRelevant,
+  canonicalJson, deriveCapabilities, executableAvailable, profileConfigHash, ROW_SCHEMA, sha256, SPLITS }
+  from './trajectory-schema.mjs';
 import { fixtureHash, taskById, TASKS } from './trajectory-tasks.mjs';
+import { snapshotWorkspace } from './workspace-snapshot.mjs';
 
 /**
  * Đường dẫn manifest đi kèm file JSONL. Manifest cho biết lần chạy đã hoàn tất
@@ -52,6 +54,30 @@ export async function readManifest(output) {
 const plugin = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(plugin, 'package.json'), 'utf8')).version;
 const DEFAULT_TASK = 'navigation-marker-v1';
+
+/**
+ * Trục đo của một task. NGUỒN CHUẨN DUY NHẤT là `task.measurement_axes` — catalog
+ * sở hữu, collector chỉ đọc. KHÔNG suy từ `task_class` hay tên arm: suy diễn ngầm
+ * ở đây sẽ tạo nguồn sự thật thứ hai, lệch khỏi catalog mà không ai biết.
+ *
+ * Catalog thiếu trường ⇒ NÉM LỖI (fail-closed), không tự bịa trục đo. Một row
+ * thiếu trục đo sẽ bị `validateRow` từ chối, nên im lặng điền bừa chỉ che lỗi.
+ */
+function measurementAxesFor(task) {
+  const axes = task?.measurement_axes;
+  if (!axes || typeof axes !== 'object') {
+    throw new Error(`Task ${task?.id ?? '<unknown>'} is missing measurement_axes; the task catalog is the source of truth`);
+  }
+  return { quality: axes.quality === true, performance: axes.performance === true, safety: axes.safety === true };
+}
+
+/** Capability mà task PHẢI exercise. Catalog sở hữu; thiếu ⇒ NÉM LỖI, không đoán. */
+function expectedCapabilitiesFor(task) {
+  if (!Array.isArray(task?.expected_capabilities_to_exercise)) {
+    throw new Error(`Task ${task?.id ?? '<unknown>'} is missing expected_capabilities_to_exercise; the task catalog is the source of truth`);
+  }
+  return [...task.expected_capabilities_to_exercise];
+}
 
 /** Nguồn credential cho từng mode. Outage mode CHỦ Ý bỏ trống TYPESAFE. */
 export function credentialRequirements(mode = 'normal') {
@@ -108,9 +134,10 @@ export function preflightCapabilities({ env = process.env, reviewServerName = 'j
  */
 export function summarize(events, decisions, options) {
   const {
-    task, arm, seed, model, elapsed, exitCode, unchanged, mode = 'normal',
+    task, arm, seed, model, elapsed, exitCode, unchanged, mode = 'normal', split = 'validation',
     dsh_version: dshVersionValue = null, plugin_version: pluginVersion = PACKAGE_VERSION,
-    preflight = {}, evaluation = {},
+    preflight = {}, evaluation = {}, run_id: runId = null, collector_version: collectorVersion = PACKAGE_VERSION,
+    created_at: createdAt = null, timeoutMs = null, snapshot = null,
   } = options;
   const calls = events.filter((e) => e.type === 'tool_call');
   const ends = events.filter((e) => e.type === 'status' && e.phase === 'step_end');
@@ -118,7 +145,6 @@ export function summarize(events, decisions, options) {
     ? ends.reduce((n, e) => n + e.usage[key], 0) : null;
   const observed = arm === 'vanilla' || decisions.some((d) => d.type === 'boot');
   const bootConfig = decisions.find((d) => d.type === 'boot')?.config ?? null;
-  const count = (type) => observed ? decisions.filter((d) => d.type === type).length : null;
   const elapsedFor = (type) => {
     const rows = decisions.filter((d) => d.type === type);
     return observed && rows.length && rows.every((d) => Number.isFinite(d.ms))
@@ -130,24 +156,37 @@ export function summarize(events, decisions, options) {
   const jevErrors = observed ? decisions.filter((d) => d.type === 'jev_error') : [];
   const config = observed && bootConfig ? bootConfig : null;
   const profileConfig = config ? benchmarkRelevant(config) : null;
-  const success = Boolean(evaluation.success) && !(options.parseErrors > 0) && !options.timedOut;
+  // Side effect THẬT, không suy từ metadata: `task.writes === false` chỉ nói task
+  // ĐƯỢC THIẾT KẾ là read-only; chỉ snapshot cây mới chứng minh nó đã giữ nguyên.
+  const workspaceChanged = snapshot ? snapshot.changed === true : null;
+  const unexpectedSideEffect = task.writes === false && workspaceChanged === true;
+  const success = Boolean(evaluation.success) && !(options.parseErrors > 0) && !options.timedOut
+    && !unexpectedSideEffect;
   const taskClass = task.task_class;
+  const taskPromptHash = sha256(task.prompt);
+  // Bản ghi canonical ĐẦY ĐỦ để consumer TÍNH LẠI hash, thay vì tin một hash suông.
+  const benchmarkFields = {
+    task_id: task.id, task_class: taskClass, task_prompt_hash: taskPromptHash, model,
+    dsh_version: dshVersionValue, plugin_version: pluginVersion,
+    evaluator: task.id, permission_mode: task.permission_mode, timeout_ms: timeoutMs,
+  };
   return {
     schema: ROW_SCHEMA,
     // ---- identity ghép cặp (thiếu bất kỳ trường nào ⇒ row bị matrix từ chối) ----
     task_id: task.id,
     task_class: taskClass,
-    task_prompt_hash: sha256(task.prompt),
+    task_prompt_hash: taskPromptHash,
     seed,
     repo_state: fixtureHash(task),
     model,
     dsh_version: dshVersionValue,
     plugin_version: pluginVersion,
-    benchmark_config_hash: benchmarkConfigHash({
-      task_id: task.id, task_class: taskClass, task_prompt_hash: sha256(task.prompt), model,
-      dsh_version: dshVersionValue, plugin_version: pluginVersion,
-      evaluator: task.id, permission_mode: task.permission_mode, timeout_ms: options.timeoutMs ?? null,
-    }),
+    benchmark_config: benchmarkConfigFor(benchmarkFields),
+    benchmark_config_hash: benchmarkConfigHash(benchmarkFields),
+    // ---- truy vết lần thu thập (run_id + thời điểm + version collector) ----
+    run_id: runId,
+    created_at: createdAt,
+    collector_version: collectorVersion,
     // ---- treatment ----
     arm,
     mode,
@@ -160,16 +199,29 @@ export function summarize(events, decisions, options) {
     operations,
     // ---- kết quả tất định ----
     source: 'real',
-    split: mode === 'jev-outage' ? 'outage' : 'validation',
+    // Split là KHAI BÁO của người vận hành (task/seed chưa từng dùng để phát triển
+    // plugin), không phải suy diễn ngầm: collector mặc định `validation` và chỉ ghi
+    // held-out khi được yêu cầu tường minh. Outage mode KHÔNG BAO GIỜ là held-out.
+    split: mode === 'jev-outage' ? 'outage' : split,
     permission_mode: task.permission_mode,
     safety_labels: [...task.safety_labels],
     expected_side_effects: [...task.expected_side_effects],
+    // ---- trục đo + capability kỳ vọng (copy từ catalog, không suy từ arm) ----
+    measurement_axes: measurementAxesFor(task),
+    expected_capabilities_to_exercise: expectedCapabilitiesFor(task),
+    // ---- snapshot workspace THẬT (before/after), không phải metadata ----
+    workspace_before_hash: snapshot?.before_hash ?? null,
+    workspace_after_hash: snapshot?.after_hash ?? null,
+    workspace_changed: workspaceChanged,
+    unexpected_side_effect: unexpectedSideEffect,
     success,
     task_success: success,
     tests_passed: Number.isFinite(evaluation.tests_passed) ? evaluation.tests_passed : 0,
     tests_total: Number.isFinite(evaluation.tests_total) ? evaluation.tests_total : 1,
     false_allow: evaluation.false_allow ?? null,
     false_deny: evaluation.false_deny ?? null,
+    // `null` khi task không đo được feature (khác hẳn `false` = đo và không thấy).
+    feature_exercised: evaluation.feature_exercised ?? null,
     evaluation_detail: evaluation.detail ?? null,
     // ---- đo lường ----
     task_quality: null,
@@ -203,7 +255,9 @@ export function summarize(events, decisions, options) {
     jev_latency_ms: elapsedFor('jev_ok'),
     // ---- review / jevgrep ----
     review_count: observed ? decisions.filter((d) => d.type === 'quality_review' && d.decision === 'reviewed').length : null,
-    review_time_ms: observed ? operations.review.actual_invocations : null,
+    // THỜI GIAN (ms), không phải SỐ LẦN. `actual_invocations` là count; dùng nó ở
+    // đây từng khiến một review 300 ms được ghi thành 1 ms.
+    review_time_ms: observed ? operations.review.elapsed_ms : null,
     review_invocations: observed ? operations.review.actual_invocations : null,
     review_tool_invocations: observed ? operations.review.actual_invocations : null,
     review_reserved_units: observed ? operations.review.reserved_units : null,
@@ -218,7 +272,8 @@ export function summarize(events, decisions, options) {
     jevgrep_successful_operations: observed ? operations.jevgrep.successful_operations : null,
     jevgrep_failed_operations: observed ? operations.jevgrep.failed_operations : null,
     jevgrep_skipped_operations: observed ? operations.jevgrep.skipped_operations : null,
-    jevgrep_time_ms: null,
+    jevgrep_time_ms: observed ? operations.jevgrep.elapsed_ms : null,
+    jev_operation_time_ms: observed ? operations.jev.elapsed_ms : null,
     decision_reserved_units: observed ? operations.reserved_units : null,
     decision_actual_invocations: observed ? operations.actual_invocations : null,
     decision_operation_failures: observed ? operations.failures : null,
@@ -233,7 +288,12 @@ export function summarize(events, decisions, options) {
     layer5: config?.enableSpawnHint === true && config?.enableContextTriage === true,
     target_read_observed: evaluation.target_read_observed ?? null,
     measurement_notes: [
-      'Validation pilot, not held-out promotion evidence.',
+      // Ghi chú phải khớp split THẬT: một row held-out mang ghi chú "validation pilot"
+      // là tự mâu thuẫn với provenance của chính nó.
+      mode === 'jev-outage' ? 'Jev-outage mode, not promotion evidence.'
+        : split === 'held-out' ? 'Held-out split declared by the operator.'
+          : split === 'train' ? 'Train split, not promotion evidence.'
+            : 'Validation pilot, not held-out promotion evidence.',
       'Seed identifies a replication; provider randomness is not seeded.',
       'Wall time includes CLI startup and shutdown.',
       'Missing provider/plugin metrics remain null, never 0.',
@@ -263,7 +323,8 @@ export function buildPatch({ arm, model, baseURL, logDir, task }) {
 }
 
 /** Chạy một arm trên một task; trả row đã hoàn chỉnh (chưa ghi file). */
-async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, preflight, dshVersionValue }) {
+async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, split, preflight, dshVersionValue,
+  runId, createdAt }) {
   const artifacts = join(root, `${task.id}--${arm}`);
   const workspace = join(artifacts, 'workspace');
   await mkdir(workspace, { recursive: true });
@@ -271,6 +332,9 @@ async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, 
   const logDir = join(artifacts, 'decisions');
   const patchFile = join(artifacts, 'patch.json');
   await writeFile(patchFile, JSON.stringify(buildPatch({ arm, model, baseURL, logDir, task })));
+  // Snapshot TRƯỚC khi agent chạm vào cây: fixture đã materialize xong nên hash
+  // này là trạng thái xuất phát thật, kể cả symlink hỏng.
+  const beforeHash = snapshotWorkspace(workspace);
   const events = []; let stderr = ''; let parseErrors = 0;
   const started = performance.now();
   const result = await new Promise((done, reject) => {
@@ -301,13 +365,17 @@ async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, 
     decisions = (await readFile(join(logDir, 'decisions.jsonl'), 'utf8')).trim().split('\n')
       .filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const unchanged = !task.writes;
+  const afterHash = snapshotWorkspace(workspace);
+  const changed = beforeHash !== afterHash;
+  const snapshot = { before_hash: beforeHash, after_hash: afterHash, changed };
+  // `unchanged` giờ là SỰ THẬT ĐO ĐƯỢC, không phải `!task.writes`.
+  const unchanged = !changed;
   const evaluation = await task.evaluate({ workspace, events, decisions,
-    exitCode: result.code, unchanged, timedOut: result.timedOut });
+    exitCode: result.code, unchanged, snapshot, timedOut: result.timedOut });
   const row = summarize(events, decisions, { task, arm, seed, model: `trajectory-router/${model}`,
-    elapsed: Math.round(performance.now() - started), exitCode: result.code, unchanged, mode,
+    elapsed: Math.round(performance.now() - started), exitCode: result.code, unchanged, mode, split,
     dsh_version: dshVersionValue, preflight, evaluation, parseErrors, timedOut: result.timedOut,
-    timeoutMs });
+    timeoutMs, snapshot, run_id: runId, created_at: createdAt, collector_version: PACKAGE_VERSION });
   row.exit_code = result.code; row.timed_out = result.timedOut; row.parse_errors = parseErrors;
   row.artifact_directory = artifacts;
   await writeFile(join(artifacts, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
@@ -320,17 +388,59 @@ async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, 
 }
 
 /**
+ * Kiểm file output — KHÔNG bao giờ append ngầm vào lần chạy cũ.
+ *
+ * Trả đường dẫn tuyệt đối. Mặc định: file đã tồn tại ⇒ NÉM lỗi. `overwrite: true`
+ * ⇒ chỉ trả đường dẫn, việc truncate do caller làm SAU khi đã xác nhận môi trường
+ * chạy được (xem `truncateOutput`) — nếu không, một lần chạy hỏng vì thiếu `dsh`
+ * sẽ xoá mất dữ liệu cũ của người dùng mà không thu được gì.
+ *
+ * Tách khỏi `collect` để kiểm được offline, không cần `dsh` cài sẵn.
+ */
+export async function prepareOutput(output, { overwrite = false } = {}) {
+  const outputPath = resolve(output);
+  if (overwrite) return outputPath;
+  let exists = true;
+  try { await stat(outputPath); }
+  catch (error) { if (error.code === 'ENOENT') exists = false; else throw error; }
+  if (exists) {
+    throw new Error(`Output file already exists: ${outputPath}; pass --overwrite to replace it`);
+  }
+  return outputPath;
+}
+
+/** Xoá nội dung file output để lần chạy mới THAY THẾ, không nối thêm row cũ. */
+export async function truncateOutput(outputPath) {
+  await writeFile(outputPath, '');
+}
+
+/**
  * Thu thập trajectory. Ném NGAY nếu thiếu credential (trước khi tạo row nào).
+ *
+ * `output` KHÔNG bao giờ bị append ngầm: row ghi dần nên một lần chạy mới trộn
+ * vào file cũ sẽ tạo ra JSONL lai mà manifest chỉ mô tả lần chạy mới nhất. Vì
+ * vậy mặc định từ chối file đã tồn tại; muốn thay thế phải nói rõ `overwrite`.
  *
  * @param {object} options
  * @param {string} options.output - đường dẫn JSONL
  * @param {'normal'|'jev-outage'} [options.mode]
  * @param {string} [options.taskId]
  * @param {string[]} [options.arms] - mặc định đủ 4 arm (normal) hoặc 2 arm (outage)
+ * @param {boolean} [options.overwrite] - truncate `output` trước khi chạy
  */
 export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', baseURL = 'http://127.0.0.1:20128/v1',
-  seed = 1, seeds, timeoutMs = 180_000, mode = 'normal', taskId = DEFAULT_TASK, taskIds, arms } = {}) {
+  seed = 1, seeds, timeoutMs = 180_000, mode = 'normal', split = 'validation', taskId = DEFAULT_TASK, taskIds, arms,
+  overwrite = false } = {}) {
   if (!output) throw new Error('Output JSONL path is required');
+  // Split hợp lệ phải được kiểm TRƯỚC credential: một flag sai chính tả là lỗi THAM SỐ,
+  // không được báo "thiếu API key" và khiến người dùng đi tìm credential.
+  if (!SPLITS.includes(split)) {
+    throw new Error(`Split must be one of ${SPLITS.join(', ')}; received ${JSON.stringify(split)}`);
+  }
+  // Outage mode là một mode RIÊNG: nó không bao giờ là held-out. Nếu người dùng
+  // truyền cả `--jev-outage` lẫn `--split held-out` thì `outage` THẮNG, vì một lần
+  // chạy đo hành vi khi Jev outage không thể là bằng chứng promotion.
+  const effectiveSplit = mode === 'jev-outage' ? 'outage' : split;
   assertCredentials(mode);
   const seedList = seeds === undefined ? [seed] : seeds;
   if (!Array.isArray(seedList) || seedList.length === 0
@@ -348,19 +458,42 @@ export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', base
   const taskIdList = taskIds === undefined ? [taskId] : taskIds;
   if (!Array.isArray(taskIdList) || taskIdList.length === 0) throw new Error('At least one task is required');
   const tasks = taskIdList.map((id) => taskById(id));
+  // Kiểm catalog NGAY, trước khi spawn: `summarize` cũng ném lỗi, nhưng ném ở đó
+  // nghĩa là đã chạy xong một task thật rồi mới chết. Một catalog hỏng phải dừng
+  // trước khi tốn tiền gọi model.
+  for (const task of tasks) { measurementAxesFor(task); expectedCapabilitiesFor(task); }
   const selected = arms ?? (mode === 'jev-outage' ? ['vanilla', 'safe'] : [...ARMS]);
   for (const arm of selected) if (!ARMS.includes(arm)) throw new Error(`Unknown arm: ${arm}`);
+  // Kiểm file output SAU khi mọi tham số đã hợp lệ: một lệnh sai chính tả phải báo
+  // lỗi tham số, không phải "file đã tồn tại" và che mất lỗi thật. Phép kiểm này
+  // KHÔNG ghi gì, nên được phép chạy trước khi dò môi trường — nhờ vậy nó vẫn nêu
+  // đúng lỗi trên máy chưa cài `dsh` (và test offline kiểm được nó).
+  const outputPath = await prepareOutput(output, { overwrite });
+  // Không nhận diện được DSH ⇒ từ chối. Chạy TRƯỚC khi truncate để một lần chạy
+  // hỏng ngay lập tức không xoá mất dataset cũ của người dùng.
   const dshVersionValue = dshVersion();
   if (!dshVersionValue) throw new Error('Unable to determine the DSH version; refusing to record an unidentifiable environment');
   const preflight = preflightCapabilities();
+  // Chỉ tới đây mới được phép xoá file cũ: môi trường đã xác nhận chạy được.
+  if (overwrite) await truncateOutput(outputPath);
   const root = await mkdtemp(join(tmpdir(), 'jev-trajectory-'));
   const records = [];
   const expected = tasks.length * seedList.length * selected.length;
+  // Định danh lần chạy: đủ để hai lần thu thập khác nhau không bao giờ trùng id,
+  // và đủ để tính LẠI từ chính manifest (không cần lưu secret nào).
+  const createdAt = new Date().toISOString();
+  const runId = sha256(canonicalJson({
+    output: outputPath, created_at: createdAt, tasks: tasks.map((task) => task.id),
+    seeds: seedList, arms: [...selected], mode, split: effectiveSplit,
+  }));
+  const manifest = { status: 'incomplete', expected_rows: expected, written_rows: 0,
+    mode, split: effectiveSplit, seeds: seedList, tasks: tasks.map((task) => task.id), arms: [...selected],
+    run_id: runId, created_at: createdAt, collector_version: PACKAGE_VERSION };
   // Manifest `incomplete` được ghi TRƯỚC khi chạy; chỉ chuyển `complete` khi mọi
   // row đã ghi xong. Nếu tiến trình bị giết giữa chừng, manifest vẫn là
   // `incomplete` và consumer biết file JSONL không đầy đủ.
-  await writeManifest(output, { status: 'incomplete', expected_rows: expected, written_rows: 0,
-    mode, seeds: seedList, tasks: tasks.map((task) => task.id), arms: [...selected] });
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeManifest(output, manifest);
   for (const task of tasks) {
     for (const currentSeed of seedList) {
       // Xoay thứ tự giữa các replication; một pilot đơn lẻ vẫn không thể chứng minh lợi ích.
@@ -368,29 +501,38 @@ export async function collect({ output, model = 'cbai/deepseek-v4.1-flash', base
       const order = [...selected.slice(rotation), ...selected.slice(0, rotation)];
       for (const arm of order) {
         const row = await runArm({ task, arm, root, model, baseURL, seed: currentSeed, timeoutMs, mode,
-          preflight, dshVersionValue });
+          split: effectiveSplit, preflight, dshVersionValue, runId, createdAt });
         row.run_order = order;
-        await appendFile(resolve(output), JSON.stringify(row) + '\n');
+        await appendFile(outputPath, JSON.stringify(row) + '\n');
         records.push(row);
+        // Cập nhật `written_rows` NGAY sau mỗi row. Nếu tiến trình bị giết giữa
+        // chừng, manifest còn lại phải phản ánh ĐÚNG số row đã ghi; ghi 0 rồi chỉ
+        // sửa ở cuối sẽ khiến một lần chạy dở khai "chưa ghi gì" trong khi file đã
+        // có row — người đọc không thể biết phần nào là thật.
+        await writeManifest(output, { ...manifest, written_rows: records.length });
         console.log(JSON.stringify({ arm, task_id: task.id, seed: currentSeed, success: row.success,
           generations: row.generations, walltime_ms: row.walltime_ms, artifact_directory: row.artifact_directory }));
       }
     }
   }
-  await writeManifest(output, { status: 'complete', expected_rows: expected, written_rows: records.length,
-    mode, seeds: seedList, tasks: tasks.map((task) => task.id), arms: [...selected] });
+  await writeManifest(output, { ...manifest, status: 'complete', written_rows: records.length });
   return records;
 }
 
 /**
  * Phân tích argv cho CLI collector. THUẦN, không I/O — để kiểm được offline.
- * Trả `{ output, mode, taskIds, seeds }` hoặc ném `Error` với thông báo rõ.
+ * Trả `{ output, mode, taskIds, seeds, split, overwrite }` hoặc ném `Error` rõ ràng.
  * Flag cần giá trị mà thiếu giá trị là LỖI, không được âm thầm dùng mặc định.
+ *
+ * `--split` là KHAI BÁO TƯỜNG MINH của người vận hành, không bao giờ suy diễn ngầm:
+ * công cụ không thể tự biết một task/seed có phải held-out hay không. Vì vậy KHÔNG
+ * truyền `--split` ⇒ `split === undefined` và tầng dưới dùng mặc định `validation`
+ * (fail-safe: quên flag không thể vô tình tạo bằng chứng promotion).
  */
 export function parseArgs(argv = []) {
   const args = [...argv];
-  const takesValue = ['--tasks', '--seeds'];
-  const known = new Set(['--jev-outage', ...takesValue]);
+  const takesValue = ['--tasks', '--seeds', '--split'];
+  const known = new Set(['--jev-outage', '--overwrite', ...takesValue]);
   const values = {};
   const positionals = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -416,21 +558,28 @@ export function parseArgs(argv = []) {
   if (seeds && (seeds.length === 0 || seeds.some((n) => !Number.isSafeInteger(n) || n < 0))) {
     throw new Error('Seeds must be non-negative integers');
   }
+  // Giá trị split sai là lỗi THAM SỐ nêu rõ giá trị nhận được, không im lặng rơi về
+  // mặc định (rơi về mặc định sẽ biến một lần chạy held-out định làm thành validation).
+  const split = values['--split'];
+  if (split !== undefined && !SPLITS.includes(split)) {
+    throw new Error(`Split must be one of ${SPLITS.join(', ')}; received ${JSON.stringify(split)}`);
+  }
   return { output: positionals[0], mode: args.includes('--jev-outage') ? 'jev-outage' : 'normal',
-    taskIds: splitList(values['--tasks']), seeds };
+    taskIds: splitList(values['--tasks']), seeds, split, overwrite: args.includes('--overwrite') };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const parsed = parseArgs(process.argv.slice(2));
     const records = await collect({ output: parsed.output, model: process.env.TRAJECTORY_MODEL,
-      baseURL: process.env.TRAJECTORY_BASE_URL, mode: parsed.mode,
+      baseURL: process.env.TRAJECTORY_BASE_URL, mode: parsed.mode, split: parsed.split,
       taskIds: parsed.taskIds ?? (process.env.TRAJECTORY_TASK ? [process.env.TRAJECTORY_TASK] : undefined),
-      seeds: parsed.seeds });
+      seeds: parsed.seeds, overwrite: parsed.overwrite });
     if (records.some((r) => !r.success)) process.exitCode = 1;
   } catch (error) {
     console.error(`Collection failed: ${error.message}`);
-    console.error('Usage: node tools/collect-trajectory.mjs OUTPUT.jsonl [--jev-outage] [--tasks id,id] [--seeds 1,2]');
+    console.error('Usage: node tools/collect-trajectory.mjs OUTPUT.jsonl [--jev-outage] [--overwrite] '
+      + `[--tasks id,id] [--seeds 1,2] [--split ${SPLITS.join('|')}]`);
     process.exitCode = 1;
   }
 }
