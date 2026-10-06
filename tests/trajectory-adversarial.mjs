@@ -14,7 +14,8 @@ import assert from 'node:assert/strict';
 import { CAPABILITY_SPECS, promotionMetrics, validateOperationTelemetry,
   validateRow } from '../tools/trajectory-schema.mjs';
 import { matrix } from '../tools/trajectory-matrix.mjs';
-import { makeRow, healthyHeldOut, manifestFor, encode, analyze } from '../tools/trajectory-fixture.mjs';
+import { makeRow, healthyHeldOut, manifestFor, encode, analyze,
+  SYNTHETIC_INTEGRITY } from '../tools/trajectory-fixture.mjs';
 
 const TREATMENTS = ['safe', 'balanced', 'experimental'];
 let checked = 0;
@@ -374,6 +375,53 @@ function healthyText(overrides = {}) {
     'đối chứng: dataset hợp lệ phải đạt eligible-for-review');
   assert.equal(report.run_integrity.verified, true, 'đối chứng: manifest khớp ⇒ integrity verified');
   checked += 1;
+}
+
+// 36. §4 "CLI chặt / library hở": override `runIntegrity` do CALLER truyền KHÔNG
+//     được phép ghi đè bất nhất manifest đã phát hiện. Lỗ thật đã bắt ở audit §40:
+//     dataset có manifest bị sửa vẫn `eligible-for-review` chỉ vì caller truyền
+//     `{verified:true, source:'synthetic-fixture'}` — override nuốt mất problems.
+{
+  const rows = healthyHeldOut();
+  const text = encode(rows);
+  // 36a. manifest SAI run_id + override synthetic-fixture ⇒ vẫn phải hold.
+  const badRunId = matrix(text, {
+    manifest: manifestFor(rows, { run_id: 'other-run' }), runIntegrity: SYNTHETIC_INTEGRITY,
+  });
+  for (const arm of TREATMENTS) {
+    assert.notEqual(badRunId.promotion[arm].status, 'eligible-for-review',
+      `[integrity-override-tampered-manifest] ${arm}: override KHÔNG được cứu manifest sai run_id`);
+  }
+  assert(badRunId.run_integrity.problems.includes('manifest-run-id-mismatch'),
+    'bất nhất manifest vẫn phải hiện trong run_integrity.problems');
+  // 36b. manifest khai thiếu arm + override ⇒ vẫn phải hold.
+  const badArms = matrix(text, {
+    manifest: manifestFor(rows, { arms: ['vanilla', 'safe'] }), runIntegrity: SYNTHETIC_INTEGRITY,
+  });
+  assert.equal(badArms.promotion.experimental.status, 'hold',
+    '[integrity-override-manifest-arms] khai thiếu arm ⇒ hold dù có override');
+  // 36c. manifest `status:'incomplete'` + override ⇒ vẫn phải hold.
+  const badStatus = matrix(text, {
+    manifest: manifestFor(rows, { status: 'incomplete' }), runIntegrity: SYNTHETIC_INTEGRITY,
+  });
+  assert.equal(badStatus.promotion.experimental.status, 'hold',
+    '[integrity-override-manifest-status] manifest chưa hoàn tất ⇒ hold dù có override');
+  // 36d. override nguồn LẠ (`{verified:true, source:'bogus'}`) không phải bằng chứng.
+  const bogus = matrix(text, { runIntegrity: { verified: true, source: 'bogus' } });
+  assert.equal(bogus.promotion.experimental.status, 'hold',
+    '[integrity-override-unknown-source] nguồn integrity lạ ⇒ không xác minh được');
+  assert(bogus.promotion.experimental.reasons.includes('unverified-run-integrity'),
+    'nguồn integrity lạ phải nêu `unverified-run-integrity`');
+  // 36e. override TRẦN `{verified:true}` (không nguồn) cũng không phải bằng chứng.
+  const bare = matrix(text, { runIntegrity: { verified: true } });
+  assert.equal(bare.promotion.experimental.status, 'hold',
+    '[integrity-override-bare] `{verified:true}` trần không có `source` ⇒ hold');
+  // Đối chứng: override synthetic-fixture trên dataset KHÔNG manifest vẫn hợp lệ
+  // (đây là đường fixture dùng), nên siết trên không chặn oan fixture.
+  const syntheticOk = matrix(encode(healthyHeldOut()), { runIntegrity: SYNTHETIC_INTEGRITY });
+  assert.equal(syntheticOk.promotion.experimental.status, 'eligible-for-review',
+    'đối chứng: fixture synthetic hợp lệ vẫn eligible');
+  checked += 6;
 }
 
 // ────────────────────────────────────────────────────────── meta: bảng lý do đủ dùng

@@ -945,7 +945,13 @@ promotion) so "counting lines" is never confused with "counting evidence". The
 **library API and the CLI share one logic** — calling `matrix(text)` directly on a
 `source: real` dataset without run-integrity evidence is also `hold`
 (`unverified-run-integrity`); a synthetic fixture must declare `source: synthetic`
-or pass `runIntegrity` explicitly.
+or pass `runIntegrity` explicitly. A `runIntegrity` override is valid **only** for
+exactly two sources: `manifest` (already cross-checked) and `synthetic-fixture`
+(an explicitly declared fixture) — a bare `{verified:true}` or an unknown `source`
+is **not** evidence. More importantly, when the dataset **has** a manifest the
+cross-check result is authoritative: an override must **not** swallow a detected
+inconsistency, so a tampered manifest (`run_id`/`arms`/`seeds`/`status`) still
+`hold`s even if the caller passes `{verified:true}`.
 
 **Per-line JSONL integrity.** Blank lines are skipped, a leading BOM is stripped, a
 broken JSON line is `rejected` with `invalid-json` and its line number, and a row

@@ -172,9 +172,13 @@ export function promotion(groups, arm, { minPairs = 10, minClasses = 2, runInteg
   // được miễn — và phải khai tường minh, không được suy diễn.
   const hasReal = heldOut.some((group) => group.arms[arm]?.source === 'real'
     || group.arms.vanilla?.source === 'real');
+  // §4: CHỈ hai nguồn hợp lệ — `manifest` (đã đối chiếu với row thật) và
+  // `synthetic-fixture` (fixture khai TƯỜNG MINH). Một object `{verified:true}` trần
+  // hay `source` lạ KHÔNG phải bằng chứng: thiếu nguồn ⇒ không xác minh được. Bản cũ
+  // nhận mọi `{verified:true}` nên `{verified:true,source:'bogus'}` cũng qua.
   const integrityOk = !hasReal
-    || (runIntegrity && runIntegrity.verified === true && runIntegrity.source === 'synthetic-fixture')
-    || (runIntegrity && runIntegrity.verified === true);
+    || (runIntegrity && runIntegrity.verified === true
+      && (runIntegrity.source === 'synthetic-fixture' || runIntegrity.source === 'manifest'));
   if (!integrityOk) reasons.push('unverified-run-integrity');
   const usable = [];
   let invalidGroups = 0; let incompleteGroups = 0;
@@ -409,20 +413,36 @@ export function matrix(text, { manifestWarning: manifestWarningText = null, mani
   // JSONL hỏng/bị loại trong dataset `real` cũng phá tính đầy đủ: manifest khai
   // 40 row mà chỉ 39 row dùng được ⇒ không được promote (§29).
   const realRows = rawRows.filter((row) => row.source === 'real');
-  const integrityProblems = [];
-  if (manifest !== null && manifest !== undefined) {
-    integrityProblems.push(...verifyManifestAgainstRows(rawRows, manifest).problems);
-  } else if (realRows.length > 0) {
-    integrityProblems.push('no-run-manifest');
-  }
-  if (realRows.length > 0 && (rejected.length > 0 || incomplete.length > 0)) {
-    integrityProblems.push('dataset-has-rejected-or-incomplete-rows');
-  }
-  let runIntegrity = explicitIntegrity;
-  if (!runIntegrity) {
-    runIntegrity = integrityProblems.length === 0
-      ? { verified: true, source: manifest ? 'manifest' : 'synthetic-fixture', problems: [] }
-      : { verified: false, source: 'manifest', problems: [...new Set(integrityProblems)] };
+  const manifestProvided = manifest !== null && manifest !== undefined;
+  const manifestProblems = manifestProvided
+    ? verifyManifestAgainstRows(rawRows, manifest).problems : [];
+  // §29: dataset `real` có dòng hỏng/bị loại là BẤT NHẤT NỘI TẠI — không override nào
+  // được miễn, kể cả khai `synthetic-fixture`.
+  const completenessProblems = realRows.length > 0 && (rejected.length > 0 || incomplete.length > 0)
+    ? ['dataset-has-rejected-or-incomplete-rows'] : [];
+  const missingManifest = !manifestProvided && realRows.length > 0 ? ['no-run-manifest'] : [];
+  let runIntegrity;
+  if (manifestProvided) {
+    // Manifest CÓ MẶT ⇒ kết quả đối chiếu là quyết định. Một override KHÔNG được
+    // ghi đè bất nhất đã phát hiện: nếu không, dataset có manifest bị sửa vẫn qua
+    // được chỉ vì caller truyền `{verified:true}` (§4 — CLI chặt / library hở).
+    const problems = [...new Set([...manifestProblems, ...completenessProblems])];
+    runIntegrity = problems.length === 0
+      ? { verified: true, source: 'manifest', problems: [] }
+      : { verified: false, source: 'manifest', problems };
+  } else if (completenessProblems.length > 0) {
+    runIntegrity = { verified: false, source: 'none', problems: completenessProblems };
+  } else if (explicitIntegrity && explicitIntegrity.verified === true
+    && explicitIntegrity.source === 'synthetic-fixture') {
+    // Không manifest, dataset không có bất nhất: CHỈ fixture khai TƯỜNG MINH
+    // `synthetic-fixture` được miễn. Mọi nguồn khác là không xác minh được.
+    runIntegrity = { verified: true, source: 'synthetic-fixture', problems: [] };
+  } else if (explicitIntegrity) {
+    runIntegrity = { verified: false, source: 'none', problems: ['unrecognized-run-integrity-override'] };
+  } else if (missingManifest.length > 0) {
+    runIntegrity = { verified: false, source: 'none', problems: missingManifest };
+  } else {
+    runIntegrity = { verified: true, source: 'synthetic-fixture', problems: [] };
   }
   const promotionReport = {};
   for (const arm of ARMS) {

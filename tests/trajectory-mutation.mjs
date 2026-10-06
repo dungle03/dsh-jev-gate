@@ -10,7 +10,8 @@
  */
 import assert from 'node:assert/strict';
 import { matrix } from '../tools/trajectory-matrix.mjs';
-import { makeRow, healthyHeldOut, manifestFor, encode, analyze } from '../tools/trajectory-fixture.mjs';
+import { makeRow, healthyHeldOut, manifestFor, encode, analyze,
+  SYNTHETIC_INTEGRITY } from '../tools/trajectory-fixture.mjs';
 
 const TREATMENTS = ['safe', 'balanced', 'experimental'];
 let mutations = 0;
@@ -175,6 +176,30 @@ mutation('operation-telemetry-problems', (rows) => {
   assert.equal(analyze(encode(warm), { manifest: manifestFor(warm) }).promotion.experimental.status,
     'eligible-for-review', 'đối chứng: cache_mode đổi đồng nhất vẫn hợp lệ');
   mutations += 1; blocked += 1;
+}
+
+// ── Mutation: override `runIntegrity` không được cứu manifest hỏng (§4) ──────
+// Lỗ thật đã bắt ở audit §40: truyền `{verified:true, source:'synthetic-fixture'}`
+// nuốt mất problems của manifest ⇒ dataset bị sửa vẫn eligible. Mọi biến thể
+// manifest hỏng + override synthetic PHẢI mất eligible.
+{
+  const bad = [
+    ['override+manifest-run-id', { run_id: 'other-run' }],
+    ['override+manifest-arms', { arms: ['vanilla', 'safe'] }],
+    ['override+manifest-seeds', { seeds: [1, 2, 3] }],
+    ['override+manifest-status', { status: 'incomplete' }],
+    ['override+manifest-written', { written_rows: 1 }],
+  ];
+  for (const [label, override] of bad) {
+    const manifest = manifestFor(baselineRows, override);
+    const report = matrix(baselineText, { manifest, runIntegrity: SYNTHETIC_INTEGRITY });
+    mutations += 1;
+    for (const arm of TREATMENTS) {
+      assert.notEqual(report.promotion[arm].status, 'eligible-for-review',
+        `[${label}] ${arm} vẫn eligible — override đã nuốt mất bất nhất manifest (LỖ FAIL-OPEN)`);
+    }
+    blocked += 1;
+  }
 }
 
 console.log(`PASS trajectory mutation (${blocked}/${mutations} mutations blocked promotion, offline)`);

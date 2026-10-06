@@ -16,6 +16,18 @@ Không đổi runtime (`lib/**` giữ nguyên). Chỉ sửa measurement/benchmar
   tham số** nêu đúng cặp, TRƯỚC mọi lời gọi model; `vanilla` luôn được miễn (baseline
   không plugin). Override tường minh `--allow-incompatible-arms` mới chạy tiếp, và khi
   đó row vẫn bị analyzer loại theo nhánh (B) — không thể promotion.
+- **§4 — override `runIntegrity` không được ghi đè bất nhất manifest (lỗ fail-open
+  thật, bắt ở đợt audit §40 thứ hai).** `matrix()` trước đây dùng thẳng
+  `explicitIntegrity` khi caller truyền, nên một dataset có manifest **bị sửa**
+  (`run_id`/`arms`/`seeds`/`status`) vẫn `eligible-for-review` chỉ vì caller truyền
+  `{verified:true, source:'synthetic-fixture'}` — override nuốt mất
+  `verifyManifestAgainstRows().problems`. Nay: khi dataset **có** manifest, kết quả
+  đối chiếu là quyết định và override không thể cứu; override `synthetic-fixture`
+  chỉ áp dụng khi **không** có manifest và dataset không có bất nhất nội tại. Đồng
+  thời `promotion()` siết nguồn hợp lệ: `{verified:true}` trần hay `source` lạ
+  (`{verified:true,source:'bogus'}`) **không** còn được coi là bằng chứng — trước
+  đây chỉ cần `verified:true` là qua. Regression: adversarial 48→54 ca,
+  mutation 38→43/43, consent thêm 2 ca gọi thẳng `promotion()`.
 - **§16 — telemetry vận hành không nhất quán phải chặn ở tầng row.** `validateRow` nay
   đọc `operation_telemetry_problems`; row mang vấn đề (collector đã ghi) bị từ chối với
   `operation-telemetry-inconsistent`. Trước đây field này chỉ được GHI mà không được

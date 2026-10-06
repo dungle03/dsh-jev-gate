@@ -216,6 +216,22 @@ try {
   const vanillaVerified = promotion(groups, 'vanilla', { runIntegrity: SYNTHETIC_INTEGRITY });
   assert.equal(vanillaVerified.status, 'hold',
     'vanilla-as-treatment không cấu hình lớp task yêu cầu ⇒ hold, không eligible');
+  // §4: `promotion()` là API công khai nên PHẢI khớp `matrix()`: một override
+  // `{verified:true}` TRẦN hay `source` lạ KHÔNG phải bằng chứng run-integrity.
+  // Bản cũ nhận mọi `{verified:true}` nên `{verified:true,source:'bogus'}` qua được.
+  // (`source:'manifest'` KHÔNG nằm trong danh sách này: `matrix()` tự truyền đúng
+  // giá trị đó SAU khi đã đối chiếu manifest thật, nên `promotion()` phải nhận.)
+  for (const [label, integrity] of [
+    ['bare-verified', { verified: true }],
+    ['unknown-source', { verified: true, source: 'bogus' }],
+  ]) {
+    const verdict = promotion(groups, 'vanilla', { runIntegrity: integrity });
+    assert.notEqual(verdict.status, 'eligible-for-review',
+      `[${label}] override không có nguồn hợp lệ KHÔNG được xác minh run integrity`);
+    assert(verdict.reasons.includes('unverified-run-integrity'),
+      `[${label}] phải nêu 'unverified-run-integrity'`);
+  }
+
   assert(vanillaVerified.reasons.includes('invalid-or-incomplete-capability-environment'),
     'phải nêu lý do capability, KHÔNG bịa ra *-regression');
   assert(!vanillaVerified.reasons.some((reason) => /-regression$/.test(reason)),

@@ -898,7 +898,12 @@ JSONL thật`. Bất kỳ sai lệch nào ⇒ `untrusted-run-manifest` và promo
 "đếm bằng chứng". **Library API và CLI dùng CÙNG một logic** — gọi `matrix(text)`
 trực tiếp trên dataset `source: real` mà thiếu bằng chứng run-integrity cũng bị
 `hold` (`unverified-run-integrity`); fixture tổng hợp phải khai `source: synthetic`
-hoặc truyền `runIntegrity` tường minh.
+hoặc truyền `runIntegrity` tường minh. Override `runIntegrity` **chỉ** hợp lệ với
+đúng hai nguồn: `manifest` (đã đối chiếu thật) và `synthetic-fixture` (fixture khai
+tường minh) — một object `{verified:true}` trần hay `source` lạ **không** phải bằng
+chứng. Quan trọng hơn: khi dataset **có** manifest, kết quả đối chiếu là quyết định
+— override **không** được nuốt mất bất nhất đã phát hiện, nên một manifest bị sửa
+(`run_id`/`arms`/`seeds`/`status`) vẫn `hold` dù caller truyền `{verified:true}`.
 
 **Toàn vẹn từng dòng JSONL.** Dòng rỗng bị bỏ qua, BOM đầu file được dọn, dòng
 JSON hỏng bị `rejected` với `invalid-json` kèm số dòng, và dòng **phình bất thường**
