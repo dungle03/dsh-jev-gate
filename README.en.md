@@ -879,6 +879,7 @@ node tools/collect-trajectory.mjs outage.jsonl --jev-outage # measures outage be
 node tools/collect-trajectory.mjs all.jsonl --tasks navigation-marker-v1,bug-diagnosis-calc-v1 --seeds 1,2
 node tools/collect-trajectory.mjs held.jsonl --split held-out # declare held-out EXPLICITLY (default: validation)
 node tools/collect-trajectory.mjs rerun.jsonl --overwrite     # overwrite an existing file (default: REFUSE)
+node tools/collect-trajectory.mjs partial.jsonl --tasks tool-failure-recovery-v1 --arms vanilla,safe,balanced,experimental --allow-incompatible-arms
 ```
 
 `--tasks` takes a list of catalog `task_id`s (defaults to one task); `--seeds` runs
@@ -894,6 +895,17 @@ process (a mistyped `--split` reports a **parameter** error, not a missing
 credential), and only writes a row after a run actually completes. If `<output>`
 already exists the collector **refuses** (so two runs are never mixed into one file);
 only `--overwrite` writes over it.
+
+**The task-capability contract (§21) is checked BEFORE spawning.** If a task declares
+it needs a capability that an arm's profile sets to `false` (e.g.
+`tool-failure-recovery-v1` needs `failure_recovery` but profile `safe` disables
+`enableFailureRecovery`), a run of that arm can **never** measure that capability —
+running it only spends money producing a row the analyzer must reject
+(`invalid-or-incomplete-capability-environment`). The collector **stops immediately**
+with a parameter error naming the exact `task/arm` pair (`vanilla` is always exempt
+as the no-plugin baseline). To run the full matrix for other purposes you must say so
+explicitly with `--allow-incompatible-arms`; those rows are still handled by analyzer
+branch (B) and **cannot** be promoted.
 
 Because rows are written incrementally, a run killed mid-way leaves a JSONL file
 **missing rows** that looks no different from a complete one. The collector writes
@@ -917,6 +929,56 @@ reported as a regression. Diagnostics (`arms`, `raw_arms`, `by_effort`,
 `layer_coverage`, `comparisons`, `incomplete`, `rejected`) are still emitted in
 full so the reader can inspect what was measured. An incomplete or stale dataset
 therefore can never reach `eligible-for-review`.
+
+**The manifest is CROSS-CHECKED against every row, not trusted on its own.** The
+analyzer does not merely read warning text: it compares `manifest.run_id` with the
+`run_id` of **every** `source: real` row, checks
+`split`/`mode`/`collector_version`/`arms`/`tasks`/`seeds`, verifies
+`expected_rows == tasks × seeds × selected arms` and `written_rows == the actual
+JSONL line count`. Any mismatch ⇒ `untrusted-run-manifest` and promotion `hold`
+(trusting the warning text alone would be **fail-open**). A dataset containing
+`rejected`/`incomplete` rows also forces promotion `hold` even when the manifest
+declares the full count — "39 valid rows + 1 corrupt row" never becomes evidence
+when the manifest says 40. The report separates `physical_rows` (non-blank lines),
+`parse_valid_rows` (valid JSON), `promotion_valid_rows` (rows actually used for
+promotion) so "counting lines" is never confused with "counting evidence". The
+**library API and the CLI share one logic** — calling `matrix(text)` directly on a
+`source: real` dataset without run-integrity evidence is also `hold`
+(`unverified-run-integrity`); a synthetic fixture must declare `source: synthetic`
+or pass `runIntegrity` explicitly.
+
+**Per-line JSONL integrity.** Blank lines are skipped, a leading BOM is stripped, a
+broken JSON line is `rejected` with `invalid-json` and its line number, and a row
+that is **abnormally large** beyond `MAX_ROW_BYTES` (256 KB — the largest real row
+measured is ~9.6 KB) is `rejected` with `oversized-row` before parsing: an artifact
+embedded into a row, or a corrupted concatenated file, is never swallowed as a
+valid row.
+
+**`run_id` is the boundary of one collection run.** A `source: real` row **must**
+carry a non-empty `run_id` (missing ⇒ `missing-run-id`, placed in `incomplete`); the
+four arms in one paired group must share the **same** `run_id`, otherwise the whole
+group is dropped with the reason `inconsistent-group-run-id`. This makes it
+impossible to pair `vanilla`/`safe` from run A with `balanced`/`experimental` from
+run B as one treatment, even when task/seed/model/config are identical.
+
+**Source identity must be reproducible.** Every `real` row records
+`plugin_git_commit` (the exact git revision, not just `plugin_version` — many
+commits share one version), `plugin_dirty_state` (a dirty working tree ⇒ evidence
+is **not** reproducible, forced to `hold` with `unreproducible-plugin-state`),
+`dsh_git_commit`, `model_endpoint_origin` (no secret) and `evaluator_hash` (hash of
+the task definition + evaluator — changing the evaluator means old evidence cannot
+be pooled). Two runs with the same `plugin_version` but a different
+`plugin_git_commit` are **not** merged into one treatment. `cache_mode` records
+`cold`/`warm`; the default is `cold` (each arm gets its own
+workspace/session/state, with no reuse of verdict cache, session budget, breaker or
+review state), so a run can never mix "vanilla cold" with "experimental warm".
+
+**`--split held-out` is an operator declaration, NOT scientific held-out.** Rows
+carry `held_out_declaration` recording `{declared: true, declared_at,
+task_catalog_hash, plugin_commit, reason: 'operator-declared'}`. This repo has no
+cryptographically hidden benchmark: tasks/fixtures live in the repo, so a
+`held-out` partition is only **operator-declared held-out** (documented under that
+exact name) and must never be called "scientifically held-out".
 
 Every row carries `schema: dsh-jev-gate-trajectory-v2`, a **capability manifest**
 (`configured`/`available`/`invoked` derived from boot config, decisions.jsonl and
@@ -1009,13 +1071,7 @@ dropped. Configuration hashes are **recomputed** from
 mixed metadata (e.g. `vanilla` held-out but the treatment validation) is **dropped
 entirely**, never labeled held-out.
 
-**`run_id` is the boundary of one collection run.** A `source: real` row **must**
-carry a non-empty `run_id` (missing ⇒ `missing-run-id`, placed in `incomplete`); the
-four arms in one paired group must share the **same** `run_id`, otherwise the whole
-group is dropped with the reason `inconsistent-group-run-id`. This makes it
-impossible to pair `vanilla`/`safe` from run A with `balanced`/`experimental` from
-run B as one treatment, even when task/seed/model/config are identical. `created_at`
-is **not** part of the pairing identity — it is only for tracing. Promotion is
+Promotion is
 **never automatic**: the ceiling
 is `eligible-for-review`, requiring ≥10 real held-out paired groups across ≥2 task
 classes. There are **two independent gates**: the quality/performance gate
@@ -1023,8 +1079,27 @@ classes. There are **two independent gates**: the quality/performance gate
 gate (`false_allow`, `false_deny`) runs **only** on tasks declaring
 `measurement_axes.safety = true`; tasks that do not measure safety keep both
 metrics `null` and are not treated as missing measurements, while a safety task
-with missing measurements is `hold` (`missing-safety-measurements`). `cost_usd` is
-not required because there is no data source. Groups with an **invalid** capability
+with missing measurements is `hold` (`missing-safety-measurements`). The **required**
+metrics are `success`, `test_pass_rate` (quality), `walltime_ms` and
+`resource_invocations` (performance — real resource invocations: HTTP/tool/process
+count), plus `false_allow`/`false_deny` on safety tasks; a missing required metric
+⇒ `hold` (`missing-required-measurements`), never silently filled with 0.
+`cost_usd`/`input_tokens`/`output_tokens`/`reasoning_tokens` are **not** required
+because the provider may not return them; when absent they stay `null`. `cost_usd`
+is **provider monetary cost** (distinct from `reserved_units` — a policy budget
+unit, NOT money). Reserved units do **not** equal real cost.
+
+**Performance regression is a SIGNAL, not a verdict.** Comparison uses a **paired
+delta** (treatment − baseline) per paired group, aggregated by task class, reporting
+`mean`/`median`/`count` and `p90` when enough samples exist; `median_delta` decides
+the direction. A single outlier is **not** enough to call a production regression —
+the reason is `performance-regression-signal` and the status stays `hold` (never
+upgraded to `regression`). By contrast a **safety** regression
+(`false_allow`/`false_deny`) or a **quality** regression
+(`success`/`test_pass_rate`) is immediately `regression` — safety strictness is
+never relaxed.
+
+Groups with an **invalid** capability
 environment (missing infrastructure, or `available` not yet proven) are `hold` with
 a machine-readable reason and are **not** counted as a performance regression; only
 capabilities a task actually declares in `expected_capabilities_to_exercise` are
@@ -1050,17 +1125,29 @@ invalid group thus shows up in `raw_*` for investigation without distorting the
 headline performance numbers.
 
 The report also carries `layer_coverage`: for each layer (capability) it counts
-`configured`/`available`/`invoked` (from the row's capability manifest), `expected`
-(rows whose task **declares** that layer in `expected_capabilities_to_exercise`),
-and `exercised` (rows that declare it **and** have `feature_exercised = true`). The
-key point: `available = true` does **not** prove the layer ran — only `exercised`
-is evidence the layer actually operated in the trajectory. Layers that are neither
-configured nor declared by any task are **omitted** (so a zero count is never
-misread as "measured and absent"). This is **not** a promotion gate, only a
-per-layer read; and since `feature_exercised` is a single boolean per row,
-`exercised` is only interpretable when a task declares exactly one capability
-(multi-capability tasks would need per-layer flags — not available yet, a known
-limitation).
+`configured`/`available`/`invoked`/`exercised` (from the row's capability manifest)
+and `expected` (rows whose task **declares** that layer in
+`expected_capabilities_to_exercise`). `exercised` is counted **per capability**
+(`capabilities[x].exercised === true`), not with a single row-level flag. The key
+point: `available = true` does **not** prove the layer ran — only `exercised` is
+evidence the layer actually operated in the trajectory. Four concepts are
+**independent**: `configured` (enabled in config), `available` (infrastructure
+measurable), `invoked` (code path touched), `exercised` (real behavioural
+evidence). Layers that are neither configured nor declared by any task are
+**omitted** (so a zero count is never misread as "measured and absent"). This is
+**not** a promotion gate, only a per-layer read.
+
+**Evidence must be per-capability.** A treatment counts as evidence for layer `x`
+only when the task **declares** `x` in `expected_capabilities_to_exercise` **AND**
+the row's manifest reports `capabilities[x].exercised === true`. If the treatment
+does not configure that layer (`configured !== true`) the group is an **invalid
+capability environment** (`hold`, reason `invalid-or-incomplete-capability-environment`)
+— **not** a `safety-regression`/`quality-regression`, because nothing was measured.
+If the layer is configured and `available` but not yet `exercised`, that is
+**missing evidence** (`incomplete-capability-exercise`, `hold`). The `vanilla`
+baseline does not need to exercise anything (it deliberately configures no
+plugin). Groups missing an exercise **never** count toward
+`held_out_pairs`/`quality_pairs`/`safety_pairs`.
 
 ```bash
 node tools/trajectory-matrix.mjs measured.jsonl

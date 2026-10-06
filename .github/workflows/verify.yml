@@ -33,36 +33,12 @@ jobs:
             node --check "$f"
           done
 
-      - name: Offline test (gate, model invariants, export contract)
-        run: |
-          node tests/offline.mjs
-          node tests/attack-corpus.mjs
-
-      - name: Calibration and metrics (offline)
-        run: |
-          node tests/benchmark.mjs
-          node tests/metrics.mjs
-          node tests/profiles.mjs
-          node tests/trajectory.mjs
-          node tools/trajectory-matrix.mjs --self-test
-          node tests/budget.mjs
-          node tests/context.mjs
-          node tests/evidence.mjs
-          node tests/provenance.mjs
-          node tests/cost-governor.mjs
-          node tests/jevgrep-control.mjs
-          node tests/evidence-boundary.mjs
-          node tests/host-resolver.mjs
-          node tests/docs-contract.mjs
-          node tests/live-smoke-contract.mjs
-          node tests/trajectory-collector.mjs
-          node tests/trajectory-tasks.mjs
-          node tests/trajectory-promotion.mjs
-          node tests/trajectory-ground-truth.mjs
-          node tests/trajectory-consent-capability.mjs
-          node tests/trajectory-held-out.mjs
-          node tests/trajectory-run-integrity.mjs
-          node tests/trajectory-summary-integrity.mjs
+      # §38: MỘT lệnh canonical duy nhất. CI không bảo trì danh sách suite riêng
+      # nữa — nó gọi đúng `npm test`, nên không thể drift với verify.sh. Danh sách
+      # thật nằm ở `package.json`; `tests/test-list-contract.mjs` (chạy trong npm
+      # test) kiểm npm test == verify.sh == CI và bắt suite mồ côi.
+      - name: Offline suite (canonical npm test)
+        run: npm test
 
       - name: Không có secret hardcode trong source
         run: |

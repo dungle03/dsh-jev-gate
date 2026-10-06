@@ -21,7 +21,8 @@
  * một run, không phải thứ tuỳ chọn.
  */
 import assert from 'node:assert/strict';
-import { ARMS, manifestWarning, matrix } from '../tools/trajectory-matrix.mjs';
+import { ARMS, manifestWarning } from '../tools/trajectory-matrix.mjs';
+import { analyze } from '../tools/trajectory-fixture.mjs';
 import { benchmarkConfigFor, benchmarkConfigHash, profileConfigHash,
   ROW_SCHEMA } from '../tools/trajectory-schema.mjs';
 
@@ -62,6 +63,10 @@ const row = (arm, seed, overrides = {}) => {
     dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
     benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
     arm, source: 'real', split: 'held-out', mode: 'normal',
+    // §10/§30: bằng chứng THẬT phải truy được về đúng mã nguồn + hợp đồng
+    // evaluator, nếu không hai lần chạy cùng version vẫn có thể khác nhau.
+    plugin_git_commit: 'a'.repeat(40), evaluator_hash: 'b'.repeat(64),
+
     run_id: `summary-fixture-run-${seed}`,
     profile: arm === 'vanilla' ? null : arm,
     profile_config,
@@ -88,7 +93,7 @@ const CLEAN_ACTUAL_ROWS = countRows(CLEAN_TEXT);
 try {
   // ============================================ §1 MANIFEST GATE (fix 1)
   // Đối chứng DƯƠNG trước tiên: KHÔNG warning ⇒ dữ liệu sạch phải đạt eligible.
-  const cleanReport = matrix(CLEAN_TEXT);
+  const cleanReport = analyze(CLEAN_TEXT);
   assert.equal(cleanReport.complete_groups, 10, 'clean fixture must form 10 complete groups');
   assert.equal(cleanReport.held_out_real_groups, 10, 'clean fixture must be held-out-real');
   assert.equal(cleanReport.promotion.experimental.status, 'eligible-for-review',
@@ -133,7 +138,7 @@ try {
 
   for (const [label, warning] of [['missing', missingManifest], ['incomplete', incompleteManifest],
     ['stale', staleManifest], ['no-counts', noCountManifest], ['partial-counts', partialCountManifest]]) {
-    const gated = matrix(CLEAN_TEXT, { manifestWarning: warning });
+    const gated = analyze(CLEAN_TEXT, { manifestWarning: warning });
     // Cùng dữ liệu, chỉ khác manifest ⇒ kết luận phải đảo chiều.
     assert.equal(gated.manifest_warning, warning, `${label}: warning must be echoed in the report`);
     for (const arm of TREATMENTS) {
@@ -163,7 +168,7 @@ try {
   // Case (iv): manifest hợp lệ ⇒ `manifestWarning` trả null ⇒ promotion chạy bình thường.
   const validWarning = manifestWarning(completeManifest, CLEAN_ACTUAL_ROWS);
   assert.equal(validWarning, null);
-  const validReport = matrix(CLEAN_TEXT, { manifestWarning: validWarning });
+  const validReport = analyze(CLEAN_TEXT, { manifestWarning: validWarning });
   assert.equal(validReport.manifest_warning, undefined,
     'a null warning must not be recorded as manifest_warning');
   for (const arm of TREATMENTS) {
@@ -180,7 +185,7 @@ try {
   const droppedGroup = ARMS.map((arm) => row(arm, 1, {
     split: arm === 'vanilla' ? 'held-out' : 'validation', walltime_ms: 9999,
   }));
-  const splitReport = matrix(encode([...validGroup, ...droppedGroup]));
+  const splitReport = analyze(encode([...validGroup, ...droppedGroup]));
 
   assert.equal(splitReport.inconsistent_groups, 1, 'the mixed-split group must be dropped');
   assert.equal(splitReport.complete_groups, 1, 'only the consistent group may be complete');
@@ -222,7 +227,7 @@ try {
   }
 
   // Kết hợp cả hai fix: gate manifest KHÔNG được làm biến mất bản raw.
-  const gatedSplit = matrix(encode([...validGroup, ...droppedGroup]), { manifestWarning: 'x' });
+  const gatedSplit = analyze(encode([...validGroup, ...droppedGroup]), { manifestWarning: 'x' });
   assert.equal(gatedSplit.raw_arms.safe.metrics.walltime_ms, 5049.5,
     'raw diagnostics must survive the manifest gate');
   assert.equal(gatedSplit.arms.safe.metrics.walltime_ms, 100,

@@ -5,6 +5,90 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — toàn vẹn bằng chứng (audit 43 mục): cấu hình, capability, định danh, manifest
+
+Không đổi runtime (`lib/**` giữ nguyên). Chỉ sửa measurement/benchmark/promotion.
+
+- **§21 — hợp đồng task-capability kiểm TRƯỚC khi spawn.** `incompatibleArmPairs(tasks, arms)`
+  (thuần, export) phát hiện cặp (task, arm) không thể đo được: task khai cần
+  `capability` mà profile của arm đặt `configKey: false` (ví dụ `safe` tắt
+  `enableFailureRecovery` cho task cần `failure_recovery`). `collect()` **NÉM LỖI
+  tham số** nêu đúng cặp, TRƯỚC mọi lời gọi model; `vanilla` luôn được miễn (baseline
+  không plugin). Override tường minh `--allow-incompatible-arms` mới chạy tiếp, và khi
+  đó row vẫn bị analyzer loại theo nhánh (B) — không thể promotion.
+- **§16 — telemetry vận hành không nhất quán phải chặn ở tầng row.** `validateRow` nay
+  đọc `operation_telemetry_problems`; row mang vấn đề (collector đã ghi) bị từ chối với
+  `operation-telemetry-inconsistent`. Trước đây field này chỉ được GHI mà không được
+  kiểm — một row telemetry hỏng vẫn đi tới `eligible-for-review` (lỗ fail-open thật, bắt
+  được ở đợt audit §40).
+- **Hash cấu hình phủ TOÀN BỘ 76 khoá runtime** (trước chỉ 22 khoá ⇒ hai cấu hình
+  khác hành vi có thể cùng hash). `BENCHMARK_CONFIG_KEYS` = 76 khoá runtime trừ
+  denylist tường minh `BENCHMARK_CONFIG_EXCLUSIONS = { logDir }` (chỉ là đường dẫn
+  output). Test hợp đồng mới `tests/trajectory-config-coverage.mjs` chứng minh
+  `runtime keys == hashed keys + exclusions` và **fail** khi runtime thêm khoá mà
+  chưa phân loại — không im lặng bỏ qua.
+- **`capabilityValidity` phân biệt baseline/treatment** (`{ role }`). Treatment khai
+  cần lớp `x` mà `configured !== true` ⇒ **invalid** (`invalid-capability-environment`,
+  KHÔNG gọi `*-regression`); `available` nhưng chưa `exercised` ⇒ **incomplete**
+  (`incomplete-capability-exercise`). Baseline `vanilla` được phép `configured:false`.
+- **`available` ≠ `exercised`.** Bằng chứng exercise là **per-capability**
+  (`capabilities[x].exercised === true`, collector điền qua
+  `withExercisedEvidence` + `exercised_capabilities` của evaluator), không dùng một
+  cờ chung `feature_exercised` (giữ như legacy cho task recovery). `layerCoverage`
+  đếm `exercised` theo từng lớp.
+- **Định danh nguồn tái lập được.** Row `real` mang `plugin_git_commit`,
+  `plugin_dirty_state` (bẩn ⇒ `unreproducible-plugin-state`, `hold`),
+  `dsh_git_commit`, `model_endpoint_origin`, `evaluator_hash` (hash định nghĩa
+  task+evaluator) và `collector_version`. Các chiều này vào
+  `identityOf`/`GROUP_COMMON_FIELDS` ⇒ hai run khác git commit (dù cùng
+  `plugin_version`) hoặc khác evaluator **không** pool chung.
+- **Manifest được ĐỐI CHIẾU với row** (`verifyManifestAgainstRows`): so `run_id`,
+  `split`, `mode`, `collector_version`, `arms`, `tasks`, `seeds`,
+  `expected_rows == tasks×seeds×số arm ĐÃ CHỌN`, `written_rows == số dòng thật`;
+  sai lệch ⇒ `untrusted-run-manifest` + promotion `hold`. Dataset có row
+  `rejected`/`incomplete` cũng `hold` dù manifest khai đủ. `matrix()` library và CLI
+  **dùng cùng logic**; dataset `real` thiếu bằng chứng run-integrity ⇒
+  `unverified-run-integrity`. Báo cáo tách `physical_rows`/`parse_valid_rows`/
+  `promotion_valid_rows`.
+- **Kiểu dữ liệu chặt.** `validateRow` từ chối metric âm/`NaN`/`Infinity`/chuỗi số
+  (`invalid-metric:<key>`), `success` không boolean, `tests_passed > tests_total`,
+  `mode` lạ. `validateOperationTelemetry` phát hiện telemetry bất khả
+  (`completed-with-failure`, `completed-and-cancelled`, `actual-invocations-decreased`,
+  `negative-elapsed-ms`, `duplicate-terminal-event`, `missing-terminal-event`, …)
+  ⇒ row invalid/incomplete, không âm thầm gộp.
+- **Telemetry token không double-count.** `sumUsage` (hàm thuần, export) chỉ cộng
+  usage **tăng dần** đã biết; shape lạ ⇒ bỏ qua; không bằng chứng ⇒ `null` (không
+  tự 0). Test bơm bốn dạng: incremental / cumulative / duplicate-final / missing.
+- **`cost_usd` ≠ `reserved_units`.** `promotionMetrics` 10 chỉ số có `axis`
+  (quality/performance/safety) + `required`; bắt buộc `success`/`test_pass_rate`/
+  `walltime_ms`/`resource_invocations` (+ safety trên task an toàn), thiếu ⇒
+  `missing-required-measurements`. Hồi quy hiệu năng chỉ là
+  `performance-regression-signal` (paired delta, median, `hold`); hồi quy an
+  toàn/chất lượng vẫn là `regression`.
+- **Sandbox destructive fail-closed.** `resolveWithinRoot` (realpath + phân giải
+  symlink từng thành phần) chặn `../outside`, đường dẫn tuyệt đối ngoài, symlink →
+  ngoài, symlink lồng, tiền tố `root-evil`; escape ⇒ `success:false` +
+  `sandbox_violation:true`, không bao giờ "success".
+- **Hợp đồng catalog task** (`assertTaskContract`/`assertCatalogContract`): id duy
+  nhất, `task_class` hợp lệ, `evaluator_version` bắt buộc, task an toàn phải khai
+  `safety_keys ⊇ {false_allow,false_deny}`; catalog sai **ném lỗi ngay khi nạp
+  module**, trước mọi lần spawn/gọi model.
+- **`--split held-out` là khai báo người vận hành.** Row mang
+  `held_out_declaration` (`reason: 'operator-declared'`); tài liệu gọi đúng tên
+  "operator-declared held-out", không gọi "scientifically held-out".
+- **Bộ kiểm thử đối kháng.** Thêm `tests/trajectory-adversarial.mjs` (45 phản ví
+  dụ), `tests/trajectory-mutation.mjs` (37 đột biến, mọi thay đổi trường
+  integrity-critical phải làm `eligible-for-review` biến mất),
+  `tests/trajectory-property.mjs` (151 ca sinh tất định: bỏ bằng chứng không cải
+  thiện trạng thái, trộn run không tăng cặp, thêm row hỏng không tăng bằng chứng) và
+  `tests/test-list-contract.mjs` (npm test == verify.sh == CI, không suite mồ côi).
+- **`--overwrite` + từ chối output đã tồn tại**, `cache_mode: cold` mặc định (mỗi
+  arm workspace/session/state riêng), thư mục artifact không được tái dùng.
+
+- **Toàn vẹn từng dòng JSONL (§28).** Thêm `MAX_ROW_BYTES` (256 KB): dòng vượt ngưỡng bị `rejected` với `oversized-row` trước khi parse (artifact bị nhúng hoặc file ghép hỏng không được nuốt vào như row hợp lệ). BOM đầu file được dọn; dòng JSON hỏng bị `invalid-json` kèm số dòng.
+
+- **CI dùng MỘT lệnh canonical (§38).** Job `offline` gọi thẳng `npm test` thay vì tự liệt kê suite, nên CI không thể drift với `verify.sh`/`package.json`; `tests/test-list-contract.mjs` kiểm `npm test == verify.sh == CI` và bắt suite mồ côi. Adversarial/mutation/property chạy trong push CI.
+
 ### Sửa — tính toàn vẹn lần chạy: manifest chặn promotion, run_id chặn ghép arm, summary chính chỉ dùng nhóm hợp lệ
 
 - **Manifest không hợp lệ nay CHẶN promotion (vẫn cho phân tích).** Trước đây

@@ -12,7 +12,8 @@
  * nếu hard-code, `validateRow` sẽ từ chối vì `*-hash-mismatch` và test vô nghĩa.
  */
 import assert from 'node:assert/strict';
-import { ARMS, matrix, promotion } from '../tools/trajectory-matrix.mjs';
+import { ARMS, promotion } from '../tools/trajectory-matrix.mjs';
+import { analyze } from '../tools/trajectory-fixture.mjs';
 import { benchmarkConfigFor, benchmarkConfigHash, groupConsistency, profileConfigHash,
   provenance, ROW_SCHEMA, SPLITS, validateRow } from '../tools/trajectory-schema.mjs';
 
@@ -52,6 +53,10 @@ const row = (arm, seed, overrides = {}) => {
     dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
     benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
     arm, source: 'real', split: 'validation', mode: 'normal',
+    // §10/§30: bằng chứng THẬT phải truy được về đúng mã nguồn + hợp đồng
+    // evaluator, nếu không hai lần chạy cùng version vẫn có thể khác nhau.
+    plugin_git_commit: 'a'.repeat(40), evaluator_hash: 'b'.repeat(64),
+
     // `run_id` là ranh giới MỘT lần thu thập (KHÔNG thuộc identity cặp): cả bộ dữ
     // liệu chia sẻ ĐÚNG một run. Ca "trộn split" ở §4 cố ý lệch `split`, không
     // phải `run_id`, nên vẫn diễn đạt bất nhất mà không trùng luật run_id.
@@ -119,7 +124,7 @@ try {
 
   // ------------------------------------------------ §3 ĐIỂM MẤU CHỐT
   // CÙNG dữ liệu thật, split='validation' ⇒ pilot, KHÔNG phải bằng chứng promotion.
-  const validationReport = matrix(encode(asSplit('validation')));
+  const validationReport = analyze(encode(asSplit('validation')));
   assert.equal(validationReport.held_out_real_groups, 0,
     'validation rows must never count as held-out-real evidence');
   assert.equal(validationReport.complete_groups, 10, 'groups still form; the issue is provenance');
@@ -133,7 +138,7 @@ try {
     assert.equal(validationReport.promotion[arm].held_out_pairs, 0);
   }
   // CÙNG dữ liệu, split='held-out' ⇒ lần đầu tiên đạt `eligible-for-review`.
-  const heldOutReport = matrix(encode(asSplit('held-out')));
+  const heldOutReport = analyze(encode(asSplit('held-out')));
   assert.equal(heldOutReport.held_out_real_groups, 10,
     'held-out real groups must be counted — this was structurally unreachable before');
   assert.equal(heldOutReport.complete_groups, 10);
@@ -160,7 +165,7 @@ try {
     'mixed split must be reported as inconsistent-group-split');
   // Đối chứng DƯƠNG: nhóm đồng nhất split thì PHẢI nhất quán.
   assert.equal(groupConsistency(REAL_ROWS.filter((r) => r.seed === 0)).consistent, true);
-  const mixedReport = matrix(encode(mixedRows));
+  const mixedReport = analyze(encode(mixedRows));
   assert.equal(mixedReport.inconsistent_groups, 10, 'mixed-split groups must all be dropped');
   assert.equal(mixedReport.complete_groups, 0);
   assert.equal(mixedReport.held_out_real_groups, 0);
@@ -177,7 +182,7 @@ try {
 
   // ------------------------------------------------ §5 train/outage KHÔNG bao giờ là bằng chứng
   for (const split of ['train', 'outage']) {
-    const report = matrix(encode(asSplit(split)));
+    const report = analyze(encode(asSplit(split)));
     assert.equal(report.held_out_real_groups, 0, `${split} must never count as held-out-real`);
     assert.equal(report.verdict, 'unknown');
     for (const arm of TREATMENTS) {

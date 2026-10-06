@@ -23,7 +23,8 @@
  * nếu hard-code, `validateRow` sẽ từ chối vì `*-hash-mismatch` và test vô nghĩa.
  */
 import assert from 'node:assert/strict';
-import { ARMS, matrix } from '../tools/trajectory-matrix.mjs';
+import { ARMS } from '../tools/trajectory-matrix.mjs';
+import { analyze } from '../tools/trajectory-fixture.mjs';
 import { benchmarkConfigFor, benchmarkConfigHash, groupConsistency, profileConfigHash,
   ROW_SCHEMA, validateRow } from '../tools/trajectory-schema.mjs';
 
@@ -65,6 +66,10 @@ const row = (arm, seed, overrides = {}) => {
     dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
     benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
     arm, source: 'real', split: 'held-out', mode: 'normal',
+    // §10/§30: bằng chứng THẬT phải truy được về đúng mã nguồn + hợp đồng
+    // evaluator, nếu không hai lần chạy cùng version vẫn có thể khác nhau.
+    plugin_git_commit: 'a'.repeat(40), evaluator_hash: 'b'.repeat(64),
+
     run_id: RUN_ONE,
     profile: arm === 'vanilla' ? null : arm,
     profile_config,
@@ -96,7 +101,7 @@ try {
   }
   // Đối chứng trực tiếp trên hàm nhóm: 4 arm cùng run_id ⇒ KHÔNG có vấn đề.
   assert.equal(groupConsistency(clean.filter((r) => r.seed === 0)).consistent, true);
-  const cleanReport = matrix(encode(clean));
+  const cleanReport = analyze(encode(clean));
   assert.equal(cleanReport.inconsistent_groups, 0,
     'bốn arm chia sẻ một run_id KHÔNG được coi là bất nhất');
   assert.equal(cleanReport.complete_groups, 10);
@@ -121,7 +126,7 @@ try {
   assert.equal(mixedConsistency.consistent, false);
   assert(mixedConsistency.reasons.includes('inconsistent-group-run-id'),
     'group trộn run_id phải được báo là inconsistent-group-run-id');
-  const mixedReport = matrix(encode(mixedRuns));
+  const mixedReport = analyze(encode(mixedRuns));
   assert.equal(mixedReport.inconsistent_groups, 10, 'mọi group trộn run_id phải bị loại');
   assert.equal(mixedReport.complete_groups, 0);
   // KHÔNG bao giờ là bằng chứng promotion.
@@ -147,7 +152,7 @@ try {
     'lý do phải là missing-run-id');
   // Các lý do KHÁC vẫn nguyên (không bị lý do mới lấn át) — row này chỉ thiếu run_id.
   assert.equal(noRunIdCheck.reasons.length, 1);
-  const noRunIdReport = matrix(encode([noRunId]));
+  const noRunIdReport = analyze(encode([noRunId]));
   assert.equal(noRunIdReport.rejected.length, 0,
     'thiếu run_id là CHƯA ĐỦ dữ liệu, KHÔNG phải dữ liệu hỏng cần cách ly như rejected');
   assert.equal(noRunIdReport.incomplete.length, 1,
@@ -165,7 +170,7 @@ try {
   assert.equal(validateRow(syntheticWithRun).ok, true,
     `synthetic được phép tự đặt run_id: ${validateRow(syntheticWithRun).reasons.join(', ')}`);
   // Dù có run_id, synthetic KHÔNG BAO GIỜ là bằng chứng promotion.
-  assert.equal(matrix(encode([syntheticWithRun])).held_out_real_groups, 0);
+  assert.equal(analyze(encode([syntheticWithRun])).held_out_real_groups, 0);
 
   console.log('PASS trajectory run-integrity contract (real functions, offline)');
 } catch (error) {

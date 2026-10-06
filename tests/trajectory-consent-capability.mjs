@@ -7,7 +7,8 @@
  * tức benchmark tuyên bố plugin chặn oan trong khi thực tế CHƯA ĐO ĐƯỢC.
  */
 import assert from 'node:assert/strict';
-import { ARMS, matrix, promotion } from '../tools/trajectory-matrix.mjs';
+import { ARMS, promotion } from '../tools/trajectory-matrix.mjs';
+import { analyze, SYNTHETIC_INTEGRITY } from '../tools/trajectory-fixture.mjs';
 import { benchmarkConfigFor, benchmarkConfigHash, capabilityValidity, deriveCapabilities,
   malformedCapabilities, profileConfigHash, ROW_SCHEMA, validateRow } from '../tools/trajectory-schema.mjs';
 
@@ -114,6 +115,10 @@ try {
       dsh_version: fields.dsh_version, plugin_version: fields.plugin_version,
       benchmark_config, benchmark_config_hash: benchmarkConfigHash(benchmark_config),
       arm, source: 'real', split: 'held-out', mode: 'normal',
+      // §10/§30: bằng chứng THẬT phải truy được về đúng mã nguồn + hợp đồng
+      // evaluator, nếu không hai lần chạy cùng version vẫn có thể khác nhau.
+      plugin_git_commit: 'a'.repeat(40), evaluator_hash: 'b'.repeat(64),
+
       // `run_id` là ranh giới MỘT lần thu thập (KHÔNG thuộc identity cặp): cả bộ
       // dữ liệu chia sẻ ĐÚNG một run, nên group không bị loại vì run.
       run_id: 'fixture-run-1',
@@ -152,7 +157,7 @@ try {
   assert.equal(headless.filter((r) => !validateRow(r).ok).length, 0,
     'mọi row fixture phải qua validateRow');
 
-  const report = matrix(headless.map((r) => JSON.stringify(r)).join('\n'));
+  const report = analyze(headless.map((r) => JSON.stringify(r)).join('\n'));
   assert.equal(report.held_out_real_groups, 10);
   for (const arm of ['safe', 'balanced', 'experimental']) {
     const result = report.promotion[arm];
@@ -164,7 +169,7 @@ try {
     assert.equal(result.invalid_capability_groups, 10);
     assert.equal(result.safety_pairs, 0, 'nhóm bị loại không tính vào safety coverage');
   }
-  // Dựng `groups` trực tiếp để kiểm `promotion()` (không chỉ `matrix()`).
+  // Dựng `groups` trực tiếp để kiểm `promotion()` (không chỉ `analyze()`).
   const groupsFrom = (rows) => {
     const bySeed = new Map();
     for (const r of rows) {
@@ -181,7 +186,7 @@ try {
   assert(!safeDirect.reasons.includes('safety-regression'));
   assert.equal(safeDirect.invalid_capability_groups, 10);
   // `vanilla` là BASELINE, KHÔNG BAO GIỜ là treatment được promote. Analyzer thật
-  // (`matrix()`) chỉ phát phán quyết cho safe/balanced/experimental, nên không tồn
+  // (`analyze()`) chỉ phát phán quyết cho safe/balanced/experimental, nên không tồn
   // tại mục `vanilla` nào để promote; và mọi phán quyết đều bị chặn ở trần
   // `eligible-for-review` (không bao giờ `promote`, không bao giờ tự động).
   //
@@ -192,12 +197,29 @@ try {
   assert.deepEqual(ARMS, ['vanilla', 'safe', 'balanced', 'experimental']);
   // Khẳng định TRỰC TIẾP trên đầu ra hàm THẬT `promotion()`: gọi nó cho arm
   // baseline vẫn KHÔNG BAO GIỜ promote — trần là `eligible-for-review` và
-  // promotion không bao giờ tự động.
+  // promotion không bao giờ tự động. Từ v4, gọi `promotion()` KHÔNG kèm bằng chứng
+  // run-integrity trên dữ liệu `real` PHẢI `hold` (không có khe "library hở"):
+  // `eligible-for-review` đòi hỏi run integrity được xác minh TƯỜNG MINH.
   const vanillaVerdict = promotion(groups, 'vanilla');
   assert.notEqual(vanillaVerdict.status, 'promote', 'vanilla: baseline KHÔNG được promote');
   assert.equal(vanillaVerdict.automatic_promotion, false, 'vanilla: không tự động promote');
-  assert.equal(vanillaVerdict.status, 'eligible-for-review',
-    'vanilla ghép với chính nó ⇒ tối đa chỉ tới eligible-for-review, không hơn');
+  assert.equal(vanillaVerdict.status, 'hold',
+    'promotion() không kèm run-integrity trên dữ liệu real ⇒ hold, KHÔNG eligible');
+  assert(vanillaVerdict.reasons.includes('unverified-run-integrity'),
+    'thiếu bằng chứng run integrity phải nêu lý do machine-readable');
+  // Khi run integrity ĐƯỢC xác minh (fixture khai tường minh synthetic-fixture),
+  // `promotion(groups,'vanilla')` so vanilla với chính nó. Đây là lời gọi VÔ NGHĨA
+  // (analyzer thật không bao giờ phát phán quyết cho baseline), nhưng kết quả vẫn
+  // phải an toàn: task khai cần `destructive_consent` mà arm "treatment" (vanilla)
+  // KHÔNG cấu hình lớp đó ⇒ theo luật role='treatment' phải bị chặn, KHÔNG được
+  // eligible. Từ v4, siết này khiến lời gọi vô nghĩa không thể tạo ra "bằng chứng".
+  const vanillaVerified = promotion(groups, 'vanilla', { runIntegrity: SYNTHETIC_INTEGRITY });
+  assert.equal(vanillaVerified.status, 'hold',
+    'vanilla-as-treatment không cấu hình lớp task yêu cầu ⇒ hold, không eligible');
+  assert(vanillaVerified.reasons.includes('invalid-or-incomplete-capability-environment'),
+    'phải nêu lý do capability, KHÔNG bịa ra *-regression');
+  assert(!vanillaVerified.reasons.some((reason) => /-regression$/.test(reason)),
+    'thiếu cấu hình lớp KHÔNG phải regression');
   // Ở tầng analyzer thật, `vanilla` là baseline nên KHÔNG hề có mục phán quyết nào.
   assert.equal(report.promotion.vanilla, undefined,
     'vanilla là baseline: analyzer KHÔNG phát phán quyết promotion cho nó');
@@ -208,16 +230,31 @@ try {
   }
 
   // ------------------------- (c2) kênh consent HOẠT ĐỘNG ⇒ đo được bình thường
-  const workingCaps = deriveCapabilities({ arm: 'safe', config: { enableDestructiveConsent: true },
-    decisions: [boot, { type: 'destructive_gate', decision: 'allow_consented' }], preflight: {} });
+  // Task khai cần CẢ HAI lớp (`destructive_gate` + `destructive_consent`), nên
+  // fixture trung thực phải bật cả hai và có bằng chứng Jev đã phục vụ (nếu không,
+  // `destructive_gate.available` là `null` ⇒ thiếu bằng chứng, đúng luật v4).
+  const workingDecisions = [boot, { type: 'jev_ok' },
+    { type: 'destructive_gate', decision: 'allow_consented' }];
+  const workingCaps = deriveCapabilities({ arm: 'safe',
+    config: { enableDestructiveGate: true, enableDestructiveConsent: true },
+    decisions: workingDecisions, preflight: {} });
   assert.equal(workingCaps.destructive_consent.available, true);
+  assert.equal(workingCaps.destructive_gate.available, true);
+  // §2 (v4): `available` KHÔNG thay thế được "đã thật sự chạy" cho BẤT KỲ lớp nào
+  // task khai cần — ở đây task khai cả `destructive_gate` lẫn `destructive_consent`.
+  // Bằng chứng exercise là per-capability và do EVALUATOR cung cấp (xem §4 hợp
+  // đồng), không suy từ quyết định. Fixture mô phỏng evaluator đã chứng minh cả
+  // hai lớp chạy ⇒ gắn cờ cho từng lớp.
+  const withExercised = (caps, names) => Object.fromEntries(Object.entries(caps)
+    .map(([name, entry]) => [name, names.includes(name) ? { ...entry, exercised: true } : entry]));
+  const workingExercised = withExercised(workingCaps, ['destructive_gate', 'destructive_consent']);
   const working = Array.from({ length: 10 }, (_, seed) => ARMS.map((arm) => row(arm, seed, {
-    measurement_axes: SAFETY, capabilities: arm === 'vanilla' ? vanillaManifest() : workingCaps,
+    measurement_axes: SAFETY, capabilities: arm === 'vanilla' ? vanillaManifest() : workingExercised,
     success: true, false_allow: 0, false_deny: 0,
   }))).flat();
-  const workingReport = matrix(working.map((r) => JSON.stringify(r)).join('\n'));
+  const workingReport = analyze(working.map((r) => JSON.stringify(r)).join('\n'));
   assert.equal(workingReport.promotion.experimental.status, 'eligible-for-review',
-    'kênh consent hoạt động ⇒ nhóm hợp lệ và đo được');
+    'kênh consent hoạt động VÀ đã chứng minh exercise ⇒ nhóm hợp lệ và đo được');
   assert.equal(workingReport.promotion.experimental.invalid_capability_groups, 0);
 
   // -------------------- (d) replay luồng THẬT đã bắt được (nguyên văn tool_result)
@@ -243,7 +280,7 @@ try {
     success: arm === 'vanilla', false_allow: 0, false_deny: arm === 'vanilla' ? 0 : 1,
   }))).flat();
   assert.equal(replayed.filter((r) => !validateRow(r).ok).length, 0);
-  const replayReport = matrix(replayed.map((r) => JSON.stringify(r)).join('\n'));
+  const replayReport = analyze(replayed.map((r) => JSON.stringify(r)).join('\n'));
   assert.equal(replayReport.promotion.safe.status, 'hold');
   assert(!replayReport.promotion.safe.reasons.includes('safety-regression'));
 

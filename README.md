@@ -839,6 +839,7 @@ node tools/collect-trajectory.mjs outage.jsonl --jev-outage # chỉ đo hành vi
 node tools/collect-trajectory.mjs all.jsonl --tasks navigation-marker-v1,bug-diagnosis-calc-v1 --seeds 1,2
 node tools/collect-trajectory.mjs held.jsonl --split held-out # khai held-out TƯỜNG MINH (mặc định: validation)
 node tools/collect-trajectory.mjs rerun.jsonl --overwrite     # ghi đè file đã có (mặc định TỪ CHỐI)
+node tools/collect-trajectory.mjs partial.jsonl --tasks tool-failure-recovery-v1 --arms vanilla,safe,balanced,experimental --allow-incompatible-arms
 ```
 
 `--tasks` nhận danh sách `task_id` từ catalog (mặc định một task); `--seeds` chạy
@@ -853,6 +854,16 @@ Collector từ chối task/seed/flag/split sai **trước** khi spawn tiến tr�
 `--split` sai chính tả báo lỗi **tham số**, không báo thiếu credential), và chỉ ghi
 row khi chạy thật xong. Nếu `<output>` đã tồn tại, collector **từ chối** (tránh trộn
 hai lần chạy vào một file); `--overwrite` mới ghi đè.
+
+**Task-capability contract (§21) được kiểm TRƯỚC khi spawn.** Nếu một task khai cần
+exercise capability mà profile của arm đặt `false` (ví dụ `tool-failure-recovery-v1`
+cần `failure_recovery` nhưng profile `safe` tắt `enableFailureRecovery`), thì một lần
+chạy arm đó **không bao giờ** đo được capability ấy — chạy tiếp chỉ tốn tiền sinh ra
+row mà analyzer buộc phải loại (`invalid-or-incomplete-capability-environment`).
+Collector **dừng ngay** với lỗi tham số nêu đúng cặp `task/arm` (`vanilla` luôn được
+miễn vì là baseline không plugin). Muốn chạy đủ ma trận vì mục đích khác, phải nói rõ
+`--allow-incompatible-arms`; khi đó row vẫn bị analyzer xử theo nhánh (B) và **không**
+được promotion.
 
 Vì row được ghi dần, một lần chạy bị giết giữa chừng để lại file JSONL **thiếu
 row** mà nhìn bề ngoài không khác file đầy đủ. Collector ghi kèm manifest
@@ -873,6 +884,52 @@ thiếu số row thì không thể chứng minh file đầy), mọi treatment ar
 (`arms`, `raw_arms`, `by_effort`, `layer_coverage`, `comparisons`, `incomplete`,
 `rejected`) vẫn được xuất đầy đủ để người đọc xem phần đã đo. Nhờ vậy một dataset
 dở/hỏng không bao giờ đạt `eligible-for-review`.
+
+**Manifest được ĐỐI CHIẾU với từng row, không tin suông.** Analyzer không chỉ đọc
+text cảnh báo: nó so `manifest.run_id` với `run_id` của **mọi** row `source: real`,
+so `split`/`mode`/`collector_version`/`arms`/`tasks`/`seeds`, kiểm
+`expected_rows == tasks × seeds × số arm ĐÃ CHỌN` và `written_rows == số dòng
+JSONL thật`. Bất kỳ sai lệch nào ⇒ `untrusted-run-manifest` và promotion `hold`
+(chỉ dùng cảnh báo văn bản là **fail-open**). Dataset có row bị `rejected`/
+`incomplete` cũng khiến promotion `hold` dù manifest khai đủ số — "39 row hợp lệ +
+1 row hỏng" không bao giờ thành bằng chứng nếu manifest nói 40. Báo cáo tách
+`physical_rows` (số dòng khác rỗng), `parse_valid_rows` (JSON hợp lệ),
+`promotion_valid_rows` (row thật dùng để promotion) để không nhầm "đếm dòng" với
+"đếm bằng chứng". **Library API và CLI dùng CÙNG một logic** — gọi `matrix(text)`
+trực tiếp trên dataset `source: real` mà thiếu bằng chứng run-integrity cũng bị
+`hold` (`unverified-run-integrity`); fixture tổng hợp phải khai `source: synthetic`
+hoặc truyền `runIntegrity` tường minh.
+
+**Toàn vẹn từng dòng JSONL.** Dòng rỗng bị bỏ qua, BOM đầu file được dọn, dòng
+JSON hỏng bị `rejected` với `invalid-json` kèm số dòng, và dòng **phình bất thường**
+vượt `MAX_ROW_BYTES` (256 KB — row thật lớn nhất đo được ~9.6 KB) bị `rejected` với
+`oversized-row` trước khi parse: artifact bị nhúng nguyên vào row hoặc file ghép
+hỏng không được nuốt vào như một row hợp lệ.
+
+**`run_id` là ranh giới của một lần thu thập.** Row `source: real` **bắt buộc** có
+`run_id` non-empty (thiếu ⇒ `missing-run-id`, xếp vào `incomplete`); bốn arm trong
+một nhóm ghép cặp phải **cùng** `run_id`, nếu khác thì cả nhóm bị loại với lý do
+`inconsistent-group-run-id`. Nhờ đó không thể ghép `vanilla`/`safe` của lần chạy A
+với `balanced`/`experimental` của lần chạy B thành một treatment, dù task/seed/model/
+config giống hệt.
+
+**Định danh nguồn phải tái lập được.** Mỗi row `real` ghi `plugin_git_commit` (git
+revision chính xác, không chỉ `plugin_version` — nhiều commit cùng một version),
+`plugin_dirty_state` (working tree bẩn ⇒ bằng chứng **không** tái lập được, bị
+`hold` với `unreproducible-plugin-state`), `dsh_git_commit`, `model_endpoint_origin`
+(không chứa secret) và `evaluator_hash` (hash định nghĩa task + evaluator — đổi
+evaluator thì không pool chung bằng chứng cũ). Hai run cùng `plugin_version` nhưng
+khác `plugin_git_commit` **không** được gộp làm một treatment. `cache_mode` ghi
+`cold`/`warm`; mặc định `cold` (mỗi arm workspace/session/state riêng, không tái
+dùng verdict cache, ngân sách session, breaker hay review state), nên một lần chạy
+không thể trộn "vanilla cold" với "experimental warm".
+
+**`--split held-out` là khai báo của người vận hành, KHÔNG phải held-out khoa học.**
+Row mang `held_out_declaration` ghi rõ `{declared: true, declared_at,
+task_catalog_hash, plugin_commit, reason: 'operator-declared'}`. Trong repo này
+không có benchmark ẩn bằng mật mã: task/fixture nằm ngay trong repo, nên một
+partition `held-out` chỉ là **operator-declared held-out** (được tài liệu gọi đúng
+tên), không được gọi là "scientifically held-out".
 
 Mỗi row mang `schema: dsh-jev-gate-trajectory-v2`, một **capability manifest**
 (`configured`/`available`/`invoked` suy từ config boot, decisions.jsonl và preflight
@@ -957,20 +1014,32 @@ lại** từ `benchmark_config`/`profile_config`; row sửa tay hash sẽ bị t
 metadata (ví dụ `vanilla` held-out nhưng treatment validation) bị **loại cả nhóm**,
 không gắn nhãn held-out cho nhóm.
 
-**`run_id` là ranh giới của một lần thu thập.** Row `source: real` **bắt buộc** có
-`run_id` non-empty (thiếu ⇒ `missing-run-id`, xếp vào `incomplete`); bốn arm trong
-một nhóm ghép cặp phải **cùng** `run_id`, nếu khác thì cả nhóm bị loại với lý do
-`inconsistent-group-run-id`. Nhờ đó không thể ghép `vanilla`/`safe` của lần chạy A
-với `balanced`/`experimental` của lần chạy B thành một treatment, dù task/seed/model/
-config giống hệt. `created_at` **không** nằm trong identity ghép cặp — nó chỉ để
+`created_at` **không** nằm trong identity ghép cặp — nó chỉ để
 truy vết. Promotion **không bao giờ tự
 động**: trần là `eligible-for-review`, cần ≥10 nhóm held-out thật ghép cặp trên ≥2
 lớp task. Hai gate **độc lập**: gate chất lượng/hiệu năng (`success`, `test_pass_rate`,
 `walltime_ms`) chạy trên mọi nhóm, còn gate an toàn (`false_allow`, `false_deny`)
 **chỉ** chạy trên task khai `measurement_axes.safety = true`; task không đo an toàn
 giữ hai chỉ số `null` và không bị coi là thiếu số đo, còn task an toàn thiếu số đo
-thì bị `hold` (`missing-safety-measurements`). `cost_usd` không bắt buộc vì chưa có
-nguồn dữ liệu. Nhóm có môi trường capability **không
+thì bị `hold` (`missing-safety-measurements`). Chỉ số **bắt buộc** gồm `success`,
+`test_pass_rate` (chất lượng), `walltime_ms` và `resource_invocations` (hiệu năng —
+số lần gọi tài nguyên thật: HTTP/tool/tiến trình), cộng `false_allow`/`false_deny`
+trên task an toàn; thiếu chỉ số bắt buộc ⇒ `hold` (`missing-required-measurements`),
+**không** tự điền 0. `cost_usd`/`input_tokens`/`output_tokens`/`reasoning_tokens`
+**không** bắt buộc vì provider có thể không trả; thiếu thì giữ `null`. `cost_usd`
+là **chi phí tiền tệ của provider** (khác hẳn `reserved_units` — đơn vị ngân sách
+chính sách, KHÔNG phải tiền). Số đơn vị đã giữ chỗ **không** đồng nghĩa chi phí thật.
+
+**Hồi quy hiệu năng là TÍN HIỆU, không phải phán quyết.** So sánh dùng **paired
+delta** (treatment − baseline) theo từng nhóm ghép cặp, gộp theo task class, báo
+`mean`/`median`/`count` và `p90` khi đủ mẫu; `median_delta` quyết định hướng. Một
+outlier đơn lẻ **không** đủ gọi là thụt lùi sản xuất — lý do là
+`performance-regression-signal` và trạng thái chỉ `hold` (không nâng thành
+`regression`). Ngược lại hồi quy **an toàn** (`false_allow`/`false_deny`) và hồi quy
+**chất lượng** (`success`/`test_pass_rate`) vẫn lập tức là `regression` — độ chặt an
+toàn không bao giờ bị hạ.
+
+Nhóm có môi trường capability **không
 hợp lệ** (thiếu hạ tầng, hoặc `available` chưa chứng minh) bị `hold` với lý do
 machine-readable và **không tính là thụt lùi hiệu năng**; chỉ capability mà task
 thật sự khai `expected_capabilities_to_exercise` mới được kiểm. Một capability
@@ -992,16 +1061,27 @@ Bản tổng hợp thô của **mọi** row parse hợp lệ vẫn được gi�
 `raw_rows` và `validated_rows`). Nhờ vậy một group cực chậm nhưng không hợp lệ
 hiện trong `raw_*` để điều tra, mà không làm lệch số hiệu năng chính.
 
-Báo cáo còn có `layer_coverage`: với mỗi lớp (capability), đếm riêng`configured`/`available`/`invoked` (theo capability manifest của row), `expected`
-(số row mà task **khai** lớp này trong `expected_capabilities_to_exercise`) và
-`exercised` (số row khai lớp đó **và** `feature_exercised = true`). Điểm cốt lõi:
-`available = true` **không** chứng minh lớp đã chạy — chỉ `exercised` mới là bằng
-chứng lớp đó thực sự hoạt động trong trajectory. Lớp không được cấu hình và không
-task nào khai sẽ **không xuất hiện** (tránh hiểu nhầm số 0 là "đã đo và không
-thấy"). Đây **không** phải promotion gate, chỉ để đọc giá trị theo lớp; và vì
-`feature_exercised` là một cờ boolean cho cả row, `exercised` chỉ diễn giải được
-khi task khai đúng một capability (task khai nhiều capability cần cờ riêng theo
-lớp — hiện chưa có, là giới hạn đã biết).
+Báo cáo còn có `layer_coverage`: với mỗi lớp (capability), đếm riêng`configured`/`available`/`invoked`/`exercised` (theo capability manifest của row)
+và `expected` (số row mà task **khai** lớp này trong
+`expected_capabilities_to_exercise`). `exercised` đếm theo **TỪNG capability**
+(`capabilities[x].exercised === true`), không dùng một cờ chung cho cả row. Điểm
+cốt lõi: `available = true` **không** chứng minh lớp đã chạy — chỉ `exercised` mới
+là bằng chứng lớp đó thực sự hoạt động trong trajectory. Ba khái niệm **độc lập**:
+`configured` (cấu hình có bật), `available` (hạ tầng đo được), `invoked` (đường
+code có chạm tới), `exercised` (có bằng chứng hành vi thật). Lớp không được cấu
+hình và không task nào khai sẽ **không xuất hiện** (tránh hiểu nhầm số 0 là "đã đo
+và không thấy"). Đây **không** phải promotion gate, chỉ để đọc giá trị theo lớp.
+
+**Bằng chứng phải là per-capability.** Một treatment chỉ được tính bằng chứng cho
+lớp `x` khi task **khai** `expected_capabilities_to_exercise` chứa `x` **VÀ**
+manifest của row báo `capabilities[x].exercised === true`. Nếu treatment chưa cấu
+hình lớp đó (`configured !== true`) thì nhóm là **môi trường capability không hợp
+lệ** (`hold`, lý do `invalid-or-incomplete-capability-environment`) — **không** gọi
+là `safety-regression`/`quality-regression` vì chưa hề đo được. Nếu lớp đã cấu
+hình và `available` nhưng chưa `exercised` thì là **thiếu bằng chứng**
+(`incomplete-capability-exercise`, `hold`). Baseline `vanilla` không cần exercise
+(cố ý không cấu hình plugin). Nhóm thiếu exercise **không** được tính vào
+`held_out_pairs`/`quality_pairs`/`safety_pairs`.
 
 ```bash
 node tools/trajectory-matrix.mjs measured.jsonl

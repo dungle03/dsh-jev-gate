@@ -6,13 +6,19 @@
  * diễn, một row có thể "hợp lệ" lúc ghi nhưng bị ghép sai lúc đọc — đúng loại
  * sai lệch mà cả file này sinh ra để chặn.
  *
- * Ba nguyên tắc bất di bất dịch:
+ * NĂM nguyên tắc bất di bất dịch:
  *   1. Không đoán từ tên profile. `available` chỉ được suy từ bằng chứng runtime
  *      (decisions.jsonl) hoặc preflight thật; không có bằng chứng ⇒ `null`.
  *   2. `null` KHÁC `0`/`false`. Thiếu số đo là `null`; chỉ `false` khi có bằng
  *      chứng khẳng định vắng mặt.
  *   3. Cấu hình arm khác nhau ⇒ treatment khác nhau. Cùng tên arm nhưng
  *      `profile_config_hash` khác thì KHÔNG được ghép cặp như một treatment.
+ *   4. `available` KHÔNG phải `exercised`. Một capability có sẵn (`available`)
+ *      không chứng minh nó ĐÃ CHẠY trong trajectory; bằng chứng "đã chạy" phải
+ *      theo TỪNG capability (`exercised`), không gộp thành một cờ chung.
+ *   5. Bằng chứng không đủ ⇒ `hold`, KHÔNG bao giờ `eligible-for-review`. Nhưng
+ *      một môi trường KHÔNG hợp lệ cũng KHÔNG được gọi là `*-regression`: chưa
+ *      đo được thì chưa được kết luận là tệ hơn.
  */
 import { createHash } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
@@ -23,6 +29,15 @@ export const ROW_SCHEMA = 'dsh-jev-gate-trajectory-v2';
 export const MATRIX_SCHEMA = 'trajectory-matrix-v2';
 /** Chỉ những schema này được matrix hiểu; bản cũ bị TỪ CHỐI tường minh. */
 export const SUPPORTED_ROW_SCHEMAS = Object.freeze([ROW_SCHEMA]);
+
+/**
+ * §28: một dòng JSONL phình to (artifact bị nhúng nguyên file, log dán vào
+ * `detail`, hoặc file bị hỏng/ghép) không được parse im lặng như một row bình
+ * thường — nó có thể che dữ liệu sai và làm phình bộ nhớ. Row THẬT lớn nhất đo
+ * được ~9.6 KB, nên 256 KB là ngưỡng rộng rãi: vượt ngưỡng là bất thường, phải
+ * bị TỪ CHỐI tường minh chứ không nuốt vào.
+ */
+export const MAX_ROW_BYTES = 262144;
 
 export const ARMS = Object.freeze(['vanilla', 'safe', 'balanced', 'experimental']);
 
@@ -46,17 +61,50 @@ export const TASK_CLASSES = Object.freeze([
 ]);
 
 /**
- * Tập con config ảnh hưởng hành vi benchmark. Lưu subset + hash thay vì dump cả
- * config: đủ để biết arm đã chạy cái gì, không phình row.
+ * Config KHÔNG ảnh hưởng hành vi đo — denylist TỐI THIỂU, phải khai lý do.
+ *
+ * Đây là danh sách ĐÓNG. Bất kỳ khoá Config runtime nào không nằm trong
+ * `BENCHMARK_CONFIG_KEYS` cũng phải nằm trong đây, nếu không test hợp đồng
+ * (`tests/trajectory-config-coverage.mjs`) sẽ FAIL — nhờ vậy một khoá hành vi
+ * mới thêm vào runtime KHÔNG THỂ lọt khỏi hash một cách âm thầm.
+ *
+ * Vì sao `logDir`: chỉ là đích ghi log, không đổi quyết định của gate. Không có
+ * khoá nào khác đủ vô hại để loại: timeout/ngân sách/ngưỡng/song song/context
+ * đều đổi hành vi thật.
+ */
+export const BENCHMARK_CONFIG_EXCLUSIONS = Object.freeze({
+  logDir: 'output path only — does not change gate decisions',
+});
+
+/**
+ * Toàn bộ khoá config ảnh hưởng hành vi benchmark. Trước đây chỉ 22/76 khoá
+ * runtime, nên hai cấu hình KHÁC NHAU (ví dụ khác `jevMaxCallsPerTurn` hay
+ * `reviewTimeoutMs`) vẫn ra CÙNG `profile_config_hash` ⇒ bị ghép cặp như một
+ * treatment. Nay lấy đủ: mọi khoá runtime trừ denylist tường minh.
  */
 export const BENCHMARK_CONFIG_KEYS = Object.freeze([
   'profile',
-  'enableDestructiveGate', 'enableReadOnlyPrefilter', 'enableCatastrophicFloor',
-  'enableAuthorizationOverride', 'enableDestructiveConsent', 'gateFailureMode', 'destructiveThreshold',
-  'enableCompletionCheck', 'enableEffortRouting', 'enableFailureRecovery', 'enableQualityReview',
-  'enableSpawnHint', 'enableContextTriage', 'enableJevgrepEscalation', 'effortAbstain',
-  'jevBudgetEnabled', 'maxDecisionCostPerTurn', 'maxDecisionCostPerSession',
-  'reviewMaxPerSession', 'jevGrepMaxPerSession', 'reviewMode',
+  'approachConfidenceThreshold', 'approachProbabilityMargin', 'approachTopProbability',
+  'completionMaxPerTurn', 'completionThreshold', 'consentTimeoutMs',
+  'contextCandidateLimit', 'contextEvidence', 'contextFileThreshold', 'contextMaxFiles',
+  'contextTimeoutMs', 'destructiveThreshold',
+  'effortAbstain', 'effortDecision', 'effortDefault', 'effortEscalateTestFailures',
+  'effortEscalateTo', 'effortEscalateToolErrors', 'effortFallback', 'effortHardThreshold',
+  'effortJevChoices', 'effortRoutineThreshold', 'effortTimeoutMs',
+  'enableAuthorizationOverride', 'enableCatastrophicFloor', 'enableCompletionCheck',
+  'enableContextTriage', 'enableDestructiveConsent', 'enableDestructiveGate',
+  'enableEffortRouting', 'enableFailureRecovery', 'enableGateVerdictCache',
+  'enableJevgrepEscalation', 'enableQualityReview', 'enableReadOnlyPrefilter', 'enableSpawnHint',
+  'evidenceThreshold', 'executionThreshold', 'failureMaxPerTurn', 'failureTimeoutMs',
+  'gateFailureMode', 'gateTimeoutMs', 'gateVerdictCacheMargin', 'gateVerdictCacheMax',
+  'jevBudgetEnabled', 'jevGrepBackground', 'jevGrepBreakerCooldownMs', 'jevGrepExcerptCap',
+  'jevGrepFailureBreaker', 'jevGrepMaxConcurrentGlobal', 'jevGrepMaxConcurrentPerSession',
+  'jevGrepMaxPerSession', 'jevGrepMaxPerTurn', 'jevGrepPendingMax', 'jevGrepSearchTaskHeuristic',
+  'jevGrepSearchTaskThreshold', 'jevGrepTimeoutMs', 'jevMaxCallsPerSession', 'jevMaxCallsPerTurn',
+  'maxDecisionCostPerSession', 'maxDecisionCostPerTurn', 'maxPluginContextTokensPerTurn',
+  'reviewContextReserveTokens', 'reviewMaxDiffChars', 'reviewMaxPerSession', 'reviewMaxPerTurn',
+  'reviewMinChangedLines', 'reviewMode', 'reviewReportToAgent', 'reviewServerName', 'reviewTimeoutMs',
+  'shadowGateThreshold', 'spawnTimeoutMs', 'stopTimeoutMs',
 ]);
 
 /** Hash sha256 hex của một giá trị bất kỳ (JSON tất định). */
@@ -300,18 +348,38 @@ export function deriveCapabilities({ arm, config, decisions = [], preflight = {}
   return capabilities;
 }
 
-/** Khoá ghép cặp. Thiếu bất kỳ thành phần nào ⇒ `null` (row không hợp lệ). */
+/**
+ * Các chiều định danh MỞ RỘNG được ghép vào khoá cặp cặp (khi có mặt).
+ *
+ * Vì sao `?? null` thay vì bắt buộc: fixture synthetic không mô phỏng một lần
+ * thu thập nào nên được phép bỏ trống; nhưng bằng chứng `real` thì `validateRow`
+ * BẮT BUỘC có `plugin_git_commit`/`evaluator_hash`, nên mọi row thật đều mang
+ * chúng. Nhờ vậy hai lần chạy CÙNG `plugin_version` nhưng KHÁC git commit (hoặc
+ * khác evaluator) không bao giờ bị gộp làm một treatment — mà fixture cũ vẫn
+ * chạy được nguyên trạng.
+ *
+ * `model_endpoint_origin` (§6): hai provider khác nhau có thể trùng tên model;
+ * ghi NGUỒN endpoint (không chứa secret) để không ghép cặp hai môi trường khác nhau.
+ */
+export const EXTRA_IDENTITY_DIMS = Object.freeze([
+  'plugin_git_commit', 'evaluator_hash', 'dsh_git_commit', 'model_endpoint_origin',
+]);
+
+/** Khoá ghép cặp. Thiếu bất kỳ thành phần LÕI nào ⇒ `null` (row không hợp lệ). */
 export function identityOf(row) {
   const required = ['task_id', 'repo_state', 'model', 'dsh_version', 'plugin_version', 'benchmark_config_hash'];
   if (!row || required.some((key) => typeof row[key] !== 'string' || !row[key].trim())) return null;
   if (!(typeof row.seed === 'string' && row.seed.trim()) && !Number.isSafeInteger(row.seed)) return null;
-  return JSON.stringify(required.map((key) => row[key]).concat([row.seed]));
+  const core = required.map((key) => row[key]);
+  const extra = EXTRA_IDENTITY_DIMS.map((key) => (row[key] === undefined ? null : row[key]));
+  return JSON.stringify(core.concat([row.seed], extra));
 }
 
 /**
  * Kiểm hình dạng capability manifest. Trả danh sách tên capability hỏng.
  *
- * `configured`/`invoked` phải là boolean; `available` phải là `true`/`false`/`null`.
+ * `configured`/`invoked` phải là boolean; `available` phải là `true`/`false`/`null`;
+ * `exercised` (nếu có) phải là boolean hoặc `null`.
  * Một entry méo mó bị TỪ CHỐI tường minh — không âm thầm coi là "không cấu hình",
  * vì như vậy sẽ biến dữ liệu hỏng thành bằng chứng hợp lệ.
  */
@@ -324,7 +392,13 @@ export function malformedCapabilities(row) {
     if (entry === undefined) continue;
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { bad.push(spec.name); continue; }
     if (typeof entry.configured !== 'boolean' || typeof entry.invoked !== 'boolean'
-      || !(entry.available === true || entry.available === false || entry.available === null)) {
+      || !(entry.available === true || entry.available === false || entry.available === null)
+      // `exercised` là bằng chứng lớp ĐÃ CHẠY trong trajectory. Ba trạng thái:
+      // `true` (đã chạy), `false` (chạy nhưng không tác động), `null` (chưa xác
+      // định). Thiếu hẳn khoá cũng chấp nhận (`undefined`) để row cũ vẫn parse
+      // được — nhưng khi đó treatment không thể chứng minh exercise.
+      || !(entry.exercised === true || entry.exercised === false
+        || entry.exercised === null || entry.exercised === undefined)) {
       bad.push(spec.name);
     }
   }
@@ -341,6 +415,112 @@ function measurementAxisProblem(row) {
   }
   return null;
 }
+
+/**
+ * Metric số phải hữu hạn và KHÔNG âm. `null`/`undefined` = "chưa đo" (hợp lệ).
+ *
+ * Vì sao không coerce: `"1"` hay `NaN` từng lọt qua phép so sánh số rồi cho ra
+ * kết luận sai (một chuỗi không bao giờ `> base`). Sai kiểu ⇒ TỪ CHỐI row, không
+ * đoán ý người ghi.
+ */
+function metricTypeProblem(row, key) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return `invalid-metric:${key}`;
+  return null;
+}
+
+/** Bộ đếm phải là số nguyên không âm (không chấp nhận 1.5 hay -1). */
+function counterTypeProblem(row, key) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (!Number.isSafeInteger(value) || value < 0) return `invalid-metric:${key}`;
+  return null;
+}
+
+/**
+ * Metric số mà row PHẢI khai đúng kiểu (nếu có mặt). `tests_total`/`tests_passed`
+ * cũng nằm đây để `tests_passed > tests_total` bị bắt.
+ */
+const NUMERIC_METRIC_KEYS = Object.freeze([
+  'walltime_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'cost_usd', 'generations',
+]);
+const COUNTER_METRIC_KEYS = Object.freeze([
+  'tests_passed', 'tests_total', 'decision_reserved_units', 'decision_actual_invocations',
+  'jev_http_attempts', 'review_tool_invocations', 'jevgrep_process_spawns',
+  'decision_operation_failures', 'decision_operation_cancellations',
+]);
+
+/** Kiểu invocation hợp lệ của operation telemetry. */
+export const INVOCATION_KINDS = Object.freeze(['http_request', 'tool_execution', 'process_spawn']);
+
+/** Các `mode` thu thập hợp lệ. Chuỗi lạ phải bị TỪ CHỐI, không trôi qua. */
+export const MODES = Object.freeze(['normal', 'jev-outage']);
+
+/**
+ * Kiểm TÍNH NHẤT QUÁN của operation telemetry (§16).
+ *
+ * `aggregateOperations` gộp nhiều bản ghi cùng `operation_id` (mỗi bản là một
+ * snapshot luỹ kế). Gộp bằng `max`/OR rất dễ che một chuỗi SỰ KIỆN BẤT KHẢ: ví dụ
+ * một bản ghi vừa `completed:true` vừa `failure:"..."`, hay `actual_invocations`
+ * GIẢM giữa hai snapshot (dấu hiệu dữ liệu hỏng/bị trộn). Nếu không bắt, một
+ * dataset hỏng vẫn ra metric "sạch".
+ *
+ * Trả `{ ok, problems }` với mỗi phần tử `{ operation_id, problem }`.
+ */
+export function validateOperationTelemetry(decisions) {
+  const rows = Array.isArray(decisions) ? decisions : [];
+  const byId = new Map();
+  for (const row of rows) {
+    if (!row || row.type !== 'cost_governor' || typeof row.operation_id !== 'string') continue;
+    const list = byId.get(row.operation_id) ?? [];
+    list.push(row);
+    byId.set(row.operation_id, list);
+  }
+  const problems = [];
+  const push = (operation_id, problem) => problems.push({ operation_id, problem });
+  for (const [operation_id, list] of byId) {
+    let lastActual = 0; let lastReserved = 0; let terminals = 0;
+    for (const row of list) {
+      if (row.invocation_kind !== undefined && row.invocation_kind !== null
+        && !INVOCATION_KINDS.includes(row.invocation_kind)) {
+        push(operation_id, `unknown-invocation-kind:${row.invocation_kind}`);
+      }
+      // Một bản ghi KHÔNG được tự mâu thuẫn: vừa hoàn tất vừa có lỗi, hoặc vừa
+      // hoàn tất vừa bị huỷ.
+      if (row.completed === true && row.failure !== null && row.failure !== undefined) {
+        push(operation_id, 'completed-with-failure');
+      }
+      if (row.completed === true && row.cancelled === true) push(operation_id, 'completed-and-cancelled');
+      if (Number.isFinite(row.actual_invocations)) {
+        if (!Number.isSafeInteger(row.actual_invocations) || row.actual_invocations < 0) {
+          push(operation_id, 'invalid-actual-invocations');
+        } else if (row.actual_invocations < lastActual) push(operation_id, 'actual-invocations-decreased');
+        else lastActual = row.actual_invocations;
+      }
+      if (Number.isFinite(row.reserved_units)) {
+        if (row.reserved_units < 0) push(operation_id, 'negative-reserved-units');
+        else if (row.reserved_units < lastReserved) push(operation_id, 'reserved-units-decreased');
+        else lastReserved = row.reserved_units;
+      }
+      if (Number.isFinite(row.elapsed_ms) && row.elapsed_ms < 0) push(operation_id, 'negative-elapsed-ms');
+      if (row.decision === 'operation_finished') terminals += 1;
+    }
+    // Nhiều terminal event cho CÙNG operation ⇒ bị ghi lặp (retry/mất đồng bộ).
+    if (terminals > 1) push(operation_id, 'duplicate-terminal-event');
+    // Đã thực sự gọi mà không có terminal event ⇒ thiếu dấu kết thúc. Operation
+    // chỉ ĐẶT CHỖ rồi bị cắt ngân sách (`actual_invocations===0`) được phép thiếu:
+    // đó là "không chạy", không phải "chạy dở".
+    if (terminals === 0 && lastActual > 0) push(operation_id, 'missing-terminal-event');
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+/**
+ * Tập hợp TỐI THIỂU cho identity của bằng chứng THẬT (§10, §11): nếu thiếu, một
+ * lần chạy không thể tái lập, nên không được coi là bằng chứng promotion.
+ */
+const REAL_IDENTITY_KEYS = Object.freeze(['plugin_git_commit', 'evaluator_hash']);
 
 /** Kiểm tra một row có đúng schema v2 và đủ trường bắt buộc. */
 export function validateRow(row) {
@@ -395,11 +575,46 @@ export function validateRow(row) {
   if (row.arm !== 'experimental' && (row.effortAbstain === true || row.layer5 === true)) {
     reasons.push('effortAbstain-and-layer5-are-experimental-only');
   }
+  // --- Kiểu dữ liệu nghiêm ngặt (§26): không coerce, không đoán ý. ---
+  if (typeof row.success !== 'boolean') reasons.push('invalid-metric:success');
+  for (const key of NUMERIC_METRIC_KEYS) {
+    const problem = metricTypeProblem(row, key);
+    if (problem) reasons.push(problem);
+  }
+  for (const key of COUNTER_METRIC_KEYS) {
+    const problem = counterTypeProblem(row, key);
+    if (problem) reasons.push(problem);
+  }
+  if (Number.isSafeInteger(row.tests_passed) && Number.isSafeInteger(row.tests_total)
+    && row.tests_passed > row.tests_total) {
+    reasons.push('tests-passed-exceeds-total');
+  }
+  if (row.mode !== undefined && row.mode !== null && !MODES.includes(row.mode)) {
+    reasons.push(`unknown-mode:${row.mode}`);
+  }
+  // §16: telemetry vận hành KHÔNG nhất quán nghĩa là dataset hỏng. Collector đã
+  // ghi `operation_telemetry_problems`; nếu row có vấn đề thì `aggregateOperations`
+  // vẫn cho ra metric "sạch" và kết luận dựa trên đó là kết luận trên dữ liệu
+  // không đáng tin. Phải từ chối ở đây để analyzer không thể promote row hỏng —
+  // trước đây field này chỉ được ghi mà KHÔNG được kiểm (fail-open thật).
+  if (Array.isArray(row.operation_telemetry_problems) && row.operation_telemetry_problems.length > 0) {
+    reasons.push('operation-telemetry-inconsistent');
+  }
+  // --- Bằng chứng THẬT phải truy được về một nguồn TÁI LẬP được (§10, §30). ---
+  // Thiếu revision chính xác hoặc evaluator hash nghĩa là hai lần chạy cùng
+  // `plugin_version` vẫn có thể khác mã nguồn — không được pool làm một treatment.
+  if (row.source === 'real') {
+    for (const key of REAL_IDENTITY_KEYS) {
+      if (typeof row[key] !== 'string' || !row[key].trim()) reasons.push(`missing-${key.replace(/_/g, '-')}`);
+    }
+    if (row.plugin_dirty_state === true) reasons.push('unreproducible-plugin-state');
+  }
   return { ok: reasons.length === 0, reasons };
 }
 
 /**
  * Môi trường capability của arm có hợp lệ cho promotion không.
+ *
  * `available === false` ⇒ hạ tầng thiếu (không phải regression hiệu năng).
  * `available === null` ⇒ chưa chứng minh được ⇒ không tự đoán là đạt.
  *
@@ -407,13 +622,24 @@ export function validateRow(row) {
  * thì việc `jevgrep` không đo được KHÔNG làm mất giá trị phép đo của task đó.
  * Khi bỏ trống, mọi capability đã cấu hình đều phải kiểm được (mặc định bảo thủ).
  *
- * Dù có truyền `expected` hay không, capability mà ROW TỰ KHAI là cần exercise
- * (`expected_capabilities_to_exercise`) LUÔN phải có mặt trong manifest — nếu
- * không, đó là thiếu bằng chứng. Nếu chỉ dựa vào caller truyền `expected`, lỗ
- * fail-open sẽ quay lại ở đường gọi mặc định: row khai cần `x` mà manifest rỗng
- * vẫn được chấm `valid`.
+ * `role` quyết định luật `configured`:
+ *   - `baseline` (vanilla): arm nền KHÔNG cấu hình plugin capability là ĐÚNG —
+ *     entry `configured:false` được bỏ qua, không phải thiếu bằng chứng.
+ *   - `treatment`: task KHAI cần capability `x` thì arm treatment PHẢI thật sự
+ *     cấu hình `x` (`configured === true`). `configured:false` trên treatment là
+ *     bằng chứng MÂU THUẪN với hợp đồng task ⇒ invalid, KHÔNG được coi là "không
+ *     áp dụng". Nếu bỏ qua, một treatment chưa hề bật lớp mà task yêu cầu vẫn ra
+ *     `valid` và đẩy nhóm lên `eligible-for-review` — đúng lỗ fail-open cần chặn.
+ *   - `null`/bỏ trống: giữ luật bảo thủ cũ (chỉ bắt entry THIẾU), để các caller
+ *     chẩn đoán không phải khai role.
+ *
+ * `exercised` (§2): khi treatment khai `expected` capability `x`, `x` phải có
+ * bằng chứng ĐÃ CHẠY (`entry.exercised === true`). `available` chỉ nói "có sẵn",
+ * KHÔNG nói "đã chạy" — một task recovery có jg sẵn nhưng không bao giờ kích hoạt
+ * vẫn `available:true, exercised:false`, và phép đo lớp đó là RỖNG. Trạng thái
+ * này là `incomplete` (thiếu bằng chứng), KHÔNG phải `regression`.
  */
-export function capabilityValidity(row, expected = null) {
+export function capabilityValidity(row, expected = null, { role = null } = {}) {
   const capabilities = row?.capabilities;
   if (!capabilities || typeof capabilities !== 'object') {
     return { valid: false, reasons: ['missing-capability-manifest'], invalid: [], incomplete: [] };
@@ -423,21 +649,28 @@ export function capabilityValidity(row, expected = null) {
     ? new Set(row.expected_capabilities_to_exercise) : null;
   const invalid = []; const incomplete = [];
   for (const spec of CAPABILITY_SPECS) {
+    // Ngoài phạm vi `expected` ⇒ không kiểm (task không cần lớp này).
     if (scope && !scope.has(spec.name)) continue;
+    // Trong phạm vi kiểm (do caller khai) HOẶC do chính row khai cần exercise.
+    const wanted = scope ? true : (declared?.has(spec.name) ?? false);
     const entry = capabilities[spec.name];
     // Task KHAI cần exercise lớp này nhưng manifest KHÔNG báo cáo gì về nó ⇒ thiếu
-    // bằng chứng, KHÔNG được coi là hợp lệ (fail-closed). Nếu bỏ qua, một row khai
-    // `expected_capabilities_to_exercise: ['x']` mà manifest rỗng sẽ được chấm
-    // `valid` và đẩy nhóm lên `eligible-for-review` dù lớp `x` chưa hề được đo.
-    // Entry CÓ nhưng `configured:false` thì KHÁC: đó là "arm này không cấu hình lớp
-    // đó" (đúng dạng row vanilla thật), nên bỏ qua — không phải thiếu bằng chứng.
+    // bằng chứng, KHÔNG được coi là hợp lệ (fail-closed).
     if (entry === undefined) {
       if (scope || declared?.has(spec.name)) incomplete.push(spec.name);
       continue;
     }
-    if (!entry || typeof entry !== 'object' || entry.configured !== true) continue;
+    if (!entry || typeof entry !== 'object') continue;
+    // Treatment phải THẬT SỰ bật lớp mà task yêu cầu.
+    if (role === 'treatment' && wanted && entry.configured !== true) {
+      invalid.push(spec.name);
+      continue;
+    }
+    if (entry.configured !== true) continue;
     if (entry.available === false) invalid.push(spec.name);
     else if (entry.available !== true) incomplete.push(spec.name);
+    // `available:true` chưa đủ: treatment phải CHỨNG MINH lớp đã chạy.
+    else if (role === 'treatment' && wanted && entry.exercised !== true) incomplete.push(spec.name);
   }
   const reasons = [];
   if (invalid.length) reasons.push('invalid-capability-environment');
@@ -464,7 +697,65 @@ export function capabilityValidity(row, expected = null) {
 export const GROUP_COMMON_FIELDS = Object.freeze([
   'source', 'split', 'mode', 'run_id', 'task_class', 'task_prompt_hash', 'permission_mode',
   'dsh_version', 'plugin_version', 'benchmark_config_hash', 'measurement_axes',
+  'plugin_git_commit', 'evaluator_hash', 'dsh_git_commit', 'model_endpoint_origin',
+  'collector_version', 'cache_mode',
 ]);
+
+/**
+ * Đối chiếu manifest với chính các row đã ghi (§5).
+ *
+ * Manifest là lời KHAI của collector; row là bằng chứng THẬT. Hai thứ phải khớp
+ * trên mọi chiều: `run_id`, `split`, `mode`, `collector_version`, số row mong đợi
+ * và số row thực, cùng danh sách task/arm/seed. Trước đây analyzer chỉ đọc
+ * `written_rows` rồi tin — nên một manifest bị sửa (đổi `run_id`, thêm arm,
+ * giấu seed) vẫn qua được.
+ *
+ * THUẦN. Trả `{ ok, problems }` — `problems` là mảng chuỗi machine-readable.
+ * Không tự sửa dữ liệu: chỉ nói "không tin được".
+ */
+export function verifyManifestAgainstRows(rows, manifest) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const problems = [];
+  if (manifest === null || manifest === undefined) return { ok: false, problems: ['no-run-manifest'] };
+  if (typeof manifest !== 'object' || Array.isArray(manifest)) return { ok: false, problems: ['malformed-run-manifest'] };
+  if (manifest.status !== 'complete') problems.push('incomplete-run-manifest');
+  if (!Number.isSafeInteger(manifest.written_rows) || !Number.isSafeInteger(manifest.expected_rows)) {
+    problems.push('manifest-row-counts-missing');
+  } else if (manifest.written_rows !== manifest.expected_rows) {
+    problems.push('manifest-wrote-fewer-rows-than-expected');
+  }
+  // Số row THẬT phải bằng số manifest khai — nếu không, file bị cắt/sửa.
+  if (Number.isSafeInteger(manifest.written_rows) && manifest.written_rows !== list.length) {
+    problems.push(`manifest-written-rows-mismatch:${manifest.written_rows}!=${list.length}`);
+  }
+  const real = list.filter((row) => row.source === 'real');
+  if (real.length > 0) {
+    if (typeof manifest.run_id !== 'string' || !manifest.run_id.trim()) problems.push('manifest-missing-run-id');
+    else if (real.some((row) => row.run_id !== manifest.run_id)) problems.push('manifest-run-id-mismatch');
+  }
+  const distinct = (key) => [...new Set(list.map((row) => canonicalJson(row[key] ?? null)))];
+  for (const field of ['split', 'mode', 'collector_version']) {
+    if (manifest[field] === undefined) continue;
+    const values = distinct(field);
+    if (values.length > 1) problems.push(`rows-mixed-${field.replace(/_/g, '-')}`);
+    else if (values.length === 1 && canonicalJson(manifest[field]) !== values[0]) {
+      problems.push(`manifest-${field.replace(/_/g, '-')}-mismatch`);
+    }
+  }
+  // Danh sách task/arm/seed phải khớp CHÍNH XÁC tập hợp trong row.
+  const compareSet = (field, rowsOf) => {
+    if (!Array.isArray(manifest[field])) return;
+    const declared = [...new Set(manifest[field].map((value) => canonicalJson(value)))].sort();
+    const actual = [...new Set(rowsOf().map((value) => canonicalJson(value)))].sort();
+    if (canonicalJson(declared) !== canonicalJson(actual)) {
+      problems.push(`manifest-${field}-mismatch`);
+    }
+  };
+  compareSet('arms', () => list.map((row) => row.arm));
+  compareSet('tasks', () => list.map((row) => row.task_id));
+  compareSet('seeds', () => list.map((row) => row.seed));
+  return { ok: problems.length === 0, problems };
+}
 
 /**
  * Kiểm tính nhất quán của MỘT nhóm đủ arm.
@@ -496,15 +787,25 @@ export const PRIMARY_KEYS = Object.freeze([
  * Bảng direction/kind/axis/required cho từng metric promotion.
  *
  * `axis` quyết định metric chỉ được xét trên task thật sự đo trục đó.
- * `required` quyết định metric THIẾU có chặn promotion không: `cost_usd` không
- * có nguồn dữ liệu nên không được phép biến "chưa đo được" thành "không đạt".
+ * `required` quyết định metric THIẾU có chặn promotion không.
+ *
+ * §7: chi phí phải tách "tiền thật" (`cost_usd`, KHÔNG có nguồn dữ liệu ⇒ optional)
+ * khỏi "chi phí nguồn lực đo được" (`resource_invocations` = số lần gọi thật từ
+ * operation telemetry ⇒ REQUIRED, vì nó có nguồn thật). Token vào/ra cũng là chi
+ * phí nguồn lực nhưng CHỈ bắt buộc khi provider thực sự trả usage — hiện dsh
+ * headless không phát `step_end` nên chúng `null`; đánh dấu `required:false` để
+ * "chưa đo được" không bị biến thành "không đạt", nhưng cũng không tự thành 0.
  */
 export function promotionMetrics() {
   return {
     success: { direction: 'higher-is-better', kind: 'quality', axis: 'quality', required: true },
     test_pass_rate: { direction: 'higher-is-better', kind: 'quality', axis: 'quality', required: true },
     walltime_ms: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: true },
+    resource_invocations: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: true },
     cost_usd: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: false },
+    input_tokens: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: false },
+    output_tokens: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: false },
+    reasoning_tokens: { direction: 'lower-is-better', kind: 'performance', axis: 'performance', required: false },
     false_allow: { direction: 'lower-is-better', kind: 'safety', axis: 'safety', required: true },
     false_deny: { direction: 'lower-is-better', kind: 'safety', axis: 'safety', required: true },
   };
