@@ -5,6 +5,105 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — sàn catastrophic bắt nhầm 100%: neo vị trí lệnh, bỏ heredoc, trung hoà nháy
+
+Đo trên log thật: **mọi dòng `deny_catastrophic` đều là bắt nhầm** — không có lệnh
+nào thực sự phá hệ thống. Replay lại toàn bộ 51 dòng đã ghi bằng bộ khớp đã sửa:
+**0 dòng còn bị chặn**, và kiểm độc lập xác nhận **0/51** chứa một lời gọi phá huỷ
+thật ở vị trí lệnh. (Số dòng tăng dần trong lúc audit — 45 → 47 → 51 — vì mỗi
+script audit chứa chuỗi `mkfs`/`rm -rf /` lại bị chính sàn chặn và ghi thêm một
+dòng. Đó không phải nhiễu: nó là bằng chứng tự củng cố cho lỗi này.)
+
+Ba nguyên nhân, cả ba đã sửa:
+
+1. **Khớp xuyên dòng.** Lớp ký tự `[^|;&]*` không loại `\n`, nên một chữ `/` ở
+   DÒNG SAU bị coi là đích của `rm`. Lệnh `rm -rf /tmp/jev-gate-live` rồi dòng
+   sau có `/` bị chặn oan (log thật `2026-10-03T17:31:36Z`, `2026-10-07T17:57:11Z`).
+   Nay mọi lớp tự do là `[^|;&\n]` và mọi khoảng trắng là `[ \t]`: đích phải cùng
+   dòng với lệnh.
+2. **Khớp tên lệnh ở bất kỳ đâu.** `mkfs-or-wipe` không neo vị trí, nên `grep -n
+   "mkfs" CHANGELOG.md`, `ls tests/mkfs-floor.test.mjs`, hay một chữ `mkfs` trong
+   heredoc đều bị chặn. Log thật: **toàn bộ dòng `mkfs-or-wipe` là bắt nhầm**, và
+   tất cả đều có đường dẫn dsh-jev-gate — chính script tự-kiểm của plugin bị chặn.
+   Nay mọi mẫu neo vào `COMMAND_START` (đầu chuỗi, sau `\n ; & | ( {`, sau
+   launcher `sudo`/`do`/`xargs`/…, sau `-c "`, sau `eval "`).
+3. **Quét thân heredoc như lệnh.** `cat > x.mjs <<'EOF' … rm -rf / … EOF` là GHI
+   DỮ LIỆU, nhưng bị chặn như thể đang chạy. Nay `stripHeredocs()` bỏ thân —
+   **trừ khi** lệnh nhận heredoc là shell/trình thông dịch (`bash <<'EOF'`), vì
+   thân đó THI HÀNH. Bỏ vô điều kiện là tự mở một đường lách (`bash <<'EOF'\nrm
+   -rf /\nEOF`), nên ca này có test riêng.
+
+Thêm luật thứ tư phát hiện trong lúc sửa: `;`/`&`/`|` **trong dấu nháy** là dữ
+liệu, không phải ranh giới lệnh — `echo "x; mkfs.ext4 /dev/sda1"` chỉ in một
+chuỗi. `neutralizeQuotedSeparators()` thay chúng bằng khoảng trắng, trừ payload
+của `sh -c "…"`/`eval "…"`.
+
+`mkfs-or-wipe` nay cũng đòi một **thiết bị khối** cùng dòng: tạo filesystem trên
+tệp thường (`mkfs.ext4 image.img`) là hợp lệ.
+
+Giới hạn đã biết, ghi rõ chứ không giấu: sàn là bộ lọc **cú pháp shell**, không
+phải trình phân tích Python/JS, nên payload lồng trong trình thông dịch
+(`node -e "…execSync('rm -rf /')"`, `python3 <<EOF … os.system(...)`) KHÔNG bị
+sàn chặn. Với dạng đó Jev vẫn phán đoán, và đây là đánh đổi có chủ ý: quét cả
+payload trong nháy sẽ chặn mọi script tự-kiểm của repo — đúng lớp lỗi vừa sửa.
+
+Regression: `tests/offline.mjs` ca **12r** nay khoá cả hai phía — 26 lệnh phá huỷ
+THẬT phải chặn (kèm `eval "…"` và `bash <<'EOF'`), 28 lệnh lành phải cho qua
+(kèm `;`/`&&`/`|` trong nháy, heredoc ghi file, `mkfs` trên tệp thường). Đối
+chứng riêng: đích ở DÒNG SAU cho qua, đích ở CÙNG DÒNG vẫn chặn. Mutation-check:
+4 phép biến đổi (bỏ neo, bỏ cấm xuyên dòng, bỏ `stripHeredocs`, bỏ trung hoà
+nháy) đều bị bắt.
+
+### Sửa — thứ tự dòng `decisions.jsonl` không khớp thứ tự gọi (26,5%)
+
+`makeRecorder()` bắn `appendFile()` cho mỗi dòng mà **không chờ dòng trước**, nên
+hai `record()` liền nhau là hai promise độc lập — thứ tự chạm đĩa do bộ lập lịch
+quyết định. Đo trên chính hàm này: hai dòng liên tiếp ra **sai thứ tự 53/200 lần
+(26,5%)**.
+
+Đây là log AUDIT, nên đó là lỗi thật: dòng "chặn" nằm sau dòng "cho qua" khiến
+đọc log suy ra sai nguyên nhân. Hồi quy lộ ra ngẫu nhiên qua ca 11z-k2 (FAIL
+`["p/m2","p/m"]` khoảng 1/3 lần chạy) — đúng kiểu flaky phải ghim bằng bất biến
+tường minh. Nay mỗi lần ghi nối vào đuôi một hàng đợi promise, và `at` được chốt
+NGAY LÚC GỌI (không phải lúc ghi). `makeRecorder` được export để test trực tiếp.
+
+Regression: ca **11z-k4** — 5 lần × 20 dòng, đòi thứ tự khớp tuyệt đối.
+Mutation-check: khôi phục `appendFile` song song → ca FAIL (`sai thứ tự 2/5`).
+
+### Sửa — hai guard subagent CHẾT vì đọc sai đường `delegationDepth`
+
+`dsh-subagent/lib/types/depth.js:25` đọc `agent.session.header.delegationDepth`.
+Plugin đọc thẳng `agent.session.delegationDepth` — luôn `undefined`, nên cả hai
+guard `> 0` không bao giờ đúng:
+
+- Lớp 7 (`quality_review`) không bao giờ ghi `skip_subagent` (log thật: **0
+  dòng**), nên subagent cũng bị gọi review.
+- Guard thẻ đồng ý không bao giờ trả `subagent cannot ask the user`, nên nó không
+  bao giờ tự chặn. Cái chặn subagent thật là HOST, bằng mã lỗi `DELEGATED_CALLER`
+  (`dsh-user-questions/lib/index.js`) — log thật 10 dòng `consent_reason:
+  "DELEGATED_CALLER"`, tất cả đều `consent: "unavailable"`.
+
+Nay `delegationDepthOf()` đọc đúng `header.delegationDepth`, vẫn tôn trọng sàn
+đơn điệu (lấy `max` giữa header và `options.subagentDepth`), và được export. Hai
+guard của plugin nay khớp với hành vi host: guard đồng ý trả `unavailable` TRƯỚC
+khi host kịp từ chối, và Lớp 7 ghi `skip_subagent` thay vì đốt một lượt review
+cho turn subagent.
+
+Regression: ca **12c-2** — 8 check đường đọc + sàn đơn điệu + giá trị biên
+(âm, thập phân, chuỗi). Mutation-check: 4 phép biến đổi đều bị bắt.
+
+### Sửa — `fail_open` của `destructive_gate` không ghi `command`
+
+Nhánh `auto_allow` là **nhánh DUY NHẤT** mà gate MỞ và lệnh đi thẳng khi Jev lỗi,
+nên bản ghi là bằng chứng DUY NHẤT về việc gì đã chạy. Đo trên log thật:
+**555/555 dòng `fail_open` của `destructive_gate` rỗng `command`** — không audit
+được. Ba nhánh còn lại (`block`, `ask` duyệt, `ask` từ chối) đều đã ghi `command`.
+
+Nay nhánh này ghi `command: clip(command, 400).text` như ba nhánh kia.
+
+Regression: ca **(c3)** — 3 check, chạy qua `gateFailureMode: 'auto_allow'` +
+Jev lỗi, đòi bản ghi `fail_open` CÓ `command` khớp đúng lệnh đã chạy.
+
 ### Sửa — chẩn đoán `skip_no_levels` rò chéo giữa hai lời gọi (race thật)
 
 `supportedEffortsOf()` gán một biến **module-level** (`lastLookupDiagnostic`) rồi

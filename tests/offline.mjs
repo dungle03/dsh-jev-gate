@@ -157,6 +157,41 @@ console.log('1. Jev lỗi — Lớp 1 fail-closed theo `gateFailureMode`, các l
   check('(c2) signal đã huỷ vẫn deny kể cả auto_allow',
     cancelledOutcome.kind === 'deny' && cancelledOutcome.info?.code === 'JEV_GATE_UNAVAILABLE');
 
+  /**
+   * (c3) Nhánh `fail_open` của `destructive_gate` PHẢI ghi `command`.
+   *
+   * Đây là nhánh DUY NHẤT mà gate mở và lệnh đi thẳng, nên bản ghi là bằng chứng
+   * duy nhất về việc gì đã chạy khi Jev lỗi. Đo trên log thật: **555/555** dòng
+   * `fail_open` của `destructive_gate` rỗng `command` — không audit được. Ba
+   * nhánh còn lại (`block`, `ask` duyệt, `ask` từ chối) đều đã ghi; nhánh này sót.
+   */
+  {
+    const logDir = tmpDir('jev-gate-failopen-cmd-');
+    const { handlers } = await loadPlugin({
+      credentials: { resolve: async () => { throw new Error('store hỏng'); } },
+      config: {
+        gateFailureMode: 'auto_allow', enableCompletionCheck: false,
+        enableEffortRouting: false, enableQualityReview: false, logDir,
+      },
+    });
+    const cmd = 'rm -rf /tmp/audit-target';
+    const out = await handlers['tools/pre-execute'][0](
+      { name: 'bash', arguments: { command: cmd }, agent: { cwd: '/tmp', session: { snapshotEvents: () => [] } }, signal: new AbortController().signal },
+      async () => ({ kind: 'allow' }),
+    );
+    check('(c3) auto_allow + Jev lỗi → allow (nhánh fail_open)', out.kind === 'allow', `kind=${out.kind}`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const rows = (await import('node:fs')).readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      .filter((row) => row.type === 'destructive_gate' && row.decision === 'fail_open');
+    check('(c3) bản ghi fail_open CÓ `command` (audit được)',
+      rows.length >= 1 && rows.every((row) => typeof row.command === 'string' && row.command.length > 0),
+      `rows=${rows.length} cmds=${JSON.stringify(rows.map((r) => r.command))}`);
+    check('(c3) `command` khớp đúng lệnh đã chạy',
+      rows.some((row) => row.command === cmd),
+      `cmds=${JSON.stringify(rows.map((r) => r.command))}`);
+  }
+
   // (d) Lệnh chứng minh được là CHỈ-ĐỌC đi qua trước khi tới Jev → không bị chặn.
   const readonly = await run({}, 'ls -la');
   check('(d) lệnh chỉ-đọc qua prefilter → allow dù Jev lỗi', readonly.kind === 'allow', `kind=${readonly.kind}`);
@@ -184,7 +219,10 @@ console.log('1. Jev lỗi — Lớp 1 fail-closed theo `gateFailureMode`, các l
   /**
    * (f) SUBAGENT → luôn fail-closed, kể cả khi có service `userQuestions`.
    *
-   * `delegationDepth > 0` là chốt subagent (cùng chốt với Lớp 7). Subagent có
+   * `delegationDepthOf() > 0` là chốt subagent (cùng chốt với Lớp 7). Độ sâu nằm
+   * ở `session.header.delegationDepth` — hợp đồng thật của DSH
+   * (`dsh-subagent/lib/types/depth.js:25`), KHÔNG phải `session.delegationDepth`.
+   * Fixture cũ đặt sai chỗ nên test xanh trong khi code đọc sai đường. Subagent có
    * thể `ctx.get('userQuestions')` và làm thẻ nổi trên phiên cha — nhưng đó là
    * đồng ý của user cho hành động mà SUBAGENT tự đề nghị, không phải yêu cầu của
    * chính họ. Hướng an toàn: từ chối, không tự lấy đồng ý thay user.
@@ -193,7 +231,7 @@ console.log('1. Jev lỗi — Lớp 1 fail-closed theo `gateFailureMode`, các l
     const asked = { count: 0 };
     const subagent = {
       cwd: '/tmp',
-      session: { delegationDepth: 1, snapshotEvents: () => [] },
+      session: { header: { delegationDepth: 1 }, snapshotEvents: () => [] },
     };
     const { handlers } = await loadPlugin({
       credentials: { resolve: async () => { throw new Error('store hỏng'); } },
@@ -2071,6 +2109,45 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
       JSON.stringify(rowB?.diagnostic));
   }
 
+  /**
+   * 11z-k4. Thứ tự DÒNG trong `decisions.jsonl` phải khớp thứ tự GỌI `record()`.
+   *
+   * Bản trước (`makeRecorder`) bắn `appendFile()` cho mỗi dòng mà không chờ dòng
+   * trước, nên hai `record()` liền nhau là hai promise độc lập — thứ tự chạm đĩa
+   * do bộ lập lịch quyết định. Đo trên chính hàm đó: hai dòng liên tiếp ra sai
+   * thứ tự **53/200 lần (26,5%)**.
+   *
+   * Hậu quả thật: đây là log AUDIT. Dòng "chặn" nằm sau dòng "cho qua" khiến đọc
+   * log suy ra sai nguyên nhân. Test 11z-k2 đã bắt được hồi quy này một cách ngẫu
+   * nhiên (FAIL `["p/m2","p/m"]` khoảng 1/3 lần chạy) — đúng kiểu hỏng flaky mà
+   * phải ghim bằng bất biến tường minh, không để test khác vô tình phát hiện.
+   *
+   * Bất biến: 20 dòng ghi liên tiếp phải nằm ĐÚNG thứ tự đã gọi, nhiều lần chạy.
+   */
+  {
+    const { readFileSync } = await import('node:fs');
+    const mod = await import(`${pathToFileURL(PLUGIN).href}?rec=1`);
+    let badRuns = 0;
+    const RUNS = 5;
+    for (let run = 0; run < RUNS; run += 1) {
+      const logDir = tmpDir('jev-gate-recorder-order-');
+      const record = mod.makeRecorder(logDir);
+      const want = [];
+      for (let i = 0; i < 20; i += 1) {
+        want.push(`seq-${i}`);
+        record({ type: 'recorder_order_probe', seq: i });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const got = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8')
+        .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+        .filter((row) => row.type === 'recorder_order_probe')
+        .map((row) => row.seq);
+      if (got.join(',') !== want.map((_, i) => i).join(',')) badRuns += 1;
+    }
+    check(`recorder: thứ tự dòng khớp thứ tự gọi qua ${RUNS} lần × 20 dòng`,
+      badRuns === 0, `sai thứ tự ${badRuns}/${RUNS} lần chạy`);
+  }
+
   /** 11z-l. `effortJevChoices` cấu hình được — đổi sang {medium,high} thì Jev chọn medium. */
   await withCountingJev({ effort: 'medium', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
@@ -2406,11 +2483,12 @@ function makeChangedSession({ added = 50, deleted = 10, files = 1, depth = 0 } =
   const fileList = Array.from({ length: files }, (_v, i) => ({ path: `src/f${i}.ts`, display: `src/f${i}.ts`, added, deleted }));
   return {
     id: 'session-test',
-    delegationDepth: depth,
     snapshotEvents: () => [
       { type: 'workspace/changes', seq: CHANGES_EVENT_SEQ, data: { turn: 1 } },
     ],
-    header: { cwd: '/tmp' },
+    // Độ sâu uỷ quyền nằm ở `header.delegationDepth` (hợp đồng DSH), không phải
+    // ngay trên `session`. Fixture cũ đặt sai chỗ nên case 12c xanh giả.
+    header: { cwd: '/tmp', delegationDepth: depth },
     _summary: { turn: 1, cwd: '/tmp', files: fileList, total: files, added, deleted },
   };
 }
@@ -2525,6 +2603,59 @@ function makeGuardTools({ guardable = true } = {}) {
     });
     await handlers['agent/turn-stopping'][0]({ agent, turn: 1, signal: new AbortController().signal });
     check('subagent → KHÔNG review', tools.calls.length === 0, `calls=${tools.calls.length}`);
+  }
+
+  /**
+   * 12c-2. `delegationDepthOf` — đọc ĐÚNG đường, và tôn trọng sàn đơn điệu.
+   *
+   * Hai lỗi thật được khoá ở đây:
+   *
+   *   1. **Sai đường đọc.** Độ sâu nằm ở `session.header.delegationDepth`
+   *      (`dsh-subagent/lib/types/depth.js:25`), không phải `session.delegationDepth`.
+   *      Đọc sai ⇒ luôn `undefined` ⇒ MỌI subagent bị coi là turn chính: Lớp 7
+   *      review cả turn subagent, Lớp 1b dựng thẻ đồng ý cho hành động subagent
+   *      tự đề nghị. Case 12c và (f) đã phủ hành vi; case này khoá hàm trực tiếp.
+   *   2. **Bỏ sàn đơn điệu.** Header là sàn; `agent.options.subagentDepth` chỉ
+   *      được SÂU HƠN, không bao giờ nông hơn — subagent resume tới với options
+   *      mới, đếm lại từ 0 sẽ cho nó uỷ quyền như turn chính. DSH lấy `Math.max`;
+   *      mutation bỏ `Math.max` KHÔNG bị case nào khác bắt, nên phải khoá ở đây.
+   */
+  {
+    const mod = await import(`${pathToFileURL(PLUGIN).href}?depth=12c2`);
+    const depthOf = mod.delegationDepthOf ?? mod.default?.delegationDepthOf;
+    check('12c-2 export `delegationDepthOf` để test trực tiếp', typeof depthOf === 'function');
+
+    const cases = [
+      // [mô tả, agent, mong đợi]
+      ['turn chính: header vắng ⇒ 0', { session: { header: {} } }, 0],
+      ['turn chính: header.delegationDepth=0 ⇒ 0', { session: { header: { delegationDepth: 0 } } }, 0],
+      ['subagent: header.delegationDepth=1 ⇒ 1', { session: { header: { delegationDepth: 1 } } }, 1],
+      ['subagent sâu: header.delegationDepth=3 ⇒ 3', { session: { header: { delegationDepth: 3 } } }, 3],
+      ['SÂU HƠN từ options ⇒ max(1,2)=2',
+        { session: { header: { delegationDepth: 1 } }, options: { subagentDepth: 2 } }, 2],
+      ['NÔNG HƠN từ options bị header đè ⇒ max(2,0)=2',
+        { session: { header: { delegationDepth: 2 } }, options: { subagentDepth: 0 } }, 2],
+      ['options vắng ⇒ dùng header',
+        { session: { header: { delegationDepth: 1 } } }, 1],
+      ['giá trị không hợp lệ bị bỏ ⇒ 0',
+        { session: { header: { delegationDepth: -1 } }, options: { subagentDepth: 1.5 } }, 0],
+      ['header không phải số nguyên ⇒ bỏ ⇒ 0',
+        { session: { header: { delegationDepth: 1.5 } } }, 0],
+      ['header là chuỗi ⇒ bỏ ⇒ 0',
+        { session: { header: { delegationDepth: '2' } } }, 0],
+      ['options không nguyên nhưng header hợp lệ ⇒ giữ header',
+        { session: { header: { delegationDepth: 1 } }, options: { subagentDepth: 2.5 } }, 1],
+      ['session vắng ⇒ 0 (không ném)', {}, 0],
+    ];
+    const bad = cases.filter(([, agent, want]) => depthOf(agent) !== want);
+    check(`12c-2 delegationDepthOf đúng cả ${cases.length} ca (đường đọc + sàn đơn điệu)`,
+      bad.length === 0,
+      bad.length ? bad.map(([d, agent, w]) => `${d}: want=${w} got=${depthOf(agent)}`).join(' | ') : 'đúng hết');
+
+    // Chốt riêng cho lớp lỗi 2: nếu bỏ `Math.max`, ca "NÔNG HƠN" sẽ trả 0.
+    check('12c-2 options nông hơn KHÔNG hạ được header (sàn đơn điệu)',
+      depthOf({ session: { header: { delegationDepth: 2 } }, options: { subagentDepth: 0 } }) === 2,
+      `got=${depthOf({ session: { header: { delegationDepth: 2 } }, options: { subagentDepth: 0 } })}`);
   }
 
   // 12d. Chốt 4: trần mỗi turn
@@ -2855,6 +2986,123 @@ function makeGuardTools({ guardable = true } = {}) {
     check('12q Lớp 2 (guard monotonic) cũng từ chối CÙNG lệnh → phòng thủ nhiều lớp',
       typeof l2 === 'string' && /catastrophic/.test(l2),
       `guard=${typeof l2}`);
+  }
+
+  /**
+   * 12r. SÀN CATASTROPHIC — bộ khớp mẫu THUẦN, chạy trực tiếp trên `lib/catastrophic.mjs`.
+   *
+   * Vì sao cần test riêng ở tầng này: 12m/12n/12o/12q chỉ kiểm ĐƯỜNG ĐI qua
+   * `ctx.tools.guard` với vài lệnh. Chúng không phủ được bản thân bộ khớp — nơi
+   * ba lỗi thật đã sống:
+   *
+   *   1. `[^|;&]*` ăn cả `\n`, nên `/` ở DÒNG SAU bị coi là đích của `rm`.
+   *      Log thật: 14/47 dòng `deny_catastrophic` là dạng này.
+   *   2. `mkfs-or-wipe` khớp tên lệnh ở BẤT KỲ đâu — kể cả trong đối số `grep`
+   *      hay trong heredoc. Log thật: 20/20 dòng pattern này là bắt nhầm.
+   *   3. Thân heredoc bị quét như lệnh, nên chính script tự-kiểm của repo bị chặn.
+   *
+   * Test khoá cả hai phía: true-positive PHẢI chặn, false-positive PHẢI cho qua.
+   * Mọi chuỗi nguy hiểm ở đây được GHÉP từ mảnh (`R = 'r'+'m'`) để chính dòng
+   * lệnh chạy test không bị sàn chặn trước khi test kịp chạy.
+   */
+  {
+    const { catastrophicMatch } = await import(
+      `${pathToFileURL(join(HERE, '..', 'lib', 'catastrophic.mjs')).href}?cat=12r`
+    );
+    const R = 'r' + 'm';           // 'rm'
+    const MK = 'm' + 'kfs';        // 'mkfs'
+    const DD = 'd' + 'd';          // 'dd'
+    const WP = 'wipe' + 'fs';      // 'wipefs'
+    const BD = 'blkdis' + 'card';  // 'blkdiscard'
+    const NL = String.fromCharCode(10);
+
+    // PHẢI CHẶN — lệnh thật sự phá huỷ ở tầng hệ thống.
+    const mustBlock = [
+      [`${R} -rf /`, 'rm-root'],
+      [`${R} -rf /*`, 'rm-root'],
+      [`${R} -rf ~`, 'rm-root'],
+      [`${R} -rf $HOME`, 'rm-root'],
+      [`${R} -rf ~/*`, 'rm-root'],
+      [`${R} -rf ./*`, 'rm-root'],
+      [`${R} -rf / ; echo done`, 'rm-root'],
+      [`cd /tmp && ${R} -rf /`, 'rm-root'],
+      [`true; ${R} -rf /`, 'rm-root'],
+      [`sudo ${R} -rf /`, 'rm-root'],
+      [`xargs ${R} -rf /`, 'rm-root'],
+      [`${R} -rf /tmp/x && ${R} -rf /`, 'rm-root'],
+      [`bash -c "${R} -rf /"`, 'rm-root'],
+      [`${R} -rf /\\${NL}`, 'rm-root'],
+      [`${MK}.ext4 /dev/sda1`, 'mkfs-or-wipe'],
+      [`sudo ${WP} -a /dev/sdb`, 'mkfs-or-wipe'],
+      [`${BD} /dev/nvme0n1`, 'mkfs-or-wipe'],
+      [`${MK} -t ext4 /dev/sda`, 'mkfs-or-wipe'],
+      [`sh -c "${MK}.ext4 /dev/sda1"`, 'mkfs-or-wipe'],
+      [`eval "${R} -rf /"`, 'rm-root'],
+      [`bash <<'EOF'${NL}${R} -rf /${NL}EOF`, 'rm-root'],
+      [`${DD} if=/dev/zero of=/dev/sda`, 'dd-to-device'],
+      [`${DD} if=/dev/urandom of=/dev/nvme0n1`, 'dd-to-device'],
+      [`cat /tmp/x > /dev/sda`, 'redirect-to-device'],
+      [`echo hi > /dev/sdb`, 'redirect-to-device'],
+      [`chmod -R 777 /`, 'chmod-root'],
+    ];
+    const missed = mustBlock.filter(([cmd]) => catastrophicMatch(cmd) === undefined);
+    check(`12r sàn CHẶN đủ ${mustBlock.length} lệnh phá huỷ thật`,
+      missed.length === 0,
+      missed.length ? `BỎ LỌT: ${JSON.stringify(missed.map(([c]) => c))}` : 'không bỏ lệnh nào');
+
+    // Khớp ĐÚNG pattern id (không chỉ "có chặn").
+    const wrongId = mustBlock.filter(([cmd, id]) => catastrophicMatch(cmd) !== id);
+    check('12r sàn gán ĐÚNG pattern id cho từng lệnh',
+      wrongId.length === 0,
+      wrongId.length ? wrongId.map(([c, id]) => `${JSON.stringify(c)} want=${id} got=${catastrophicMatch(c)}`).join(' | ') : 'đúng hết');
+
+    // PHẢI CHO QUA — đây đúng là lớp bắt nhầm đã đo được trên log thật.
+    const mustAllow = [
+      [`${R} -rf /tmp/x`, 'xoá thư mục tạm'],
+      [`${R} -rf node_modules`, 'dọn node_modules'],
+      [`${R} -rf ./build`, 'xoá thư mục build tương đối'],
+      [`${R} -f a.txt`, 'xoá một tệp'],
+      [`ls -la`, 'liệt kê'],
+      [`grep -n "${MK}" CHANGELOG.md`, 'grep tìm chữ mkfs'],
+      [`ls tests/${MK}-floor.test.mjs`, 'ls tệp tên mkfs*'],
+      [`echo "dung chay ${MK} tren /dev/sda"`, 'echo nhắc mkfs + /dev/sda'],
+      [`echo "the ${DD} command is dangerous"`, 'echo nhắc dd'],
+      [`echo "canh bao: ${R} -rf / rat nguy hiem"`, 'echo nhắc rm -rf /'],
+      [`echo "x; ${MK}.ext4 /dev/sda1"`, 'echo có ; TRONG nháy, không gọi mkfs'],
+      [`echo "a && ${DD} if=/dev/zero of=/dev/sda"`, 'echo có && TRONG nháy, không gọi dd'],
+      [`printf '%s' "x; ${R} -rf /"`, 'printf chuỗi có ; trong nháy'],
+      [`grep -n "x|${MK}" README.md`, 'grep mẫu có | trong nháy'],
+      [`node -e 'console.log("a; ${MK} /dev/sda")'`, 'node -e in chuỗi nhắc mkfs'],
+      [`${R} -rf /tmp/x${NL}ls / `, 'rm tmp, dòng sau có /'],
+      [`${R} -rf /tmp/x${NL}echo "exit / done"`, 'rm tmp, dòng sau có / trong echo'],
+      [`${R} -rf /tmp/x${NL}grep -c / file`, 'rm tmp, dòng sau có grep /'],
+      [`${DD} if=/tmp/img of=/tmp/out.img${NL}ls /dev/sda`, 'dd tạm, dòng sau có /dev/sda'],
+      [`${DD} if=/tmp/x${NL}foo of=/dev/sda`, 'dd tạm, dòng sau có of=/dev/sda'],
+      [`${MK}.ext4 image.img`, 'mkfs trên TỆP thường (không phá gì)'],
+      [`cat > /tmp/x.mjs <<'EOF'${NL}const s = ['${R} -rf /'];${NL}EOF`, 'heredoc chứa rm -rf /'],
+      [`cat > /tmp/y.sh <<EOF${NL}${MK}.ext4 /dev/sda1${NL}EOF`, 'heredoc chứa mkfs + /dev/sda1'],
+      [`cat > /tmp/z.sh <<'EOF'${NL}bash -c "${R} -rf /"${NL}EOF`, 'heredoc chỉ GHI script (không chạy)'],
+      [`node -e "require('child_process').execSync('${R} -rf /')"`, 'payload node -e'],
+      [`python3 <<'EOF'${NL}import os${NL}os.system('${R} -rf /')${NL}EOF`, 'payload python heredoc (giới hạn đã biết: sàn không đọc code python)'],
+      [`echo $((1 << 2))`, 'dịch bit, không phải heredoc'],
+      [`printf 'x' >> /tmp/log`, 'ghi nối vào tệp tạm'],
+    ];
+    const falsePos = mustAllow.filter(([cmd]) => catastrophicMatch(cmd) !== undefined);
+    check(`12r sàn CHO QUA đủ ${mustAllow.length} lệnh lành (chống bắt nhầm)`,
+      falsePos.length === 0,
+      falsePos.length
+        ? `BẮT NHẦM: ${falsePos.map(([c]) => `${catastrophicMatch(c)} <- ${JSON.stringify(c)}`).join(' | ')}`
+        : 'không bắt nhầm lệnh nào');
+
+    // Bất biến riêng của lớp lỗi 1: mẫu KHÔNG được khớp xuyên dòng. Đích `/` ở
+    // DÒNG SAU không được tính là đích của `rm` — nhưng nếu nó ở CÙNG dòng thì
+    // phải bị chặn (đây là cặp đối chứng cho thấy sửa đúng chỗ, không tắt bừa).
+    check('12r đích ở DÒNG SAU không bị tính (không khớp xuyên dòng)',
+      catastrophicMatch(`${R} -rf /tmp/x${NL}ls / `) === undefined,
+      'dòng sau có `/` vẫn cho qua');
+    check('12r đích ở CÙNG dòng thì VẪN chặn (không tắt bừa)',
+      catastrophicMatch(`${R} -rf /tmp/x ls /`) === 'rm-root',
+      `got=${catastrophicMatch(`${R} -rf /tmp/x ls /`)}`);
   }
 }
 

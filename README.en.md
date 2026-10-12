@@ -688,9 +688,14 @@ itself off silently — no error, no blocking. Install `jg` and put it on `PATH`
   `block` denies immediately; `auto_allow` opts into legacy fail-open behavior.
   The deterministic catastrophic floor runs in both pre-execute and the
   monotonic `ctx.tools.guard`. Advisory layers skip hints on Jev failure.
-  The floor scans the **entire shell command text**, so even a catastrophic
-  literal inside a heredoc being written can trigger it; use a file-edit tool
-  when authoring such test data instead of embedding it in a shell command.
+  The floor anchors every pattern to a real command position, so a destructive
+  word used as an argument (`grep -n "mkfs" CHANGELOG.md`) or inside quotes does
+  not trigger it. A heredoc body is treated as **data** when the consumer is
+  `cat`-like (writing a test fixture is fine), but as **code** when the consumer
+  is a shell/interpreter (`bash <<'EOF'`), because that body is executed.
+  Nested-interpreter payloads (`node -e "…execSync('rm -rf /')"`) are a
+  documented limitation: the floor is a shell-syntax filter, not a Python/JS
+  parser, and Jev still judges those calls.
 - **Short timeout.** The gate waits at most 2s for Jev, then applies
   `gateFailureMode` instead of silently allowing an unclassified shell command.
 - **Pin the model.** `jev-1.13.0` rather than `jev-latest`, because an alias

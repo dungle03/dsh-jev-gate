@@ -650,9 +650,14 @@ lỗi, không chặn gì. Cài `jg` rồi để nó trên `PATH`.
   ngay; `auto_allow` là opt-in tương thích hành vi cũ. Prefilter chỉ-đọc vẫn cho
   phép lệnh đã chứng minh không ghi. Sàn catastrophic chặn ở pre-execute và
   `ctx.tools.guard` monotonic. Các lớp tư vấn khác lỗi thì bỏ qua gợi ý.
-  Sàn phân tích **toàn bộ chuỗi lệnh shell**, nên chuỗi `rm -rf /` nằm trong
-  heredoc/script đang tạo cũng có thể bị chặn dù chưa thực thi; viết mẫu kiểm
-  thử qua công cụ sửa file thay vì nhúng nguyên văn lệnh đó trong bash.
+  Sàn neo mọi mẫu vào vị trí lệnh thật, nên một chữ phá huỷ dùng làm đối số
+  (`grep -n "mkfs" CHANGELOG.md`) hay nằm trong nháy đều KHÔNG khớp. Thân
+  heredoc là **dữ liệu** khi lệnh nhận nó chỉ chép ra file (`cat <<'EOF'`), nhưng
+  là **code** khi lệnh nhận nó là shell/trình thông dịch (`bash <<'EOF'`), vì
+  thân đó được thi hành. Payload nằm trong trình thông dịch lồng
+  (`node -e "…execSync('rm -rf /')"`) là **giới hạn đã biết**: sàn là bộ lọc cú
+  pháp shell, không phải trình phân tích Python/JS, và Jev vẫn phán đoán các
+  lệnh đó.
 - **Timeout ngắn.** Gate phá dữ liệu chạy trong đường tới hạn của tool call:
   tối đa 2s gọi Jev, sau đó áp dụng `gateFailureMode`.
 - **Pin model.** `jev-1.13.0` chứ không `jev-latest`, vì alias dịch chuyển khi
