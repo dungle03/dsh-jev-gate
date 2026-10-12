@@ -47,12 +47,70 @@ phải trình phân tích Python/JS, nên payload lồng trong trình thông d�
 sàn chặn. Với dạng đó Jev vẫn phán đoán, và đây là đánh đổi có chủ ý: quét cả
 payload trong nháy sẽ chặn mọi script tự-kiểm của repo — đúng lớp lỗi vừa sửa.
 
-Regression: `tests/offline.mjs` ca **12r** nay khoá cả hai phía — 26 lệnh phá huỷ
-THẬT phải chặn (kèm `eval "…"` và `bash <<'EOF'`), 28 lệnh lành phải cho qua
-(kèm `;`/`&&`/`|` trong nháy, heredoc ghi file, `mkfs` trên tệp thường). Đối
-chứng riêng: đích ở DÒNG SAU cho qua, đích ở CÙNG DÒNG vẫn chặn. Mutation-check:
+Regression: `tests/offline.mjs` ca **12r** khoá cả hai phía — lệnh phá huỷ THẬT
+phải chặn (kèm `eval "…"` và `bash <<'EOF'`), lệnh lành phải cho qua (kèm
+`;`/`&&`/`|` trong nháy, heredoc ghi file, `mkfs` trên tệp thường). Đối chứng
+riêng: đích ở DÒNG SAU cho qua, đích ở CÙNG DÒNG vẫn chặn. Mutation-check:
 4 phép biến đổi (bỏ neo, bỏ cấm xuyên dòng, bỏ `stripHeredocs`, bỏ trung hoà
-nháy) đều bị bắt.
+nháy) đều bị bắt. (Hai mục ngay dưới mở rộng ca này lên 59/40 sau khi tìm ra hai
+hồi quy: launcher và đường dẫn tuyệt đối.)
+
+### Sửa — gọi chương trình bằng đường dẫn tuyệt đối lọt sàn (hồi quy do bản trước)
+
+Bản neo đầu gắn tiền tố đường dẫn (`/bin/rm`, `./rm`, `\rm`) **chỉ cho mẫu `rm`**,
+nên mọi mẫu khác đều lọt khi chương trình được gọi kèm đường dẫn. Đo bằng probe
+đối chứng: **6/6 lệnh dạng này lọt** — `/bin/dd if=/dev/zero of=/dev/sda`,
+`/sbin/mkfs.ext4 /dev/sda1`, `/usr/bin/wipefs -a /dev/sdb`,
+`/sbin/blkdiscard /dev/nvme0n1`, `/bin/chmod -R 777 /`, `/bin/mv /* /dev/null`.
+
+Đây cũng là hồi quy **do bản sửa trước gây ra**: sàn bản gốc (khớp chuỗi con,
+không neo) chặn được vì nó không quan tâm đường dẫn. Nay `PATH_TOKEN` được đưa vào
+`PREFIX_TOKEN` (bỏ qua một chương trình gọi kèm đường dẫn đứng trước launcher,
+ví dụ `/usr/bin/sudo rm`) và `PATH_PREFIX` được gắn trước tên chương trình của
+**mọi** mẫu — không chỉ `rm`.
+
+Regression: ca **12r** thêm 9 lệnh phá huỷ dạng đường dẫn tuyệt đối (kể cả
+`rtk /sbin/mkfs.ext4 …`) và 4 đối chứng ngược (`/usr/bin/grep`, `/bin/ls`,
+`/usr/bin/tail`, `cat … > /tmp/x`) để việc phủ đường dẫn không biến mọi
+`/usr/bin/*` thành bắt nhầm. Mutation-check: 4 phép biến đổi (gỡ `PATH_PREFIX`
+khỏi `dd`, khỏi `mkfs`, gỡ `PATH_TOKEN` khỏi `PREFIX_TOKEN`, gỡ khỏi `chmod`+`mv`)
+**đều bị bắt**.
+
+### Sửa — neo `COMMAND_START` bỏ sót launcher, mở 17 đường lách (hồi quy do bản trước)
+
+Bản neo đầu tiên liệt kê launcher theo tên (`sudo`, `do`, `xargs`, …) và **không
+bỏ qua đối số của chúng**, nên token phá huỷ đứng sau launcher không còn ở "vị
+trí lệnh" theo mẫu và **lọt qua**. Đo bằng probe đối chứng: **17/24 lệnh phá huỷ
+lọt**, gồm `rtk rm -rf /` — mà `rtk` là prefix bắt buộc của mọi lệnh shell trong
+môi trường này (`AGENTS.md`), nên đó mới là dạng tấn công THẬT SỰ ở đây.
+
+Đây là hồi quy **do bản sửa trước gây ra**, không phải lỗi cũ: sàn bản gốc (khớp
+chuỗi con, không neo) chặn được mọi dạng này vì nó chặn cả thứ không nên chặn.
+Vá bắt nhầm bằng cách thêm neo mà không mô hình hoá launcher là **đánh đổi sai
+hướng**: lỗi nghiêng về phía nguy hiểm (bỏ lọt) thay vì phía an toàn (bắt nhầm).
+
+Nay `COMMAND_START` bỏ qua một **dãy token tiền tố** hữu hạn: launcher
+(`sudo`/`doas`/`env`/`nice`/`ionice`/`timeout`/`stdbuf`/`nohup`/`time`/`command`/
+`exec`/`setsid`/`busybox`/`rtk`/`xargs`/`watch`/`parallel`/`do`/`then`/`else`/
+`eval`), trình thông dịch, cờ kèm giá trị (`-u root`, `-n 10`), cờ trần (`-rf`,
+`-0`), phép gán (`FOO=1`), và số (`timeout 5`). Cố ý **KHÔNG** cho phép từ trần
+bất kỳ: nếu bỏ qua từ trần thì việc môi trường prefix `rtk` lên mọi lệnh sẽ biến
+`rtk grep -n "mkfs" file` thành bắt nhầm — đúng lớp lỗi vừa sửa.
+
+Giá trị của cờ PHẢI là token trần (không nháy). Bản đầu dùng `\S+` nên
+`node -e 'console.log("a; mkfs /dev/sda")'` bị hiểu là `-e` + giá trị
+`'console.log("a;` — nuốt mất dấu nháy rồi để `mkfs` lộ ra ở vị trí lệnh (bắt nhầm
+đo được, test 12r bắt). Nay giá trị cờ bị giới hạn ở `[A-Za-z0-9_./{},:=+-]+`.
+
+Regression: ca **12r** mở rộng lên **50 lệnh phá huỷ phải chặn** (thêm 24 dạng
+bọc launcher/đường dẫn: `rtk`, `/bin/`, `./`, `\`, `busybox`, `timeout 5`,
+`nice -n 10`, `stdbuf -o0`, `ionice -c3`, `sudo -u root`, `env FOO=1`, `FOO=1`,
+`xargs -0`, `doas`, `nohup`, `if…then`, `for…do`) và **36 lệnh lành phải cho qua**
+(thêm đối chứng: `rtk grep`, `rtk ls`, `rtk echo`, `timeout 5 grep`,
+`sudo -u root grep`, `env FOO=1 echo`). Mutation-check: 5 phép biến đổi (bỏ neo
+launcher, bỏ `rtk` khỏi danh sách, chỉ giữ launcher trần, cho phép từ trần bất kỳ,
+khôi phục giá trị cờ `\S+`) **đều bị bắt** — phép cuối đúng là lỗi bắt nhầm đã
+sửa, phép thứ tư đúng là lớp lỗi bắt nhầm do `rtk`-prefix.
 
 ### Sửa — thứ tự dòng `decisions.jsonl` không khớp thứ tự gọi (26,5%)
 

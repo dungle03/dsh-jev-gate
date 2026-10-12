@@ -3044,6 +3044,47 @@ function makeGuardTools({ guardable = true } = {}) {
       [`cat /tmp/x > /dev/sda`, 'redirect-to-device'],
       [`echo hi > /dev/sdb`, 'redirect-to-device'],
       [`chmod -R 777 /`, 'chmod-root'],
+      // Bọc trong launcher / tiền tố đường dẫn: token phá huỷ vẫn ở vị trí lệnh.
+      // Bộ neo `COMMAND_START` từng bỏ sót dạng này (17/24 lọt) — quan trọng nhất
+      // là `rtk`, vì môi trường này prefix `rtk` lên MỌI lệnh shell, nên
+      // `rtk rm -rf /` mới là dạng tấn công THẬT SỰ ở đây.
+      [`rtk ${R} -rf /`, 'rm-root'],
+      [`/bin/${R} -rf /`, 'rm-root'],
+      [`./${R} -rf /`, 'rm-root'],
+      [`\\${R} -rf /`, 'rm-root'],
+      [`busybox ${R} -rf /`, 'rm-root'],
+      [`command ${R} -rf /`, 'rm-root'],
+      [`timeout 5 ${R} -rf /`, 'rm-root'],
+      [`nice -n 10 ${R} -rf /`, 'rm-root'],
+      [`stdbuf -o0 ${R} -rf /`, 'rm-root'],
+      [`ionice -c3 ${R} -rf /`, 'rm-root'],
+      [`sudo -u root ${R} -rf /`, 'rm-root'],
+      [`env FOO=1 ${R} -rf /`, 'rm-root'],
+      [`FOO=1 ${R} -rf /`, 'rm-root'],
+      [`xargs -0 ${R} -rf /`, 'rm-root'],
+      [`doas ${R} -rf /`, 'rm-root'],
+      [`nohup ${R} -rf /`, 'rm-root'],
+      [`if true; then ${R} -rf /; fi`, 'rm-root'],
+      [`for d in x; do ${R} -rf /; done`, 'rm-root'],
+      [`rtk ${MK}.ext4 /dev/sda1`, 'mkfs-or-wipe'],
+      [`rtk ${WP} -a /dev/sdb`, 'mkfs-or-wipe'],
+      [`rtk ${DD} if=/dev/zero of=/dev/sda`, 'dd-to-device'],
+      [`timeout 5 ${DD} if=/dev/zero of=/dev/sda`, 'dd-to-device'],
+      [`rtk chmod -R 777 /`, 'chmod-root'],
+      [`rtk mv /* /dev/null`, 'mv-root-to-null'],
+      // Hồi quy thứ hai của bản neo đầu: `PATH_PREFIX` chỉ được gắn cho `rm`, nên
+      // gọi chương trình bằng ĐƯỜNG DẪN TUYỆT ĐỐI (`/bin/dd`, `/sbin/mkfs.ext4`)
+      // lọt qua toàn bộ các mẫu còn lại. Đo thật: 6/6 lệnh dạng này lọt trước khi
+      // sửa. Neo phải phủ cả `PATH_TOKEN` ở vị trí tiền tố lẫn ngay trước tên lệnh.
+      [`/bin/${DD} if=/dev/zero of=/dev/sda`, 'dd-to-device'],
+      [`/sbin/${MK}.ext4 /dev/sda1`, 'mkfs-or-wipe'],
+      [`/usr/bin/${WP} -a /dev/sdb`, 'mkfs-or-wipe'],
+      [`/sbin/${BD} /dev/nvme0n1`, 'mkfs-or-wipe'],
+      [`/bin/chmod -R 777 /`, 'chmod-root'],
+      [`/bin/mv /* /dev/null`, 'mv-root-to-null'],
+      [`rtk /sbin/${MK}.ext4 /dev/sda1`, 'mkfs-or-wipe'],
+      [`rtk /usr/bin/${WP} -a /dev/sdb`, 'mkfs-or-wipe'],
+      [`/usr/bin/sudo ${R} -rf /`, 'rm-root'],
     ];
     const missed = mustBlock.filter(([cmd]) => catastrophicMatch(cmd) === undefined);
     check(`12r sàn CHẶN đủ ${mustBlock.length} lệnh phá huỷ thật`,
@@ -3086,6 +3127,24 @@ function makeGuardTools({ guardable = true } = {}) {
       [`python3 <<'EOF'${NL}import os${NL}os.system('${R} -rf /')${NL}EOF`, 'payload python heredoc (giới hạn đã biết: sàn không đọc code python)'],
       [`echo $((1 << 2))`, 'dịch bit, không phải heredoc'],
       [`printf 'x' >> /tmp/log`, 'ghi nối vào tệp tạm'],
+      // Đối chứng cho neo mới: launcher chỉ được bỏ qua khi token TIẾP THEO mới
+      // là lệnh. Nếu sau launcher là một lệnh KHÔNG phá huỷ (`grep`, `ls`) thì
+      // chuỗi nguy hiểm nằm sâu hơn (trong đối số) KHÔNG được tính — nếu không,
+      // việc môi trường prefix `rtk` lên mọi lệnh sẽ biến mọi `grep` thành bắt nhầm.
+      [`rtk grep -n "${MK}" CHANGELOG.md`, 'rtk grep tìm chữ mkfs'],
+      [`rtk ls tests/${MK}-floor.test.mjs`, 'rtk ls tệp tên mkfs*'],
+      [`rtk echo "canh bao: ${R} -rf / rat nguy hiem"`, 'rtk echo nhắc rm -rf /'],
+      [`rtk grep -c "rm -rf\\|${MK}\\|dd if=" tests/attack-corpus.mjs`, 'rtk grep mẫu nhiều nhánh'],
+      [`timeout 5 grep -n "${MK}" file`, 'timeout + grep (không phải lệnh phá huỷ)'],
+      [`sudo -u root grep -n "${MK}" f`, 'sudo -u + grep'],
+      [`env FOO=1 echo "${R} -rf /"`, 'env + echo chuỗi'],
+      [`nice -n 10 cat file${NL}ls / `, 'nice + cat, dòng sau có /'],
+      // Đối chứng ngược cho `PATH_TOKEN`: đường dẫn tuyệt đối tới một lệnh KHÔNG
+      // phá huỷ phải cho qua — nếu không, mọi `/usr/bin/grep` đều thành bắt nhầm.
+      [`/usr/bin/grep -n "${MK}" file`, 'grep tuyệt đối tìm chữ mkfs'],
+      [`/bin/ls /bin/`, 'ls tuyệt đối trên /bin'],
+      [`/usr/bin/tail -f /var/log/x`, 'tail tuyệt đối'],
+      [`cat /etc/hosts > /tmp/x`, 'ghi vào tệp tạm'],
     ];
     const falsePos = mustAllow.filter(([cmd]) => catastrophicMatch(cmd) !== undefined);
     check(`12r sàn CHO QUA đủ ${mustAllow.length} lệnh lành (chống bắt nhầm)`,

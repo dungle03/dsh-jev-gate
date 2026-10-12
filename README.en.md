@@ -690,7 +690,10 @@ itself off silently — no error, no blocking. Install `jg` and put it on `PATH`
   monotonic `ctx.tools.guard`. Advisory layers skip hints on Jev failure.
   The floor anchors every pattern to a real command position, so a destructive
   word used as an argument (`grep -n "mkfs" CHANGELOG.md`) or inside quotes does
-  not trigger it. A heredoc body is treated as **data** when the consumer is
+  not trigger it. The anchor skips launchers and their arguments (`rtk rm -rf /`,
+  `timeout 5 rm -rf /`, `sudo -u root rm -rf /`, `env FOO=1 rm -rf /`) but does
+  NOT skip arbitrary bare words — so `rtk grep -n "mkfs" file` still passes. A
+  heredoc body is treated as **data** when the consumer is
   `cat`-like (writing a test fixture is fine), but as **code** when the consumer
   is a shell/interpreter (`bash <<'EOF'`), because that body is executed.
   Nested-interpreter payloads (`node -e "…execSync('rm -rf /')"`) are a

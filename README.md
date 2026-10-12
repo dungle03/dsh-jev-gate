@@ -651,7 +651,10 @@ lỗi, không chặn gì. Cài `jg` rồi để nó trên `PATH`.
   phép lệnh đã chứng minh không ghi. Sàn catastrophic chặn ở pre-execute và
   `ctx.tools.guard` monotonic. Các lớp tư vấn khác lỗi thì bỏ qua gợi ý.
   Sàn neo mọi mẫu vào vị trí lệnh thật, nên một chữ phá huỷ dùng làm đối số
-  (`grep -n "mkfs" CHANGELOG.md`) hay nằm trong nháy đều KHÔNG khớp. Thân
+  (`grep -n "mkfs" CHANGELOG.md`) hay nằm trong nháy đều KHÔNG khớp. Neo bỏ qua cả
+  launcher và đối số của nó (`rtk rm -rf /`, `timeout 5 rm -rf /`,
+  `sudo -u root rm -rf /`, `env FOO=1 rm -rf /`), nhưng KHÔNG bỏ qua từ trần bất
+  kỳ — nên `rtk grep -n "mkfs" file` vẫn cho qua. Thân
   heredoc là **dữ liệu** khi lệnh nhận nó chỉ chép ra file (`cat <<'EOF'`), nhưng
   là **code** khi lệnh nhận nó là shell/trình thông dịch (`bash <<'EOF'`), vì
   thân đó được thi hành. Payload nằm trong trình thông dịch lồng
