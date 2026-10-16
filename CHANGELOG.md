@@ -18,8 +18,8 @@ ký tự đầu). Tức phép kiểm bỏ qua đúng nhóm có nguy cơ.
 Đây là dạng lỗi nguy hiểm nhất của một bất biến an toàn: **không báo sai, mà im
 lặng bỏ qua**. Sửa bằng cách nhận diện theo NỘI DUNG — `wasTruncated` +
 `TRUNCATION_MARKER` trong `lib/policy.mjs`, khớp dấu `…[omitted N chars]…` do
-chính `truncateText` chèn. Sau khi sửa: 1.329 dòng được kiểm (trước 1.325),
-0 dòng sai.
+chính `truncateText` chèn. Sau khi sửa (ảnh chụp lúc vá): **1.329 dòng được kiểm** (trước 1.325), 0 dòng
+sai. Con số trôi theo log đang sống.
 
 Hai literal song song (định dạng cắt và regex nhận diện) có thể trôi khỏi nhau,
 nên `tests/offline.mjs` §27 **ghim hai bên vào nhau**: cho `truncateText` cắt
