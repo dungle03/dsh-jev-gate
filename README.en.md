@@ -721,8 +721,10 @@ Set `profile: safe` for guard/consent/completion only; `balanced` adds
 routing/recovery/review; `experimental` also opts into advisory layers 4/5/8.
 Named profiles keep the destructive gate and catastrophic guard enabled, but
 preserve stricter user settings (`block` on outage, disabled automatic
-provenance/consent, or a lower destructive threshold). The default `custom`
-profile preserves all granular configuration.
+provenance/consent, a lower destructive threshold, or `enableReadOnlyPrefilter:
+false` — the prefilter bypasses Jev for provably read-only commands, so disabling
+it checks more, not less). The default `custom` profile preserves all granular
+configuration.
 `shadowGateThreshold` only logs `destructive_gate_shadow` (`would_flag` versus
 `enforced_flag`) on requests already evaluated by Jev; it never changes the
 actual decision and cannot establish end-to-end agent benefit.

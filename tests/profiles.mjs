@@ -54,6 +54,15 @@ for (const profile of ['safe', 'balanced', 'experimental']) {
   assert.equal(strict.enableAuthorizationOverride, false);
   assert.equal(strict.enableDestructiveConsent, false);
   assert.equal(strict.destructiveThreshold, 0.3);
+  /**
+   * `enableReadOnlyPrefilter: false` cũng là một cài đặt CHẶT HƠN: prefilter là
+   * đường vòng của gate (lệnh chứng minh chỉ-đọc bỏ qua Jev), nên tắt nó = mọi
+   * lệnh đều qua Jev. Trước 16/10 preset âm thầm bật lại `true`, tức người dùng
+   * yêu cầu chặt nhất nhận cấu hình lỏng hơn — hồi quy im lặng vì mặc định của
+   * mọi preset vốn là `true`, nên chỉ lộ ra khi ai đó chủ động tắt.
+   */
+  assert.equal(resolveProfile(parse({ profile, enableReadOnlyPrefilter: false }), defaults)
+    .enableReadOnlyPrefilter, false);
 }
 assert.ok(Config['~standard'].validate({ destructiveThreshold: 2 }).issues?.length);
 assert.ok(Config['~standard'].validate({ shadowGateThreshold: -0.1 }).issues?.length);

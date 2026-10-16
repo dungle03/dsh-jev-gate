@@ -683,7 +683,9 @@ Danh sách dưới đây khớp `DEFAULTS` và `Config` trong `lib/index.mjs`.
 thêm effort/recovery/review; `experimental` bật cả 3 lớp tư vấn 4/5/8.
 Profile không để các cờ xung đột tắt gate hoặc sàn tất định; các cấu hình
 nghiêm hơn do người dùng đặt vẫn được giữ (`block`, tắt tự uỷ quyền/thẻ đồng ý,
-hạ `destructiveThreshold`). Dùng `profile: custom` để giữ mọi cấu hình chi tiết.
+hạ `destructiveThreshold`, và tắt `enableReadOnlyPrefilter` — prefilter là đường
+vòng bỏ qua Jev cho lệnh chứng minh chỉ-đọc, nên tắt nó là siết chặt hơn).
+Dùng `profile: custom` để giữ mọi cấu hình chi tiết.
 Cả ba profile giữ gate phá dữ liệu; `gateFailureMode` mặc định là `ask`.
 `shadowGateThreshold` chỉ ghi thêm `destructive_gate_shadow` với `would_flag`
 so với `enforced_flag` cho các lệnh Jev đã chấm; nó không thay đổi quyết định

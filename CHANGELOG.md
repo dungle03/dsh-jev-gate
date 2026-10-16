@@ -5,6 +5,25 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — preset âm thầm nới lỏng `enableReadOnlyPrefilter: false`
+
+`resolveProfile` (`lib/profiles.mjs`) tự tuyên bố bất biến "preset không được nới
+lỏng một cài đặt destructive-gate mà người dùng đã siết" và bảo vệ ba khoá
+(`gateFailureMode`, `enableAuthorizationOverride`, `enableDestructiveConsent`).
+Nhưng `enableReadOnlyPrefilter: false` — cũng là cài đặt **CHẶT HƠN** (prefilter
+là đường vòng của gate: lệnh chứng minh chỉ-đọc thì bỏ qua Jev; tắt nó = MỌI lệnh
+`bash` đều qua Jev) — bị preset **âm thầm bật lại `true`**. Người dùng chọn cấu
+hình chặt nhất lại nhận cấu hình lỏng hơn yêu cầu, đúng loại lỗi mà khối đó tồn
+tại để chặn.
+
+Hồi quy **im lặng** vì mặc định của cả ba preset vốn là `true`, nên chỉ lộ ra khi
+ai đó chủ động tắt. Phát hiện bằng cách gọi thẳng `resolveProfile` với từng cờ
+"chặt hơn" và so kết quả — 15/15 tổ hợp preset × cờ nay đều tôn trọng cài đặt chặt.
+Ghim bằng test trong `tests/profiles.mjs`; README VI/EN cập nhật danh sách cài đặt
+được giữ. Hai cờ `enableDestructiveGate`/`enableCatastrophicFloor` bị preset ghi đè
+là **có chủ đích** và đã ghi trong README ("Profile không để các cờ xung đột tắt
+gate hoặc sàn tất định") — chúng là lớp an toàn, khác hướng với prefilter.
+
 ### Sửa — audit 16/10: payload gate vỡ vì `workdir` khổng lồ, và 8 việc nhỏ còn lại
 
 **Bug P0 — gate tự chặn mình trong subagent.** Log thật ghi 3 dòng `deny_consent`
