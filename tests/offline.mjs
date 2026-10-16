@@ -6846,6 +6846,65 @@ console.log('\n26. §6 — sửa nhỏ sau audit: xoay log, tách abort, retry 5
   }
 }
 
+console.log('\n27. `wasTruncated` — nhận diện dòng log đã bị cắt (bất biến tự kiểm)');
+
+/**
+ * `plan/audit-measure.mjs --assert` kiểm "mọi dòng `allow_readonly` còn nguyên văn
+ * phải chứng minh lại được là chỉ-đọc". Phép kiểm đó chỉ đúng nếu nhận diện được
+ * dòng nào ĐÃ bị cắt — và bản đầu nhận diện bằng độ dài (`< 400`), trong khi trần
+ * log đã nâng lên 2.000. Hệ quả đo được trên log thật: **83 dòng dài 401–1.999
+ * ký tự — đọc được ĐẦY ĐỦ dưới mã mới — bị loại khỏi phép kiểm an toàn**, đúng
+ * những dòng mà việc nâng trần vừa mới cứu được. Đây là loại lỗi nguy hiểm nhất
+ * của một bất biến an toàn: nó không báo sai, nó IM LẶNG bỏ qua.
+ *
+ * Sửa bằng cách nhận diện theo NỘI DUNG (dấu `…[omitted N chars]…` do chính
+ * `truncateText` chèn). Hai literal song song (định dạng và regex) có thể trôi
+ * khỏi nhau, nên test này ghim chúng vào nhau: cho `truncateText` cắt THẬT rồi
+ * đòi `wasTruncated` nhận ra, thay vì chỉ so regex với một chuỗi tự bịa.
+ */
+{
+  const POLICY = join(HERE, '..', 'lib', 'policy.mjs');
+  const { truncateText, wasTruncated, TRUNCATION_MARKER } = await import(`${pathToFileURL(POLICY).href}?trunc=1`);
+
+  // (a) Chuỗi ngắn không bị cắt ⇒ không được nhận là đã cắt.
+  check('(a) chuỗi ngắn (dưới trần) không bị coi là đã cắt',
+    wasTruncated('ls -la') === false && wasTruncated('') === false);
+
+  // (b) Chuỗi bị `truncateText` cắt THẬT phải được nhận ra — đây là phép ghim
+  //     hai literal vào nhau, không phải so regex với chuỗi tự bịa.
+  {
+    const long = 'echo ' + 'x'.repeat(3_000);
+    const cut = truncateText(long, 2_000);
+    check('(b) `truncateText` cắt thật ⇒ `wasTruncated` nhận ra (ghim định dạng hai bên)',
+      cut !== long && wasTruncated(cut) === true, `len=${cut.length}`);
+    check('(b) dòng dài nhưng CHƯA cắt thì không bị nhận nhầm',
+      wasTruncated(long) === false && long.length > 2_000);
+  }
+
+  // (c) Lỗi thật đã xảy ra: dòng dài 401–1.999 (nguyên văn dưới trần mới) phải
+  //     được coi là CÒN NGUYÊN VĂN. Đây chính là 83 dòng bị phép so `< 400` bỏ sót.
+  {
+    const mid = 'rtk grep -rn "x" ' + 'y'.repeat(1_500);
+    check('(c) dòng 1.500 ký tự (nguyên văn dưới trần 2.000) KHÔNG bị coi là đã cắt',
+      mid.length > 400 && mid.length < 2_000 && wasTruncated(mid) === false,
+      `len=${mid.length}`);
+    // Và phép so độ dài cũ SAI ở đúng dòng này — ghim lại để không ai khôi phục nó.
+    check('(c) phép so độ dài cũ (`length < 400`) sẽ SAI ở dòng này',
+      !(mid.length < 400), 'nếu ai đó khôi phục so sánh độ dài, phép kiểm này nhắc');
+  }
+
+  // (d) Regex phải bám đúng định dạng thật, kể cả số nhiều chữ số và có xuống dòng
+  //     hai bên (dạng `truncateText` sinh ra).
+  {
+    const shaped = `head\n…[omitted 12345 chars]…\ntail`;
+    check('(d) nhận ra dấu cắt với số nhiều chữ số',
+      wasTruncated(shaped) === true && TRUNCATION_MARKER.test(shaped) === true);
+    check('(d) KHÔNG nhận nhầm văn bản chỉ nhắc chữ "omitted"',
+      wasTruncated('the word omitted appears here') === false
+      && wasTruncated('…[omitted chars]…') === false);
+  }
+}
+
 console.log(`\n${'─'.repeat(56)}`);
 console.log(failed === 0 ? 'OFFLINE: TẤT CẢ PASS' : `OFFLINE: ${failed} MỤC HỎNG`);
 process.exit(failed === 0 ? 0 : 1);

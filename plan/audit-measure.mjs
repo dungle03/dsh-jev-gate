@@ -20,7 +20,8 @@
  *   - vòng đời operation cân: `reserved_cost + skip_budget == operation_finished`
  *     (mỗi operation mở bằng `reserved_cost` hoặc `skip_budget`), không có
  *     `operation_finished` mồ côi hay trùng lặp;
- *   - mọi dòng `allow_readonly` KHÔNG bị clip vẫn chứng minh lại được là chỉ-đọc;
+ *   - mọi dòng `allow_readonly` CÒN NGUYÊN VĂN (không mang dấu cắt) vẫn chứng minh
+ *     lại được là chỉ-đọc — nhận diện bằng dấu cắt trong nội dung, không bằng độ dài;
  *   - mọi dòng chặn cứng đều kèm `command` để audit được.
  * Độ phủ `turn` trên dòng gate chỉ được IN RA, không assert: log cũ (trước khi
  * sửa §6.8) hợp lệ mà thiếu `turn`, nên assert nó sẽ báo động giả.
@@ -28,6 +29,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isProvablyReadOnly } from '../lib/readonly.mjs';
+import { wasTruncated } from '../lib/policy.mjs';
 import { readLogWithRotated } from '../lib/metrics.mjs';
 
 const ASSERT = process.argv.includes('--assert');
@@ -117,7 +119,7 @@ console.log(`  → dòng gate thiếu \`turn\` (log cũ, không assert): ${gateN
 
 const withCommand = gate.filter((r) => typeof r.command === 'string');
 console.log(`  → dòng có 'command'   : ${withCommand.length}`);
-console.log(`  → bị clip ở 400 ký tự : ${withCommand.filter((r) => r.command.length >= 400).length}`);
+console.log(`  → bị cắt (mất đuôi)   : ${withCommand.filter((r) => wasTruncated(r.command)).length}`);
 
 const ps = gate.filter((r) => typeof r.p === 'number').map((r) => r.p);
 ps.sort((a, b) => a - b);
@@ -143,19 +145,21 @@ console.log(`lệnh 'allow' (đã lọt Jev)          : ${allowed.length}`);
 console.log(`  prefilter LẼ RA bắt được          : ${caught.length}  (${pct(caught.length, allowed.length)})`);
 console.log(`dòng 'allow_readonly' (đã bắt sẵn)  : ${readonlyRows.length}`);
 const stillCatchable = readonlyRows.filter((r) => typeof r.command === 'string' && isProvablyReadOnly(r.command));
-// Chỉ kiểm lại được những dòng KHÔNG bị clip: bản ghi cắt ở 400 ký tự nên phần đuôi
-// (chính là phần khiến prefilter kết luận được) đã mất. Đếm riêng phần bị cắt thay vì
-// tính nó là lệch — đo được: mọi dòng 'allow_readonly' không chứng minh lại được đều bị clip.
-const roUnclipped = readonlyRows.filter((r) => typeof r.command === 'string' && r.command.length < 400);
-const roClipped = readonlyRows.filter((r) => typeof r.command === 'string' && r.command.length >= 400);
+// Chỉ kiểm lại được những dòng CÒN NGUYÊN VĂN: bản ghi bị cắt thì phần đuôi — chính là
+// phần khiến prefilter kết luận được — đã mất. Nhận diện bằng DẤU CẮT trong nội dung
+// (`wasTruncated`), KHÔNG bằng ngưỡng độ dài: trần log đã đổi từ 400 lên 2.000, nên
+// mọi phép so độ dài cứng sẽ âm thầm bỏ sót đúng những dòng nó cần kiểm (đã từng xảy
+// ra: so `< 400` loại 83 dòng dài 401–1.999 đọc được đầy đủ khỏi phép kiểm an toàn).
+const roUnclipped = readonlyRows.filter((r) => typeof r.command === 'string' && !wasTruncated(r.command));
+const roClipped = readonlyRows.filter((r) => typeof r.command === 'string' && wasTruncated(r.command));
 const roReproven = roUnclipped.filter((r) => isProvablyReadOnly(r.command));
-console.log(`  kiểm lại được (không bị clip)     : ${roUnclipped.length}  → chứng minh lại được ${roReproven.length}`
+console.log(`  kiểm lại được (còn nguyên văn)    : ${roUnclipped.length}  → chứng minh lại được ${roReproven.length}`
   + `  (${roReproven.length === roUnclipped.length ? 'OK' : 'LỆCH'})`);
 // BẤT BIẾN AN TOÀN: mọi lệnh prefilter đã cho qua (không bị clip) phải chứng
 // minh lại được là chỉ-đọc. Vỡ = prefilter đã cho qua thứ nó không chứng minh nổi.
-invariant('allow_readonly không-clip chứng minh lại được', roReproven.length === roUnclipped.length,
+invariant('allow_readonly nguyên văn chứng minh lại được', roReproven.length === roUnclipped.length,
   `${roUnclipped.length - roReproven.length} dòng không chứng minh lại được`);
-console.log(`  bị clip ở 400 (không kiểm lại được): ${roClipped.length}`);
+console.log(`  bị cắt (không kiểm lại được)      : ${roClipped.length}`);
 console.log(`  (tổng chứng minh lại được          : ${stillCatchable.length})`);
 
 // ── 4. Độ trễ + token ─────────────────────────────────────────────────────

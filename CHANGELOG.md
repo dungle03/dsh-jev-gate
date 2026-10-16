@@ -5,6 +5,32 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — bất biến an toàn của `--assert` bị mù vì so độ dài
+
+`plan/audit-measure.mjs --assert` kiểm "mọi dòng `allow_readonly` còn nguyên văn
+phải chứng minh lại được là chỉ-đọc". Bản đầu nhận diện dòng bị cắt bằng ĐỘ DÀI
+(`command.length < 400`), nhưng chính đợt sửa này đã nâng trần audit lên 2.000.
+Hệ quả đo được trên log thật: **83 dòng gate dài 401–1.999 ký tự — đọc được ĐẦY ĐỦ
+dưới mã mới — bị loại khỏi phép kiểm an toàn**, và trong đó **68 dòng không chứng
+minh lại được** là chỉ-đọc (phần đuôi khiến prefilter kết luận được nằm ngoài 400
+ký tự đầu). Tức phép kiểm bỏ qua đúng nhóm có nguy cơ.
+
+Đây là dạng lỗi nguy hiểm nhất của một bất biến an toàn: **không báo sai, mà im
+lặng bỏ qua**. Sửa bằng cách nhận diện theo NỘI DUNG — `wasTruncated` +
+`TRUNCATION_MARKER` trong `lib/policy.mjs`, khớp dấu `…[omitted N chars]…` do
+chính `truncateText` chèn. Sau khi sửa: 1.329 dòng được kiểm (trước 1.325),
+0 dòng sai.
+
+Hai literal song song (định dạng cắt và regex nhận diện) có thể trôi khỏi nhau,
+nên `tests/offline.mjs` §27 **ghim hai bên vào nhau**: cho `truncateText` cắt
+THẬT rồi đòi `wasTruncated` nhận ra, thay vì so regex với chuỗi tự bịa. Test cũng
+ghim chính phép so độ dài cũ để ai khôi phục nó sẽ bị nhắc, và kiểm cả hai chiều
+âm (văn bản chỉ nhắc chữ "omitted" không được nhận nhầm).
+
+Bất biến đã được kiểm là **không rỗng**: log tổng hợp có lệnh GHI gắn nhãn
+`allow_readonly` nguyên văn ⇒ `--assert` thoát 1 và chỉ đúng dòng; cùng lệnh đó
+nhưng bị cắt ⇒ được loại đúng cách, thoát 0.
+
 ### Sửa — preset âm thầm nới lỏng `enableReadOnlyPrefilter: false`
 
 `resolveProfile` (`lib/profiles.mjs`) tự tuyên bố bất biến "preset không được nới
