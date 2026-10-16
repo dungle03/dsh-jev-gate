@@ -6481,7 +6481,10 @@ console.log('\n24. P0 — state gửi Jev bị chặn trên (safePath/COMMAND_CA
   );
 
   const DIRTY = '\u202c'.repeat(127_937);
-  const CLEAN = '/home/lee/.dsh/plugins/dsh-jev-gate';
+  // KHÔNG dùng đường dẫn tuyệt đối thật của máy cá nhân: CI có bước chặn path
+  // kiểu đó trong `lib`/`tests`/`verify.sh`. Dùng dạng trông như đường dẫn tuyệt
+  // đối nhưng trung tính — `safePath` chỉ quan tâm ký tự, không cần nó tồn tại.
+  const CLEAN = '/srv/workspace/project';
   const COMMAND = 'rtk command -v jg && jg --version && jg doctor';
 
   // (a) Tái hiện ĐÚNG dữ liệu đã gây lỗi: trước bản vá, dòng này ném lỗi.
@@ -6530,7 +6533,7 @@ console.log('\n24. P0 — state gửi Jev bị chặn trên (safePath/COMMAND_CA
     check('(c) safePath cắt về MAX_PATH_CHARS',
       safePath('x'.repeat(10_000)).length === MAX_PATH_CHARS, `len=${safePath('x'.repeat(10_000)).length}`);
     check('(c) đường dẫn bình thường KHÔNG bị đổi',
-      safePath('/home/lee/.dsh/plugins') === '/home/lee/.dsh/plugins');
+      safePath('/srv/workspace/project') === '/srv/workspace/project');
   }
 
   /**
