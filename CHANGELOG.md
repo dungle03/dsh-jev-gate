@@ -77,8 +77,19 @@ script (`reserved_cost == operation_finished` — thật ra mỗi operation mở
 rò (start không finish) — chỉ IN RA, không assert, vì nguyên nhân hợp lệ gồm tiến
 trình chết và một lần ghi log bị nuốt.
 
-Regression: `tests/offline.mjs` §24 (payload bounded), §25 (`turn`), §26 (xoay log,
-`jev_abort`, retry 5xx, trần audit). `npm test` xanh toàn bộ 32 suite offline.
+**Nối bất biến vào CI:** `--assert` trước đây phải nhớ chạy tay. Nay nằm trong
+`npm test`, `verify.sh`, và CI (gọi canonical `npm test`). Muốn nối được phải sửa
+một chỗ chặn: chế độ KHÔNG `--assert` vẫn `throw` khi thiếu log, nên nối vào
+`npm test` sẽ làm CI đỏ trên máy sạch — nay cả hai chế độ thoát 0 khi chưa có log
+(log là dữ liệu runtime), chỉ lỗi thật (`EACCES`, JSON vỡ) mới đỏ.
+
+**`step` đi kèm `turn`:** `turn` một mình chưa đủ để Phase 0 ghép quyết định gate
+với đúng bước trong trace. Recorder nay gắn cả hai, tra trong CÙNG một lần đọc
+session; `step` CHỈ nhận từ event có cùng `turn` (step đếm lại từ 0 mỗi lượt, nên
+lấy step của lượt cũ sẽ ghép ra cặp `(turn, step)` không tồn tại). Không có ⇒ `-1`.
+
+Regression: `tests/offline.mjs` §24 (payload bounded), §25 (`turn`/`step`), §26
+(xoay log, `jev_abort`, retry 5xx, trần audit). `npm test` xanh toàn bộ 33 suite offline.
 
 ### Sửa — sàn catastrophic bắt nhầm 100%: neo vị trí lệnh, bỏ heredoc, trung hoà nháy
 
