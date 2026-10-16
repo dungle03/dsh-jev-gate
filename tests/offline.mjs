@@ -6595,7 +6595,7 @@ console.log('\n24. P0 — state gửi Jev bị chặn trên (safePath/COMMAND_CA
   }
 }
 
-console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn` (mở khoá Phase 0)');
+console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn`/`step` (mở khoá Phase 0)');
 
 /**
  * Phase 0 (`plan/phase-0-results.md`) bế tắc vì 1.219/2.119 record có `session`
@@ -6603,13 +6603,17 @@ console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn` (m
  * với trace của turn ⇒ không tính được tỷ lệ task thành công. 14 call site ghi
  * `destructive_gate` rải khắp Lớp 1/1b và guard, nên gắn ở từng nơi là 14 cơ hội
  * để quên — recorder gắn tập trung.
+ *
+ * `step` phải đến từ event CÙNG `turn`: `step` đếm lại từ 0 mỗi lượt, nên lấy
+ * `step` của lượt cũ sẽ ghép ra cặp `(turn, step)` không tồn tại. Ca 25e ghim
+ * đúng lỗi đó — event mới nhất (turn 4) có `step` khác hẳn event cũ (turn 1).
  */
 {
   const logDir = tmpDir('jev-gate-turn-');
   const events = [
-    { type: 'user/message', data: { turn: 1, text: 'việc một' } },
-    { type: 'assistant/message', data: { turn: 1, text: 'xong' } },
-    { type: 'user/message', data: { turn: 4, text: 'việc bốn' } },
+    { type: 'user/message', data: { turn: 1, step: 0, text: 'việc một' } },
+    { type: 'assistant/message', data: { turn: 1, step: 1, text: 'xong' } },
+    { type: 'user/message', data: { turn: 4, step: 0, text: 'việc bốn' } },
   ];
   const agent = { cwd: '/tmp', session: { id: 'sess-turn-1', snapshotEvents: () => events } };
   const { handlers } = await loadPlugin({
@@ -6629,6 +6633,8 @@ console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn` (m
   check('25b `turn` lấy từ event MỚI NHẤT (turn 4, không phải turn 1)',
     rows.every((row) => row.turn === 4), `turns=${JSON.stringify(rows.map((r) => r.turn))}`);
   check('25c vẫn giữ `session` như trước', rows.every((row) => typeof row.session === 'string'));
+  check('25e `step` đến từ event CÙNG turn (0, KHÔNG phải step 1 của turn 1)',
+    rows.every((row) => row.step === 0), `steps=${JSON.stringify(rows.map((r) => r.step))}`);
 
   // Không có event nào mang turn → giữ `-1` thay vì bỏ trường.
   {
@@ -6646,6 +6652,29 @@ console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn` (m
       .map((line) => JSON.parse(line)).filter((row) => row.type === 'destructive_gate');
     check('25d không có turn nào → `turn: -1` (không bỏ trường)',
       rows2.length >= 1 && rows2.every((row) => row.turn === -1), `turns=${JSON.stringify(rows2.map((r) => r.turn))}`);
+  }
+
+  // Event của lượt mới nhất KHÔNG mang `step` → `step: -1`, không mượn step của lượt cũ.
+  {
+    const logDir3 = tmpDir('jev-gate-step-none-');
+    const events3 = [
+      { type: 'user/message', data: { turn: 2, step: 3, text: 'cũ' } },
+      { type: 'user/message', data: { turn: 7, text: 'mới, thiếu step' } },
+    ];
+    const agent3 = { cwd: '/tmp', session: { id: 'sess-turn-3', snapshotEvents: () => events3 } };
+    const { handlers: h3 } = await loadPlugin({
+      config: { logDir: logDir3, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await h3['tools/pre-execute'][0](
+      { name: 'bash', arguments: { command: 'ls -la' }, agent: agent3, signal: new AbortController().signal },
+      async () => ({ kind: 'allow' }),
+    );
+    await sleepMs(250);
+    const rows3 = readFileSync(join(logDir3, 'decisions.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line)).filter((row) => row.type === 'destructive_gate');
+    check('25f lượt mới thiếu `step` → `step: -1` (KHÔNG mượn step 3 của lượt cũ)',
+      rows3.length >= 1 && rows3.every((row) => row.turn === 7 && row.step === -1),
+      `rows=${JSON.stringify(rows3.map((r) => ({ turn: r.turn, step: r.step })))}`);
   }
 }
 
