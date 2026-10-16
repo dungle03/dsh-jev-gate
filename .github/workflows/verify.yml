@@ -29,7 +29,9 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in lib/*.mjs lib/control/*.mjs tests/*.mjs tools/*.mjs; do
+          # `plan/` chứa script đo tái lập (`plan/audit-measure.mjs`) chạy trong
+          # `npm test` qua `--assert`, nên cũng phải qua syntax check như source.
+          for f in lib/*.mjs lib/control/*.mjs tests/*.mjs tools/*.mjs plan/*.mjs; do
             node --check "$f"
           done
 

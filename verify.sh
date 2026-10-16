@@ -21,7 +21,7 @@ for f in package.json cordis.patch.yml lib/index.mjs lib/jev-client.mjs lib/poli
 done
 
 echo "2. Syntax"
-for f in tests/offline.mjs tests/attack-corpus.mjs lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs lib/jevgrep-control.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-tasks.mjs tests/trajectory-promotion.mjs tests/trajectory-ground-truth.mjs tests/trajectory-consent-capability.mjs tests/trajectory-held-out.mjs tests/trajectory-run-integrity.mjs tests/trajectory-summary-integrity.mjs tests/trajectory-task-contract.mjs tests/trajectory-manifest-integrity.mjs tests/trajectory-config-coverage.mjs tests/trajectory-adversarial.mjs tests/trajectory-mutation.mjs tests/trajectory-property.mjs tests/test-list-contract.mjs lib/control/operation.mjs tools/trajectory-matrix.mjs tools/collect-trajectory.mjs tools/trajectory-schema.mjs tools/trajectory-tasks.mjs tools/workspace-snapshot.mjs; do
+for f in tests/offline.mjs tests/attack-corpus.mjs lib/index.mjs lib/jev-client.mjs lib/policy.mjs lib/jevgrep.mjs lib/metrics.mjs tools/benchmark-gate.mjs tools/benchmark-trajectory.mjs lib/profiles.mjs lib/evidence.mjs lib/injection.mjs lib/jevgrep-control.mjs tests/benchmark.mjs tests/metrics.mjs tests/profiles.mjs tests/trajectory.mjs tests/budget.mjs tests/context.mjs tests/evidence.mjs tests/provenance.mjs tests/cost-governor.mjs tests/jevgrep-control.mjs tests/evidence-boundary.mjs tests/dsh-compat.mjs tests/host-resolver.mjs tests/docs-contract.mjs tests/live-smoke.mjs tests/live-smoke-contract.mjs tests/trajectory-collector.mjs tests/trajectory-tasks.mjs tests/trajectory-promotion.mjs tests/trajectory-ground-truth.mjs tests/trajectory-consent-capability.mjs tests/trajectory-held-out.mjs tests/trajectory-run-integrity.mjs tests/trajectory-summary-integrity.mjs tests/trajectory-task-contract.mjs tests/trajectory-manifest-integrity.mjs tests/trajectory-config-coverage.mjs tests/trajectory-adversarial.mjs tests/trajectory-mutation.mjs tests/trajectory-property.mjs tests/test-list-contract.mjs plan/audit-measure.mjs lib/control/operation.mjs tools/trajectory-matrix.mjs tools/collect-trajectory.mjs tools/trajectory-schema.mjs tools/trajectory-tasks.mjs tools/workspace-snapshot.mjs; do
   if node --check "$PLUGIN/$f" 2>/dev/null; then pass "$f"; else fail "$f lỗi syntax"; fi
 done
 
@@ -41,6 +41,18 @@ if node "$PLUGIN/tools/trajectory-matrix.mjs" --self-test >"$matrix_output" 2>&1
   rm -f "$matrix_output"
 else
   fail "trajectory matrix self-test — xem $matrix_output"
+fi
+
+# Bất biến trên log quyết định THẬT (nếu có). Log là dữ liệu runtime: máy CI sạch
+# chưa từng chạy DSH thì script tự thoát 0 kèm ghi chú, nên bước này không làm đỏ
+# ở nơi không có log. Đây là nơi duy nhất phát hiện vòng đời operation rò hoặc
+# `allow_readonly` không còn chứng minh lại được.
+assert_output="/tmp/jev-gate-audit-assert.$$"
+if node "$PLUGIN/plan/audit-measure.mjs" --assert >"$assert_output" 2>&1; then
+  pass "$(tail -1 "$assert_output")"
+  rm -f "$assert_output"
+else
+  fail "bất biến log quyết định vỡ — xem $assert_output"
 fi
 
 echo "3. Dependency resolve (nguyên nhân lỗi 'failed to import' trước đây)"

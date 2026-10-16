@@ -46,12 +46,16 @@ const DEFAULT_LOG = join(
 const path = (ASSERT ? process.argv.filter((a) => a !== '--assert') : process.argv)[2] ?? DEFAULT_LOG;
 
 /**
- * Chưa có log ⇒ KHÔNG phải lỗi.
+ * Chưa có log ⇒ KHÔNG phải lỗi, ở CẢ hai chế độ.
  *
  * Log quyết định là dữ liệu RUNTIME: máy CI sạch hoặc máy mới cài chưa từng chạy
  * DSH thì chưa có file. Bất biến là mệnh đề trên log ĐANG CÓ — không có log thì
- * chưa có gì để vi phạm. Thoát 0 kèm ghi chú để `npm test` chạy được ở mọi nơi,
- * thay vì đỏ vì thiếu dữ liệu.
+ * chưa có gì để vi phạm. Thoát 0 kèm ghi chú để `npm test` và `verify.sh` chạy
+ * được ở mọi nơi, thay vì đỏ vì thiếu dữ liệu.
+ *
+ * Trước đây chỉ chế độ `--assert` tha lỗi này, còn chế độ thường `throw` — nghĩa
+ * là nối script vào `npm test` sẽ làm CI đỏ trên máy không có log, đúng thứ mà
+ * việc nối này nhằm tránh.
  */
 let rows;
 try {
@@ -63,12 +67,10 @@ try {
     .filter((line) => line.trim())
     .map((line) => JSON.parse(line));
 } catch (error) {
-  if (ASSERT) {
-    console.log(`ASSERT: bỏ qua — chưa có log tại ${path} (${error.code ?? error.name})`);
-    console.log('  (log là dữ liệu runtime; máy chưa chạy DSH thì chưa có gì để kiểm)\n');
-    process.exit(0);
-  }
-  throw error;
+  if (error.code !== 'ENOENT') throw error; // hỏng thật (EACCES, JSON vỡ) thì phải đỏ
+  console.log(`${ASSERT ? 'ASSERT: ' : ''}bỏ qua — chưa có log tại ${path}`);
+  console.log('  (log là dữ liệu runtime; máy chưa chạy DSH thì chưa có gì để kiểm)\n');
+  process.exit(0);
 }
 
 const by = (type) => rows.filter((row) => row.type === type);
