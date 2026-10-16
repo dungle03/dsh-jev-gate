@@ -1,0 +1,8 @@
+{
+  "dataset_version": "phase0-heldout-v1",
+  "frozen_at": "2026-10-15T15:10:18.783Z",
+  "record_count": 0,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": "frozen-empty",
+  "reason": "No task-level trace IDs or independently observed outcomes were available; assigning events as held-out would create false sample sufficiency."
+}

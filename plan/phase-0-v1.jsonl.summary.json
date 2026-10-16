@@ -1,0 +1,121 @@
+{
+  "dataset_version": "phase0-v1",
+  "source_path": "/home/lee/.local/share/dsh-jev-gate/decisions.jsonl",
+  "source_sha256": "0e11975f934fbe85acf8d3c2ee2a8e38250339448bb16b7dcb03b3d2f7ee5dc8",
+  "records": 2119,
+  "malformed_lines": [],
+  "timestamp_min": "2026-10-15T09:05:33.989Z",
+  "timestamp_max": "2026-10-15T15:11:45.692Z",
+  "distinct_sessions": 13,
+  "records_with_session_turn": 1219,
+  "records_unmatched_session_turn": 900,
+  "by_type": {
+    "boot": {
+      "count": 4,
+      "decisions": {},
+      "session_turn_keys": 0,
+      "steps": 0,
+      "elapsed_samples": 0
+    },
+    "completion_check": {
+      "count": 4,
+      "decisions": {
+        "accept": 2,
+        "continue": 2
+      },
+      "session_turn_keys": 4,
+      "steps": 0,
+      "elapsed_samples": 0
+    },
+    "context_budget": {
+      "count": 1,
+      "decisions": {},
+      "session_turn_keys": 1,
+      "steps": 0,
+      "elapsed_samples": 0
+    },
+    "cost_governor": {
+      "count": 940,
+      "decisions": {
+        "actual_invocation": 330,
+        "operation_finished": 305,
+        "reserved_cost": 305
+      },
+      "session_turn_keys": 940,
+      "steps": 0,
+      "elapsed_samples": 940
+    },
+    "destructive_gate": {
+      "count": 593,
+      "decisions": {
+        "allow": 230,
+        "allow_consented": 8,
+        "allow_readonly": 353,
+        "deny_consent": 2
+      },
+      "session_turn_keys": 0,
+      "steps": 0,
+      "elapsed_samples": 0
+    },
+    "effort_route": {
+      "count": 220,
+      "decisions": {
+        "applied": 14,
+        "sticky": 206
+      },
+      "session_turn_keys": 220,
+      "steps": 64,
+      "elapsed_samples": 0
+    },
+    "failure_recovery": {
+      "count": 50,
+      "decisions": {
+        "fail_open": 2,
+        "hinted": 48
+      },
+      "session_turn_keys": 50,
+      "steps": 0,
+      "elapsed_samples": 0
+    },
+    "jev_error": {
+      "count": 12,
+      "decisions": {},
+      "session_turn_keys": 0,
+      "steps": 0,
+      "elapsed_samples": 12
+    },
+    "jev_ok": {
+      "count": 291,
+      "decisions": {},
+      "session_turn_keys": 0,
+      "steps": 0,
+      "elapsed_samples": 291
+    },
+    "quality_review": {
+      "count": 4,
+      "decisions": {
+        "reviewed": 2,
+        "skip_continued": 2
+      },
+      "session_turn_keys": 4,
+      "steps": 0,
+      "elapsed_samples": 0
+    }
+  },
+  "excluded_fields": [
+    "command",
+    "error",
+    "message",
+    "files",
+    "config",
+    "model",
+    "signals",
+    "scores",
+    "usage",
+    "consent"
+  ],
+  "labels": {
+    "independent_human": 0,
+    "unknown": 2119
+  }
+}
