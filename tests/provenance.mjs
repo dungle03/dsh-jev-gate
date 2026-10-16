@@ -144,6 +144,6 @@ try {
   assert.equal(calls, 1, 'verdict is cached, but user provenance is checked for every hook');
 } finally {
   globalThis.fetch = realFetch;
-  await rm(logDir, { recursive: true, force: true });
+  await rm(logDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 10 });
 }
 console.log('provenance: positive requests, real consent hooks, full targets, revocation and evidence boundaries passed');

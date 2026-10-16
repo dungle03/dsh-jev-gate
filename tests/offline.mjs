@@ -467,8 +467,8 @@ console.log('\n4. Kiểm hoàn thành — chạy khi có goal HOẶC có task, k
     },
   );
   check('trần completionMaxPerTurn chặn fire lặp cùng turn',
-    capped === 2,
-    `steer=${capped} (cap=2, gọi 5 lần cùng turn)`);
+    capped === 1,
+    `steer=${capped} (unchanged evidence, gọi 5 lần cùng turn)`);
 
   // Turn MỚI vẫn được kiểm bình thường (trần không cản tiến độ thật).
   const newTurn = await withStubJev(
@@ -494,8 +494,101 @@ console.log('\n4. Kiểm hoàn thành — chạy khi có goal HOẶC có task, k
     },
   );
   check('turn mới vẫn được kiểm sau khi turn cũ chạm trần',
-    newTurn === 3,
-    `steer=${newTurn} (2 cho turn 1 + 1 cho turn 2)`);
+    newTurn === 2,
+    `steer=${newTurn} (1 cho mỗi turn, bằng chứng không đổi)`);
+}
+
+// Completion must judge the current request, not revive an older execution task.
+{
+  const requests = [];
+  const events = [
+    { type: 'tool/result', data: { turn: 1, result: 'OLD_DEPLOY_OUTPUT' } },
+    { type: 'assistant/message', data: { turn: 1, message: { content: 'OLD_REPLY' } } },
+    { type: 'assistant/message', data: { turn: 2, message: { content: 'Current assessment and limitations.' } } },
+  ];
+  await withStubJev({
+    complete: (_id, _question, body) => { requests.push(body); return 0.9; },
+    evidence: 0.1, needs_execution: 0.1,
+  }, async () => {
+    const { handlers } = await loadPlugin({ config: {
+      enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false,
+    } });
+    const agent = { id: 'completion-assessment', goal: { objective: 'Deploy the plugin' },
+      session: { snapshotEvents: () => events }, steered: [], steer(m) { this.steered.push(m); } };
+    await handlers['agent/pre-step'][0]({ agent, turn: 2, step: 1, messages: [
+      { role: 'user', source: { kind: 'user' }, content: 'Deploy the plugin' },
+      { role: 'user', source: { kind: 'user' }, content: [
+        { type: 'text', text: 'Assess the current flow.' }, { type: 'text', text: 'Explain whether it slows the agent.' },
+      ] },
+      { role: 'user', source: { kind: 'plugin:jev-gate' }, content: 'Run more commands' },
+    ] }, async () => ({ kind: 'enter' }));
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 2 });
+    check('assessment accepts written answer without execution proof', agent.steered.length === 0);
+    check('completion uses full latest genuine request',
+      requests[0].state.original_goal === 'Assess the current flow.\nExplain whether it slows the agent.');
+    check('completion retains context for follow-up references', /Deploy the plugin/.test(requests[0].state.task_context));
+    check('completion excludes explicit previous-turn evidence',
+      !/OLD_DEPLOY_OUTPUT|OLD_REPLY/.test(requests[0].state.recent_work_evidence));
+    check('completion includes current written answer', /Current assessment/.test(requests[0].state.recent_work_evidence));
+  });
+}
+
+// A delivered assessment must not be reissued as missing execution work, even with a low complete score.
+{
+  await withStubJev({ complete: 0.3, evidence: 0.1, needs_execution: 0.1 }, async () => {
+    const { handlers } = await loadPlugin({ config: {
+      enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false,
+    } });
+    const agent = { id: 'completion-written-final', goal: { objective: 'Deploy the plugin' },
+      session: { snapshotEvents: () => [{ type: 'assistant/message', data: {
+        turn: 2, message: { content: 'The audit is complete. These are the findings.' },
+      } }] }, steered: [], steer(m) { this.steered.push(m); } };
+    await handlers['agent/pre-step'][0]({ agent, turn: 2, step: 1, messages: [
+      { role: 'user', source: { kind: 'user' }, content: 'Assess the installed plugin and report findings.' },
+    ] }, async () => ({ kind: 'enter' }));
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 2 });
+    check('written assessment is accepted despite low Jev complete probability', agent.steered.length === 0);
+  });
+}
+
+// An incomplete written answer may be nudged, but never ordered to execute a command.
+{
+  await withStubJev({ complete: 0.1, evidence: 0.1, needs_execution: 0.1 }, async () => {
+    const { handlers } = await loadPlugin({ config: {
+      enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false,
+    } });
+    const agent = { id: 'completion-writing', goal: { objective: 'Explain the flow' },
+      session: { snapshotEvents: () => [] }, steered: [], steer(m) { this.steered.push(m); } };
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 1 });
+    check('incomplete analysis nudges answer coverage without execution demand',
+      agent.steered.length === 1 && /No command, file change/.test(agent.steered[0].content[0].text)
+      && !/run a command/.test(agent.steered[0].content[0].text));
+  });
+}
+
+// Rephrasing is not progress; new tool evidence permits a second bounded check.
+{
+  let calls = 0;
+  const events = [];
+  await withStubJev({ complete: () => { calls += 1; return 0.1; }, evidence: 0.1, needs_execution: 0.9 }, async () => {
+    const { handlers } = await loadPlugin({ config: {
+      enableDestructiveGate: false, enableCompletionCheck: true, enableEffortRouting: false,
+      completionMaxPerTurn: 2,
+    } });
+    const agent = { id: 'completion-progress', goal: { objective: 'Fix the bug and run tests' },
+      session: { snapshotEvents: () => events }, steered: [], steer(m) { this.steered.push(m); } };
+    const stop = () => handlers['agent/turn-stopping'][0]({ agent, turn: 1 });
+    await stop();
+    events.push({ type: 'assistant/message', data: { turn: 1, message: { content: 'Same claim rephrased.' } } });
+    await stop();
+    check('unchanged tool evidence skips both API and repeated nudge', calls === 1 && agent.steered.length === 1);
+    events.push({ type: 'tool/result', data: { turn: 1, result: 'Tests FAIL: assertion mismatch' } });
+    await stop();
+    check('new tool evidence is checked within original cap', calls === 2 && agent.steered.length === 2);
+    events.push({ type: 'tool/result', data: { turn: 1, result: 'Another output' } });
+    await stop();
+    check('progress does not bypass completion cap', calls === 2);
+  });
 }
 
 console.log('\n5. Lớp 4 — spawn hint chỉ chạy ở step 1, tắt được, fail-open');
@@ -546,7 +639,7 @@ async function withStubJev(answers, run) {
         const question = body.questions[id];
         const spec = answers[id] ?? answers['*'];
         if (spec === undefined) throw new Error(`stub has no answer for "${id}"`);
-        const value = typeof spec === 'function' ? spec(id, question) : spec;
+        const value = typeof spec === 'function' ? spec(id, question, body) : spec;
         if (question.type === 'noul') return [id, { type: 'noul', noul: value }];
         const keys = Object.keys(question.criteria);
         const probabilities = Object.fromEntries(keys.map((key) => [key, key === value ? 1 : 0]));
@@ -1806,6 +1899,23 @@ console.log('\n11z. Lớp 3 chế độ `input` — Jev chọn effort từ NỘI
     check('input: gọi Jev ĐÚNG 1 lần cho lượt', calls() === 1, `calls=${calls()}`);
   });
 
+  /** Current user request overrides a persisted goal when choosing effort. */
+  await withCapturingJev({ effort: 'low', __confidence: 0.9 }, async (bodies) => {
+    const { handlers } = await loadPlugin({
+      llm,
+      config: { enableDestructiveGate: false, enableCompletionCheck: false, enableEffortRouting: true, enableSpawnHint: false, enableContextTriage: false },
+    });
+    const agent = { id: 'a-input-current', goal: { objective: 'Design a distributed system' },
+      session: { id: 'sess-input-current', snapshotEvents: () => [] } };
+    await seedTask(handlers, agent, 'List the files in this folder');
+    await handlers['agent/request'][0](
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'p', model: 'm' }),
+    );
+    check('effort uses latest prompt rather than stale goal',
+      bodies()[0]?.state?.task === 'List the files in this folder');
+  });
+
   /** 11z-b. Jev chọn `low` cho yêu cầu dễ → áp `low`. */
   await withCountingJev({ effort: 'low', __confidence: 0.9 }, async () => {
     const { handlers } = await loadPlugin({
@@ -2479,17 +2589,17 @@ function makeTools({ present = true, isError = false, content = '{"metrics":{"co
  * `files[i].seq` trong khi provider không bao giờ sinh field đó.
  */
 const CHANGES_EVENT_SEQ = 500;
-function makeChangedSession({ added = 50, deleted = 10, files = 1, depth = 0 } = {}) {
+function makeChangedSession({ added = 50, deleted = 10, files = 1, depth = 0, turn = 1 } = {}) {
   const fileList = Array.from({ length: files }, (_v, i) => ({ path: `src/f${i}.ts`, display: `src/f${i}.ts`, added, deleted }));
   return {
     id: 'session-test',
     snapshotEvents: () => [
-      { type: 'workspace/changes', seq: CHANGES_EVENT_SEQ, data: { turn: 1 } },
+      { type: 'workspace/changes', seq: CHANGES_EVENT_SEQ, data: { turn } },
     ],
     // Độ sâu uỷ quyền nằm ở `header.delegationDepth` (hợp đồng DSH), không phải
     // ngay trên `session`. Fixture cũ đặt sai chỗ nên case 12c xanh giả.
     header: { cwd: '/tmp', delegationDepth: depth },
-    _summary: { turn: 1, cwd: '/tmp', files: fileList, total: files, added, deleted },
+    _summary: { turn, cwd: '/tmp', files: fileList, total: files, added, deleted },
   };
 }
 
@@ -2576,6 +2686,19 @@ function makeGuardTools({ guardable = true } = {}) {
     check('báo điểm lại cho agent qua steer', agent.steered.length === 1, `steer=${agent.steered.length}`);
     check('message có điểm số', /correctness 8\/10/.test(agent.steered[0]?.content?.[0]?.text ?? ''),
       agent.steered[0]?.content?.[0]?.text?.slice(0, 80));
+  }
+
+  // A prior turn's change must not be reviewed for the current turn's task.
+  {
+    const tools = makeTools();
+    const session = makeChangedSession();
+    const agent = makeReviewAgent(session);
+    const { handlers } = await loadPlugin({
+      tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) }, config: base,
+    });
+    await handlers['agent/turn-stopping'][0]({ agent, turn: 2, signal: new AbortController().signal });
+    check('old turn diff does not trigger current turn review', tools.calls.length === 0,
+      `calls=${tools.calls.length}`);
   }
 
   // 12b. Chốt 3: diff quá nhỏ → không review
@@ -2809,6 +2932,32 @@ function makeGuardTools({ guardable = true } = {}) {
       `reviews=${rows.filter((r) => r.type === 'quality_review').map((r) => r.decision).join(',') || 'none'}`);
   }
 
+  // A dropped continuation must not suppress review of a stopping turn.
+  {
+    const tools = makeTools();
+    const session = makeChangedSession({ added: 50, deleted: 10, files: 2 });
+    const agent = makeReviewAgent(session);
+    await withStubJev(
+      { complete: 0.1, evidence: 0.1, needs_execution: 0.9, '*': 0.5 },
+      async () => {
+        const { handlers } = await loadPlugin({
+          tools, services: { workspaceChanges: makeWorkspaceChanges(session._summary) },
+          config: {
+            enableDestructiveGate: false, enableCompletionCheck: true,
+            enableEffortRouting: false, enableQualityReview: true,
+            maxPluginContextTokensPerTurn: 0, reviewMode: 'telemetry',
+            logDir: tmpDir('jev-gate-dropped-continuation-'),
+          },
+        });
+        for (const hook of handlers['agent/turn-stopping']) {
+          await hook({ agent, turn: 1, signal: new AbortController().signal });
+        }
+      },
+    );
+    check('dropped continuation does not steer', agent.steered.length === 0);
+    check('dropped continuation still reviews', tools.calls.length === 1, `calls=${tools.calls.length}`);
+  }
+
   // 12l. Cờ là ONE-SHOT: Lớp 2 `accept` → không đặt cờ → Lớp 7 review bình thường.
   //      (Chứng minh cờ không khoá turn vĩnh viễn — không có vòng lặp chặn review.)
   {
@@ -2915,7 +3064,7 @@ function makeGuardTools({ guardable = true } = {}) {
    */
   {
     const tools = makeTools();
-    const session = makeChangedSession({ added: 50, deleted: 10, files: 2 });
+    const session = makeChangedSession({ added: 50, deleted: 10, files: 2, turn: 3 });
     const agent = makeReviewAgent(session);
     const steered = await withStubJev(
       { complete: 0.1, evidence: 0.1, needs_execution: 0.9, '*': 0.5 },
@@ -2941,7 +3090,7 @@ function makeGuardTools({ guardable = true } = {}) {
       },
     );
     check('12p Lớp 2 dừng ở trần completionMaxPerTurn (không vòng lặp vô hạn)',
-      steered.l2 === 2, `l2Steer=${steered.l2} (cap=2, 5 lần gọi cùng turn)`);
+      steered.l2 === 1, `l2Steer=${steered.l2} (unchanged evidence, 5 lần gọi cùng turn)`);
     check('12p Lớp 2 hết trần → Lớp 7 review đúng 1 lần (trần reviewMaxPerTurn)',
       tools.calls.length === 1 && steered.l7 === 1,
       `calls=${tools.calls.length} l7Steer=${steered.l7}`);

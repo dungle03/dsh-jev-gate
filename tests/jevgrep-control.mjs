@@ -13,6 +13,9 @@ for (const value of [2, 3, 0.5, -1]) {
 }
 assert.equal(Config({ jevGrepMaxConcurrentPerSession: 0 }).jevGrepMaxConcurrentPerSession, 0);
 assert.equal(Config({}).jevGrepMaxConcurrentPerSession, 1);
+const disabledSession = createJevgrepControl({ maxPerSession: 0 });
+assert.equal(disabledSession.reserve({ ...input(), wait: true }).ready, undefined);
+disabledSession.dispose();
 const control = createJevgrepControl();
 const first = control.reserve(input());
 assert.equal(control.reserve(input()).reason, 'skip_duplicate');
@@ -26,6 +29,107 @@ const latest = control.reserve(input('a', '/repo', 'new'));
 assert.ok(latest.signal);
 latest.finish({ ok: true });
 second.finish({ ok: true });
+
+// Superseding work is handed off only after the physical run releases its slot.
+const handoff = createJevgrepControl();
+const physical = handoff.reserve(input('handoff'));
+const newerSignal = new AbortController();
+const deferred = handoff.reserve({ ...input('handoff', '/repo', 'new'), signal: newerSignal.signal, wait: true });
+assert.equal(deferred.reason, 'skip_concurrency');
+let ready = false;
+const handoffReady = deferred.ready.then((value) => { ready = value; });
+await Promise.resolve();
+assert.equal(ready, false);
+physical.finish({ ok: false, cancelled: true });
+await handoffReady;
+assert.equal(ready, true);
+const replacement = handoff.reserve(input('handoff', '/repo', 'new'));
+assert.ok(replacement.signal);
+replacement.finish({ ok: true });
+
+const abortedDuplicate = handoff.reserve(input('handoff', '/repo', 'same'));
+abortedDuplicate.signal.throwIfAborted();
+const intermediate = handoff.reserve({ ...input('handoff', '/repo', 'other'), wait: true });
+assert.equal(intermediate.reason, 'skip_concurrency');
+const repeated = handoff.reserve({ ...input('handoff', '/repo', 'same'), wait: true });
+assert.equal(repeated.reason, 'skip_concurrency');
+assert.equal(await intermediate.ready, false);
+abortedDuplicate.finish({ ok: false, cancelled: true });
+assert.equal(await repeated.ready, true);
+const repeatedRun = handoff.reserve(input('handoff', '/repo', 'same'));
+assert.ok(repeatedRun.signal);
+repeatedRun.finish({ ok: true });
+
+const cancelledHandoff = handoff.reserve(input('handoff', '/repo', 'old'));
+let cancelledRetry = 0;
+const cancelledSignal = new AbortController();
+const cancelled = handoff.reserve({ ...input('handoff', '/repo', 'newer'), signal: cancelledSignal.signal, wait: true });
+const cancelledReady = cancelled.ready.then((value) => { cancelledRetry += Number(value); });
+cancelledSignal.abort();
+cancelledHandoff.finish({ ok: false, cancelled: true });
+await cancelledReady;
+assert.equal(cancelledRetry, 0);
+handoff.dispose();
+
+// The concurrency cap is shared across plugin instances (e.g. HMR reloads).
+const previousInstance = createJevgrepControl({ maxGlobal: 1 });
+const nextInstance = createJevgrepControl({ maxGlobal: 1 });
+const oldWorker = previousInstance.reserve(input('reload'));
+const newWorker = nextInstance.reserve({ ...input('reload', '/repo', 'next'), wait: true });
+assert.equal(oldWorker.signal.aborted, true);
+assert.equal(newWorker.reason, 'skip_concurrency');
+oldWorker.finish({ ok: true });
+assert.equal(await newWorker.ready, true);
+const admittedWorker = nextInstance.reserve(input('reload', '/repo', 'next'));
+assert.ok(admittedWorker.signal);
+admittedWorker.finish({ ok: true });
+previousInstance.dispose();
+nextInstance.dispose();
+
+// A newer request from another instance must invalidate the older deferred request.
+const oldInstance = createJevgrepControl({ maxGlobal: 1 });
+const currentInstance = createJevgrepControl({ maxGlobal: 1 });
+const busy = oldInstance.reserve(input('same-session'));
+const staleSignal = new AbortController();
+const stale = oldInstance.reserve({ ...input('same-session', '/repo', 'stale'), signal: staleSignal.signal, wait: true });
+const newest = currentInstance.reserve({ ...input('same-session', '/repo', 'newest'), wait: true });
+assert.equal(await stale.ready, false);
+staleSignal.abort();
+oldInstance.dispose();
+busy.finish({ ok: false, cancelled: true });
+assert.equal(await newest.ready, true);
+currentInstance.reserve(input('same-session', '/repo', 'newest')).finish({ ok: true });
+currentInstance.dispose();
+
+// A request rejected at the pending cap still supersedes a deferred query.
+const cappedHandoff = createJevgrepControl({ maxPending: 1 });
+const cappedRun = cappedHandoff.reserve(input('capped'));
+const cappedWait = cappedHandoff.reserve({ ...input('capped', '/repo', 'old'), wait: true });
+assert.equal(cappedWait.reason, 'skip_pending_cap');
+cappedRun.finish({ ok: true });
+cappedHandoff.dispose();
+
+const supersededHandoff = createJevgrepControl({ maxPending: 2 });
+const supersededRun = supersededHandoff.reserve(input('superseded'));
+const supersededWait = supersededHandoff.reserve({ ...input('superseded', '/repo', 'old'), wait: true });
+assert.equal(supersededWait.reason, 'skip_concurrency');
+const otherRun = supersededHandoff.reserve(input('other'));
+assert.ok(otherRun.signal);
+assert.equal(supersededHandoff.reserve(input('superseded', '/repo', 'new')).reason, 'skip_pending_cap');
+supersededRun.finish({ ok: false, cancelled: true });
+otherRun.finish({ ok: true });
+assert.equal(await supersededWait.ready, false);
+supersededHandoff.dispose();
+
+const disposedHandoff = createJevgrepControl();
+const disposedRun = disposedHandoff.reserve(input('dispose'));
+let disposedRetry = 0;
+const disposed = disposedHandoff.reserve({ ...input('dispose', '/repo', 'new'), wait: true });
+const disposedReady = disposed.ready.then((value) => { disposedRetry += Number(value); });
+disposedHandoff.dispose();
+disposedRun.finish({ ok: false, cancelled: true });
+await disposedReady;
+assert.equal(disposedRetry, 0);
 control.dispose();
 assert.equal(control.reserve(input()).reason, 'skip_cancelled');
 

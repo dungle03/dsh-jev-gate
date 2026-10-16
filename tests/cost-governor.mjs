@@ -114,9 +114,9 @@ function fixture(overrides = {}, execute, diff, credentials) {
   dirs.push(logDir);
   const handlers = {};
   const calls = [];
-  const summary = { cwd: '/tmp', total: 1, added: 50, deleted: 5, files: [{ path: 'sample.mjs' }] };
-  const session = { id: `s-${dirs.length}`, header: { cwd: '/tmp' }, snapshotEvents: () => [
-    { type: 'workspace/changes', seq: 500, data: { turn: 1 } },
+  const summary = { turn: 1, cwd: '/tmp', total: 1, added: 50, deleted: 5, files: [{ path: 'sample.mjs' }] };
+  const session = { id: `s-${dirs.length}`, header: { cwd: '/tmp' }, _summary: summary, snapshotEvents: () => [
+    { type: 'workspace/changes', seq: 500, data: { turn: summary.turn } },
   ] };
   const agent = { id: `a-${dirs.length}`, session, goal: { objective: 'Implement a calculator' },
     steered: [], steer(m) { this.steered.push(m); } };
@@ -239,6 +239,8 @@ try {
     throw Error('transport failed');
   });
   await transport.stop();
+  transport.agent.session._summary.turn = 2;
+  transport.agent.session.snapshotEvents = () => [{ type: 'workspace/changes', seq: 501, data: { turn: 2 } }];
   await transport.stop(undefined, 2);
   assert.equal(transport.calls.length, 1, 'failed transport keeps its reservation consumed');
   await new Promise((resolve) => setTimeout(resolve, 30));

@@ -119,7 +119,7 @@ ctx.tools.register({
 });
 // Workspace evidence fixture is explicit; execution/validation remains the real ToolRuntime.
 ctx.provide('workspaceChanges', {
-  summary: () => ({ cwd: root, total: 1, added: 10, deleted: 0, files: [{ path: 'compat.js' }] }),
+  summary: () => ({ turn: 3, cwd: root, total: 1, added: 10, deleted: 0, files: [{ path: 'compat.js' }] }),
   diff: async () => ({ kind: 'text', path: 'compat.js', hunks: [{ oldStart: 1, oldLines: 0,
     newStart: 1, newLines: 1, lines: ['+const compat = true;'] }] }),
 });
@@ -154,7 +154,8 @@ try {
   } finally { clearTimeout(timer); }
   assert.deepEqual(errors, []);
   assert.equal(generation, 2, 'completion continuation must re-enter the real agent loop');
-  assert.equal(completions, 2);
+  assert.equal(completions, 1, 'reply-only continuation must not repeat the completion API call');
+
   assert.equal(stopping, 2);
   assert(requests.every((request) => request.reasoningEffort === 'low'));
   assert.equal((await ctx.llm.resolveCallConfig({ provider: 'compat', model: 'scripted', reasoningEffort: 'high' })).reasoningEffort, 'high');
