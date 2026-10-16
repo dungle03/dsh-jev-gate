@@ -1,6 +1,7 @@
 # Cập nhật bản sửa và bật lại ba lớp Jev
 
-Cập nhật ngày 2026-10-16 theo yêu cầu vận hành của người dùng. Chưa commit hoặc push.
+Cập nhật ngày 2026-10-16 theo yêu cầu vận hành của người dùng. Đã commit và push
+(`610f51e` cho các sửa flow; `502203c` đợt audit; `8fff21d` tài liệu/script đo).
 
 ## Cấu hình đã bật
 
