@@ -64,8 +64,17 @@ fi
 
 echo "5. Boot thật (xem log apply, không đọc file config)"
 LOG="${XDG_DATA_HOME:-$HOME/.local/share}/dsh-jev-gate/decisions.jsonl"
-if [ -f "$LOG" ] && grep -q '"type":"boot"' "$LOG" 2>/dev/null; then
-  pass "plugin đã apply: $(grep '"type":"boot"' "$LOG" | tail -1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print("model="+d["model"])' 2>/dev/null)"
+# `makeRecorder` xoay log sang `.1` khi vượt trần byte, nên dòng boot có thể đã
+# nằm ở thế hệ cũ. Đọc CẢ hai thế hệ, theo thứ tự thời gian, nếu không bước này
+# báo "chưa boot" một cách sai lệch ngay sau lần xoay đầu tiên.
+BOOT_LINE=""
+for f in "$LOG.1" "$LOG"; do
+  [ -f "$f" ] || continue
+  LAST="$(grep '"type":"boot"' "$f" 2>/dev/null | tail -1)"
+  if [ -n "$LAST" ]; then BOOT_LINE="$LAST"; fi
+done
+if [ -n "$BOOT_LINE" ]; then
+  pass "plugin đã apply: $(printf '%s' "$BOOT_LINE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("model="+d["model"])' 2>/dev/null)"
 else
   fail "chưa thấy log boot — khởi động lại DSH"
 fi

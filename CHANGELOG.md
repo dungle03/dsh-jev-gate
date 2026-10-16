@@ -5,6 +5,81 @@ và [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Sửa — audit 16/10: payload gate vỡ vì `workdir` khổng lồ, và 8 việc nhỏ còn lại
+
+**Bug P0 — gate tự chặn mình trong subagent.** Log thật ghi 3 dòng `deny_consent`
+với `error: "evaluation request exceeds 256 KiB"` cho những lệnh dài 46–63 ký tự.
+Truy nguyên: `workdir` truyền vào tool `bash` bị đệm ~127.937 ký tự U+202C
+(POP DIRECTIONAL FORMATTING) — 383.811 byte UTF-8 — và `destructiveQuestion` đưa
+thẳng `declared_workdir` vào state KHÔNG cắt. `requestBody` ném lỗi **đồng bộ
+trước khi gọi mạng**, nên `isTransientNetworkError` không áp dụng, lỗi bị coi là
+vĩnh viễn → `onJevOutage` → `gateFailureMode:'ask'` → trong subagent không có
+kênh hỏi user → **chặn cứng một lệnh vô hại**. Tái lập được 100% qua đúng đường
+mã (ngưỡng vỡ ở ~86,8k ký tự `declared_workdir`).
+
+Sửa ở tầng BUILDER, không ở call site: `safePath()` (bỏ `\p{Cc}`/`\p{Cf}`, cắt
+`MAX_PATH_CHARS` 4096) và `TEXT_CAP`/`COMMAND_CAP` cho MỌI builder câu hỏi
+(`destructiveQuestion`, `completionQuestion`, `effortQuestion`, `effortAbstainQuestion`,
+`approachQuestion`, `preStepQuestion`, `failureQuestion`). Bài học ghi trong mã:
+"phải nhớ cắt" trở thành "không thể quên cắt" — test §24(f) bắt được
+`completionQuestion` cũng hở vì nó chỉ an toàn nhờ mọi call site tự nhớ `clip`.
+
+Nhánh payload lỗi nay ghi `payload_error: true` để không lẫn với lỗi mạng (đo
+được: phải đào log mới tìm ra nguyên nhân vì hai thứ dùng chung một chuỗi).
+
+**Tám việc nhỏ (audit §6):**
+
+1. Comment "5xx khác cũng đáng thử lại" lệch code → nay `RETRYABLE_HTTP =
+   [429, 529, 502, 503, 504]`; 500 vẫn KHÔNG retry (có thể lỗi tất định).
+2. `ENOTFOUND` trong `TRANSIENT_NETWORK_CODES` — GIỮ, và viết lại comment cho hết
+   mâu thuẫn: đo được cùng tên `api.typesafe.ai` lúc phân giải được lúc không.
+3. Abort do hook (`thrown object: {"kind":"user"}`, ms=0) bị ghi vào `jev_error`
+   → thêm loại bản ghi **`jev_abort`**. Timeout deadline VẪN ghi `jev_error`:
+   Jev chậm thật thì phải đo được.
+4. Ca `TimeoutError ms = 59.206` (gấp 15× ngân sách) — điều tra: **0 dòng log nào
+   giữa 15:58:52 và 15:59:50** ⇒ cả tiến trình DSH đứng ~59 s, không phải call Jev.
+   Hạ xuống "artifact môi trường".
+5. `makeRecorder` ghi `appendFile` vô hạn → thêm trần byte + xoay một thế hệ sang
+   `decisions.jsonl.1`. Test §26(a) ghim: không nhân bản dòng, tổng bị chặn trên.
+6. `clip(command, 400)` cắt 31% dòng gate → `AUDIT_COMMAND_CAP = 2_000` cho 15
+   điểm ghi log gate (đo được: dài nhất 424 ký tự, nên trần cũ vừa đủ cắt).
+7. `authorizationQuestion` là code chết — giữ nhưng docstring nói rõ KHÔNG nằm
+   trên đường quyết định, chỉ phục vụ `tests/live-check.mjs` và `tests/offline.mjs` §7.
+8. `destructive_gate` thiếu `turn` (Phase 0 bế tắc) → `makeRecorder` tự gắn tập
+   trung (14 call site là 14 cơ hội quên).
+
+**Cấu hình:** `gateTimeoutMs: 2000 → 4000` (p95 đo được 1.065 ms, max 2.686 ms;
+trần cũ nằm đúng p99 nên 19/24 `jev_error` là timeout ở biên, mỗi lần thành một
+thẻ đồng ý). Thêm khoá `jevModel` (mặc định vẫn `jev-1.13.0`) để chuyển sang
+`jev-1.14.0` bằng cấu hình thay vì sửa cứng — tài liệu TypeSafe khuyến cáo tự đo
+rồi mới chuyển, không để plugin trôi theo alias.
+
+**Bác bỏ bằng số đo:** đề xuất thêm prefilter hẹp cho heredoc. Phân loại 84 dòng
+heredoc: 73 là thân mã trình thông dịch (`python3`/`node`/`bash`), 4 redirect ghi,
+3 đọc-dữ-liệu (cả 3 đều không thật sự sạch), 4 khác. Thân mã Turing-complete không
+chứng minh được "chỉ ghi đường dẫn tương đối" bằng regex, và một prefilter sai ở
+đây là cho qua lệnh GHI dữ liệu. Đòn bẩy ~0 lệnh, rủi ro thật ⇒ giữ nguyên.
+
+**Hệ quả của việc xoay log — đã bịt.** Xoay vòng tạo ra một lớp lỗi mới: mọi thứ
+chỉ đọc `decisions.jsonl` sẽ **âm thầm mất** thế hệ cũ. Nặng nhất là bất biến vòng
+đời operation: một operation mở ở `.1` mà đóng ở file sống trông như "rò" trong khi
+mã đúng. Đã thêm `readLogWithRotated()` trong `lib/metrics.mjs` (đọc `.1` TRƯỚC,
+`ENOENT` bỏ qua, lỗi đọc thật như `EACCES`/`EISDIR` phải nổi lên), dùng nó ở
+`lib/metrics.mjs` và `plan/audit-measure.mjs`, và `verify.sh` bước 5 đọc cả hai thế
+hệ khi tìm dòng `boot`. Test `tests/metrics.mjs` ghim: thứ tự thời gian, operation
+xuyên thế hệ, `EACCES` không bị nuốt.
+
+**Bất biến tự kiểm:** `node plan/audit-measure.mjs --assert` thoát 1 khi vỡ
+(vòng đời operation cân, `allow_readonly` không-clip chứng minh lại được, mọi
+dòng chặn cứng kèm `command`). Chạy lần đầu bắt ngay một bất biến SAI của chính
+script (`reserved_cost == operation_finished` — thật ra mỗi operation mở bằng
+`reserved_cost` HOẶC `skip_budget`), và sau khi sửa thì phát hiện 1/1.106 operation
+rò (start không finish) — chỉ IN RA, không assert, vì nguyên nhân hợp lệ gồm tiến
+trình chết và một lần ghi log bị nuốt.
+
+Regression: `tests/offline.mjs` §24 (payload bounded), §25 (`turn`), §26 (xoay log,
+`jev_abort`, retry 5xx, trần audit). `npm test` xanh toàn bộ 32 suite offline.
+
 ### Sửa — sàn catastrophic bắt nhầm 100%: neo vị trí lệnh, bỏ heredoc, trung hoà nháy
 
 Đo trên log thật: **mọi dòng `deny_catastrophic` đều là bắt nhầm** — không có lệnh

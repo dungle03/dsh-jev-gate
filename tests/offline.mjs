@@ -6309,6 +6309,362 @@ console.log('\n23. Lớp 3 — tín hiệu ĐO ĐƯỢC là SÀN effort, không 
   }
 }
 
+console.log('\n24. P0 — state gửi Jev bị chặn trên (safePath/COMMAND_CAP), không thể vượt trần request');
+
+/**
+ * Bug P0 thật, đo được 15/10/2026: một lần gọi bash có `workdir` đệm **127.937
+ * ký tự U+202C** (POP DIRECTIONAL FORMATTING, 383.811 byte UTF-8). `workdir` được
+ * truyền NGUYÊN VĂN vào state ⇒ `requestBody` ném lỗi ĐỒNG BỘ trước khi gọi mạng
+ * ⇒ không phải lỗi transient ⇒ `onJevOutage` ⇒ `gateFailureMode:'ask'` ⇒ trong
+ * subagent (`consent:'unavailable'`) thoái hoá thành **chặn cứng một lệnh vô hại**
+ * (`rtk command -v jg && jg --version && jg doctor`).
+ *
+ * Đây là điều kiện CỤC BỘ của plugin, không phải bằng chứng về lệnh — nên bài
+ * kiểm này khẳng định hai điều cùng lúc: (1) payload luôn dưới trần, (2) giá trị
+ * gây lỗi bị LÀM SẠCH chứ không bị nuốt im lặng thành `undefined`.
+ */
+{
+  const { destructiveQuestion, completionQuestion, safePath, COMMAND_CAP, MAX_PATH_CHARS } = await import(
+    `${pathToFileURL(join(HERE, '..', 'lib', 'policy.mjs')).href}?p0=1`
+  );
+  const { requestBody, JevPayloadError } = await import(
+    `${pathToFileURL(join(HERE, '..', 'lib', 'jev-client.mjs')).href}?p0=1`
+  );
+
+  const DIRTY = '\u202c'.repeat(127_937);
+  const CLEAN = '/home/lee/.dsh/plugins/dsh-jev-gate';
+  const COMMAND = 'rtk command -v jg && jg --version && jg doctor';
+
+  // (a) Tái hiện ĐÚNG dữ liệu đã gây lỗi: trước bản vá, dòng này ném lỗi.
+  {
+    const q = destructiveQuestion({ toolName: 'bash', command: COMMAND, cwd: CLEAN + DIRTY, declaredWorkdir: CLEAN + DIRTY });
+    let threw;
+    try { requestBody(q); } catch (error) { threw = error; }
+    check('(a) workdir 127.937 U+202C không còn làm vượt trần request', threw === undefined,
+      threw === undefined ? `body=${Buffer.byteLength(JSON.stringify({ ...q }))}B` : String(threw?.message));
+    check('(a) `declared_workdir` vào state đã sạch ký tự định dạng',
+      q.state.pending_action.declared_workdir === CLEAN,
+      JSON.stringify(q.state.pending_action.declared_workdir?.slice(0, 60)));
+  }
+
+  // (b) Bất biến tổng quát: mọi tổ hợp trường khổng lồ vẫn phải qua được.
+  {
+    const huge = 'x'.repeat(400_000);
+    const cases = [
+      ['command 400k', { toolName: 'bash', command: huge, cwd: '/tmp' }],
+      ['cwd 400k', { toolName: 'bash', command: COMMAND, cwd: huge }],
+      ['workdir 400k', { toolName: 'bash', command: COMMAND, cwd: '/tmp', declaredWorkdir: huge }],
+      ['cả ba 400k', { toolName: 'bash', command: huge, cwd: huge, declaredWorkdir: huge }],
+      ['workdir = toàn zero-width', { toolName: 'bash', command: COMMAND, cwd: '/tmp', declaredWorkdir: DIRTY }],
+    ];
+    let worst = 0;
+    let failedCase;
+    for (const [label, args] of cases) {
+      try {
+        const bytes = Buffer.byteLength(requestBody(destructiveQuestion(args)));
+        worst = Math.max(worst, bytes);
+      } catch (error) { failedCase = `${label}: ${error.message}`; }
+    }
+    check('(b) 5 tổ hợp trường khổng lồ đều dựng được body hợp lệ', failedCase === undefined, failedCase ?? `max=${worst}B`);
+    check('(b) body lớn nhất vẫn dưới trần 256 KiB', worst < 256 * 1024, `max=${worst}B`);
+  }
+
+  // (c) `safePath` là hàm THUẦN, kiểm trực tiếp các tính chất.
+  {
+    check('(c) safePath bỏ ký tự định dạng/điều khiển',
+      safePath('a\u202cb\u200b\u0000c') === 'abc', JSON.stringify(safePath('a\u202cb\u200b\u0000c')));
+    check('(c) safePath trim khoảng trắng', safePath('  /tmp/x  ') === '/tmp/x');
+    check('(c) safePath trả undefined khi rỗng/toàn ký tự bị bỏ',
+      safePath(DIRTY) === undefined && safePath('   ') === undefined && safePath('') === undefined);
+    check('(c) safePath trả undefined cho non-string',
+      safePath(undefined) === undefined && safePath(null) === undefined && safePath(42) === undefined);
+    check('(c) safePath cắt về MAX_PATH_CHARS',
+      safePath('x'.repeat(10_000)).length === MAX_PATH_CHARS, `len=${safePath('x'.repeat(10_000)).length}`);
+    check('(c) đường dẫn bình thường KHÔNG bị đổi',
+      safePath('/home/lee/.dsh/plugins') === '/home/lee/.dsh/plugins');
+  }
+
+  /**
+   * (d) Command dài bị cắt nhưng KHÔNG mất phần nguy hiểm.
+   *
+   * `truncateText` giữ 60% đầu + 40% đuôi. Một lệnh dài thật thường đặt phần phá
+   * dữ liệu ở CUỐI chuỗi `&&` (ví dụ `... && rm -rf build`), nên nếu cắt kiểu
+   * "lấy 16k đầu" thì Jev sẽ không bao giờ thấy nó — đây là bất biến an toàn.
+   */
+  {
+    const tail = ' && rm -rf /tmp/victim';
+    const long = `echo ${'a'.repeat(COMMAND_CAP * 2)}${tail}`;
+    const q = destructiveQuestion({ toolName: 'bash', command: long, cwd: '/tmp' });
+    const sent = q.state.pending_action.command;
+    check('(d) command vượt trần bị cắt', sent.length <= COMMAND_CAP + 64, `len=${sent.length} cap=${COMMAND_CAP}`);
+    check('(d) ĐUÔI nguy hiểm của lệnh dài vẫn tới Jev', sent.includes('rm -rf /tmp/victim'), `tail=${JSON.stringify(sent.slice(-40))}`);
+    check('(d) state đánh dấu `command_truncated` để Jev biết là thiếu',
+      q.state.pending_action.command_truncated === true);
+    const short = destructiveQuestion({ toolName: 'bash', command: 'ls -la', cwd: '/tmp' });
+    check('(d) command ngắn KHÔNG bị cắt và không có cờ',
+      short.state.pending_action.command === 'ls -la' && short.state.pending_action.command_truncated === undefined);
+  }
+
+  /**
+   * (e) `JevPayloadError` phải PHÂN BIỆT được với lỗi mạng.
+   *
+   * Ba lần lỗi P0 trên log thật biến thành `deny_consent` chung chuỗi với
+   * `TimeoutError`, nên phải đào log mới tìm ra nguyên nhân. Tách lớp lỗi để
+   * `jev_error` tiếp tục đo được độ ổn định của API, không lẫn bug của plugin.
+   */
+  {
+    check('(e) requestBody ném JevPayloadError cho input không hợp lệ',
+      (() => {
+        try { requestBody({ state: { a: 1 }, questions: {} }); return false; }
+        catch (error) { return error instanceof JevPayloadError && error.name === 'JevPayloadError'; }
+      })());
+    check('(e) JevPayloadError là Error và giữ message đọc được',
+      (() => {
+        try { requestBody({ state: { a: 1 }, questions: {} }); return false; }
+        catch (error) { return error instanceof Error && typeof error.message === 'string' && error.message.length > 0; }
+      })());
+    check('(e) lỗi vượt trần cũng là JevPayloadError (không phải TypeError mạng)',
+      (() => {
+        try {
+          // Ép vượt trần bằng một state không đi qua builder nào (đường phòng thủ).
+          requestBody({ state: { blob: 'z'.repeat(300_000) }, questions: { q: { type: 'noul', instructions: 'x', criteria: { true: 'y', false: 'n' } } } });
+          return false;
+        } catch (error) { return error instanceof JevPayloadError; }
+      })());
+  }
+
+  // (f) Các builder KHÁC cũng phải chặn trên — không chỉ gate.
+  {
+    const blob = 'b'.repeat(200_000);
+    let bad;
+    for (const [label, build] of [
+      ['completionQuestion', () => completionQuestion({ goal: blob, taskContext: blob, recentEvidence: blob, testSignal: blob })],
+    ]) {
+      try { requestBody(build()); } catch (error) { bad = `${label}: ${error.message}`; }
+    }
+    check('(f) completionQuestion với 4 trường 200k vẫn dựng được body', bad === undefined, bad);
+  }
+}
+
+console.log('\n25. Lớp 1 — bản ghi `destructive_gate` tự gắn `turn` (mở khoá Phase 0)');
+
+/**
+ * Phase 0 (`plan/phase-0-results.md`) bế tắc vì 1.219/2.119 record có `session`
+ * nhưng `destructive_gate` KHÔNG có `turn`, nên không ghép được quyết định gate
+ * với trace của turn ⇒ không tính được tỷ lệ task thành công. 14 call site ghi
+ * `destructive_gate` rải khắp Lớp 1/1b và guard, nên gắn ở từng nơi là 14 cơ hội
+ * để quên — recorder gắn tập trung.
+ */
+{
+  const logDir = tmpDir('jev-gate-turn-');
+  const events = [
+    { type: 'user/message', data: { turn: 1, text: 'việc một' } },
+    { type: 'assistant/message', data: { turn: 1, text: 'xong' } },
+    { type: 'user/message', data: { turn: 4, text: 'việc bốn' } },
+  ];
+  const agent = { cwd: '/tmp', session: { id: 'sess-turn-1', snapshotEvents: () => events } };
+  const { handlers } = await loadPlugin({
+    config: { logDir, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+  });
+  await handlers['tools/pre-execute'][0](
+    { name: 'bash', arguments: { command: 'ls -la' }, agent, signal: new AbortController().signal },
+    async () => ({ kind: 'allow' }),
+  );
+  await sleepMs(250);
+  const { readFileSync } = await import('node:fs');
+  const rows = readFileSync(join(logDir, 'decisions.jsonl'), 'utf8').split('\n').filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((row) => row.type === 'destructive_gate');
+  check('25a bản ghi destructive_gate CÓ `turn`', rows.length >= 1 && rows.every((row) => row.turn !== undefined),
+    `rows=${rows.length} turns=${JSON.stringify(rows.map((r) => r.turn))}`);
+  check('25b `turn` lấy từ event MỚI NHẤT (turn 4, không phải turn 1)',
+    rows.every((row) => row.turn === 4), `turns=${JSON.stringify(rows.map((r) => r.turn))}`);
+  check('25c vẫn giữ `session` như trước', rows.every((row) => typeof row.session === 'string'));
+
+  // Không có event nào mang turn → giữ `-1` thay vì bỏ trường.
+  {
+    const logDir2 = tmpDir('jev-gate-turn-none-');
+    const agent2 = { cwd: '/tmp', session: { id: 'sess-turn-2', snapshotEvents: () => [] } };
+    const { handlers: h2 } = await loadPlugin({
+      config: { logDir: logDir2, enableDestructiveGate: true, enableCompletionCheck: false, enableEffortRouting: false },
+    });
+    await h2['tools/pre-execute'][0](
+      { name: 'bash', arguments: { command: 'ls -la' }, agent: agent2, signal: new AbortController().signal },
+      async () => ({ kind: 'allow' }),
+    );
+    await sleepMs(250);
+    const rows2 = readFileSync(join(logDir2, 'decisions.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line)).filter((row) => row.type === 'destructive_gate');
+    check('25d không có turn nào → `turn: -1` (không bỏ trường)',
+      rows2.length >= 1 && rows2.every((row) => row.turn === -1), `turns=${JSON.stringify(rows2.map((r) => r.turn))}`);
+  }
+}
+
+console.log('\n26. §6 — sửa nhỏ sau audit: xoay log, tách abort, retry 5xx, trần audit');
+
+/**
+ * Bốn sửa nhỏ trong `plan/audit-2026-10-16.md` §6, mỗi cái ghim một bất biến
+ * đo được trên log thật. Không cái nào đổi hành vi gate — chúng sửa khả năng
+ * ĐỌC log và độ chính xác của chỉ số lỗi.
+ */
+{
+  // (a) Xoay vòng log: vượt trần byte thì đẩy sang `.1`, không phình vô hạn.
+  {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const logDir = tmpDir('jev-gate-rotate-');
+    const mod = await import(`${pathToFileURL(PLUGIN).href}?rot=1`);
+    // Trần 4 KB để test không phải ghi vài MB.
+    const record = mod.makeRecorder(logDir, { maxBytes: 4_096 });
+    for (let i = 0; i < 200; i += 1) record({ type: 'rotate_probe', i, pad: 'x'.repeat(100) });
+    await sleepMs(300);
+    const live = join(logDir, 'decisions.jsonl');
+    const rotated = `${live}.1`;
+    const liveRows = readFileSync(live, 'utf8').split('\n').filter(Boolean).length;
+    check('(a) vượt trần byte → có thế hệ xoay `decisions.jsonl.1`',
+      existsSync(rotated), `exists=${existsSync(rotated)}`);
+    check('(a) file sống sau xoay NHỎ hơn trần (không còn phình)',
+      readFileSync(live, 'utf8').length <= 4_096 + 200,
+      `bytes=${readFileSync(live, 'utf8').length} rows=${liveRows}`);
+    // Bất biến quan trọng: KHÔNG nhân bản dòng, và log bị CHẶN TRÊN (một thế hệ).
+    const parse = (file) => (existsSync(file)
+      ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : []);
+    const liveRowsList = parse(live);
+    const rotatedRowsList = parse(rotated);
+    const ids = [...rotatedRowsList, ...liveRowsList].map((row) => row.i);
+    check('(a) không nhân bản bản ghi giữa hai thế hệ (mỗi `i` xuất hiện một lần)',
+      new Set(ids).size === ids.length, `ids=${ids.length} unique=${new Set(ids).size}`);
+    check('(a) tổng số dòng bị CHẶN TRÊN (một thế hệ, không phình vô hạn)',
+      liveRowsList.length + rotatedRowsList.length <= 200,
+      `live=${liveRowsList.length} rotated=${rotatedRowsList.length}`);
+    // Dòng cũ nhất phải nằm ở thế hệ xoay, dòng mới nhất ở file sống.
+    const firstRotated = rotatedRowsList[0];
+    const lastLive = liveRowsList.at(-1);
+    check('(a) `.1` giữ dòng CŨ, file sống giữ dòng MỚI (đúng thứ tự thời gian)',
+      firstRotated.i < lastLive.i && lastLive.i === 199,
+      `first_rotated=${firstRotated.i} last_live=${lastLive.i}`);
+  }
+
+  // (b) Abort do CHÍNH TA không được ghi vào `jev_error` — nó không phải API hỏng.
+  {
+    const { createJev } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'jev-client.mjs')).href}?ab=1`);
+    const question = { q: { type: 'noul', instructions: 'anything' } };
+
+    // Hook hủy tool call: truyền signal đã abort kèm lý do của DSH.
+    {
+      const errors = [];
+      const jev = createJev({
+        getApiKey: async () => 'k',
+        timeoutMs: 2_000,
+        record: (e) => errors.push(e),
+        fetchImpl: async () => { throw new Error('không được gọi'); },
+      });
+      const ctrl = new AbortController();
+      ctrl.abort({ kind: 'user' }); // đúng dạng đo được trên log thật
+      let threw = false;
+      try { await jev.evaluate({ state: 's', questions: question }, { signal: ctrl.signal }); } catch { threw = true; }
+      check('(b) hook abort → ghi `jev_abort`, KHÔNG ghi `jev_error`',
+        threw && errors.filter((e) => e.type === 'jev_abort').length === 1
+        && errors.filter((e) => e.type === 'jev_error').length === 0,
+        `types=${JSON.stringify(errors.map((e) => e.type))}`);
+    }
+
+    // `dispose()` cũng là quyết định của ta, không phải API hỏng.
+    {
+      const errors = [];
+      const jev = createJev({
+        getApiKey: async () => 'k',
+        timeoutMs: 5_000,
+        record: (e) => errors.push(e),
+        fetchImpl: async (_url, init) => {
+          await new Promise((r) => setTimeout(r, 30));
+          throw init.signal.reason ?? new DOMException('aborted', 'AbortError');
+        },
+      });
+      const pending = jev.evaluate({ state: 's', questions: question }).catch(() => {});
+      await sleepMs(5);
+      jev.dispose();
+      await pending;
+      check('(b) `dispose()` → `jev_abort`, không nhiễu `jev_error`',
+        errors.filter((e) => e.type === 'jev_error').length === 0
+        && errors.filter((e) => e.type === 'jev_abort').length === 1,
+        `types=${JSON.stringify(errors.map((e) => e.type))}`);
+    }
+
+    // NHƯNG timeout của deadline là Jev CHẬM THẬT → vẫn phải nằm trong `jev_error`.
+    {
+      const errors = [];
+      const jev = createJev({
+        getApiKey: async () => 'k',
+        timeoutMs: 5_000,
+        record: (e) => errors.push(e),
+        fetchImpl: async (_url, init) => {
+          await new Promise((resolve) => {
+            init.signal.addEventListener('abort', resolve, { once: true });
+            setTimeout(resolve, 200);
+          });
+          throw init.signal.reason ?? new DOMException('aborted', 'AbortError');
+        },
+      });
+      let threw = false;
+      try { await jev.evaluate({ state: 's', questions: question }, { timeoutOverrideMs: 40 }); } catch { threw = true; }
+      check('(b) deadline timeout VẪN là `jev_error` (Jev chậm thật, phải đo được)',
+        threw && errors.filter((e) => e.type === 'jev_error').length === 1
+        && errors.filter((e) => e.type === 'jev_abort').length === 0,
+        `types=${JSON.stringify(errors.map((e) => e.type))}`);
+    }
+  }
+
+  // (c) 5xx hạ tầng (502/503/504) được thử lại; 500 thì KHÔNG.
+  {
+    const { createJev } = await import(`${pathToFileURL(join(HERE, '..', 'lib', 'jev-client.mjs')).href}?r5=1`);
+    const question = { q: { type: 'noul', instructions: 'anything' } };
+    const okBody = JSON.stringify({
+      model: 'jev-stub',
+      answers: { q: { type: 'noul', noul: 0.1 } },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+
+    for (const status of [502, 503, 504]) {
+      let calls = 0;
+      const jev = createJev({
+        getApiKey: async () => 'k',
+        timeoutMs: 2_000,
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls === 1) return new Response('gateway', { status });
+          return new Response(okBody, { status: 200 });
+        },
+      });
+      const out = await jev.evaluate({ state: 's', questions: question });
+      check(`(c) HTTP ${status} → thử lại và thành công`, out.answers.q?.noul === 0.1 && calls === 2, `calls=${calls}`);
+    }
+
+    // 500 có thể là lỗi TẤT ĐỊNH với đúng payload này → không retry.
+    {
+      let calls = 0;
+      const jev = createJev({
+        getApiKey: async () => 'k',
+        timeoutMs: 2_000,
+        fetchImpl: async () => { calls += 1; return new Response('boom', { status: 500 }); },
+      });
+      let threw = false;
+      try { await jev.evaluate({ state: 's', questions: question }); } catch { threw = true; }
+      check('(c) HTTP 500 → KHÔNG thử lại (có thể lỗi tất định)', threw && calls === 1, `calls=${calls}`);
+    }
+  }
+
+  // (d) Trần audit `command` phải đủ rộng để không cắt lệnh dài thật.
+  {
+    const { AUDIT_COMMAND_CAP: cap } = await import(`${pathToFileURL(PLUGIN).href}?cap=1`);
+    check('(d) trần audit command ≥ 2.000 (trước là 400, cắt 31% dòng gate)',
+      typeof cap === 'number' && cap >= 2_000, `cap=${cap}`);
+    // Đo được trên log thật: dài nhất 424 ký tự, tức trần cũ 400 vừa đủ cắt.
+    check('(d) trần mới không cắt mức dài đã đo được (424 ký tự)',
+      cap > 424, `cap=${cap}`);
+  }
+}
+
 console.log(`\n${'─'.repeat(56)}`);
 console.log(failed === 0 ? 'OFFLINE: TẤT CẢ PASS' : `OFFLINE: ${failed} MỤC HỎNG`);
 process.exit(failed === 0 ? 0 : 1);

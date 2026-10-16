@@ -762,7 +762,8 @@ actual decision and cannot establish end-to-end agent benefit.
     # reviewMode: agent-feedback # telemetry | agent-feedback; disable via enableQualityReview
     reviewContextReserveTokens: 120
     reviewTimeoutMs: 15000
-    gateTimeoutMs: 2000
+    gateTimeoutMs: 4000
+    # jevModel: jev-1.14.0       # optional: override the pinned Jev model id (default jev-1.13.0)
     stopTimeoutMs: 6000
     effortTimeoutMs: 8000
     spawnTimeoutMs: 6000

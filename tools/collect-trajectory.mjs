@@ -32,6 +32,7 @@ import { fixtureHash, taskById, TASKS } from './trajectory-tasks.mjs';
 // Profile preset THẬT (không suy từ tên arm): cần để kiểm task-capability contract
 // TRƯỚC khi spawn. `lib/profiles.mjs` là module thuần, không kéo theo runtime DSH.
 import { PROFILES } from '../lib/profiles.mjs';
+import { readLogWithRotated } from '../lib/metrics.mjs';
 import { confinementProblems, diffWorkspaces, snapshotWorkspaceDetail } from './workspace-snapshot.mjs';
 
 /**
@@ -785,9 +786,26 @@ async function runArm({ task, arm, root, model, baseURL, seed, timeoutMs, mode, 
   });
   let decisions = []; let decisionsText = null;
   try {
-    decisionsText = await readFile(join(logDir, 'decisions.jsonl'), 'utf8');
+    /**
+     * Đọc CẢ `decisions.jsonl.1` nếu có: `makeRecorder` xoay log khi vượt trần
+     * byte, và mỗi arm ở đây có log riêng nên vẫn có thể xoay trong một run dài.
+     * Bỏ qua `.1` thì số đo của arm mất dữ liệu cũ và `aggregateOperations` thấy
+     * operation cụt (mở ở `.1`, đóng ở file sống) ⇒ kết luận sai về arm đó.
+     *
+     * Dùng chung `readLogWithRotated` với `lib/metrics.mjs` để chỉ có MỘT định
+     * nghĩa của "đọc log kèm thế hệ xoay" — hai bản sao sẽ trôi khỏi nhau.
+     */
+    decisionsText = readLogWithRotated(join(logDir, 'decisions.jsonl'));
     decisions = decisionsText.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } catch (error) {
+    // Lỗi đọc THẬT (EACCES/EISDIR) phải nổi lên.
+    // Arm KHÔNG plugin không có log ⇒ `ENOENT` ⇒ giữ `decisionsText = null`, và
+    // ở dưới KHÔNG ghi file rỗng: `tests/trajectory-collector.mjs` ghim "arm
+    // không plugin không được có decisions.jsonl" — một file rỗng vẫn là bằng
+    // chứng sai, không phải "log rỗng".
+    if (error.code !== 'ENOENT') throw error;
+    decisionsText = null;
+  }
   const after = snapshotWorkspaceDetail(workspace);
   const changed = before.hash !== after.hash;
   // Diff CHI TIẾT để kiểm fail-closed §18: không chỉ "cây đổi" mà đổi cái gì.

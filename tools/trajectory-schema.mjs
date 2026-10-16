@@ -98,6 +98,7 @@ export const BENCHMARK_CONFIG_KEYS = Object.freeze([
   'evidenceThreshold', 'executionThreshold', 'failureMaxPerTurn', 'failureTimeoutMs',
   'gateFailureMode', 'gateTimeoutMs', 'gateVerdictCacheMargin', 'gateVerdictCacheMax',
   'jevBudgetEnabled', 'jevGrepBackground', 'jevGrepBreakerCooldownMs', 'jevGrepExcerptCap',
+  'jevModel',
   'jevGrepFailureBreaker', 'jevGrepMaxConcurrentGlobal', 'jevGrepMaxConcurrentPerSession',
   'jevGrepMaxPerSession', 'jevGrepMaxPerTurn', 'jevGrepPendingMax', 'jevGrepSearchTaskHeuristic',
   'jevGrepSearchTaskThreshold', 'jevGrepTimeoutMs', 'jevMaxCallsPerSession', 'jevMaxCallsPerTurn',
