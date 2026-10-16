@@ -35,7 +35,7 @@ Không thay ngưỡng đánh giá chỉ để bật cờ. Giữ giới hạn m�
 
 | Kiểm tra | Kết quả |
 | --- | --- |
-| `npm test` | Toàn bộ 32 suite offline đạt |
+| `npm test` | Toàn bộ 33 suite offline đạt |
 | `git diff --check` | Đạt |
 | Profile web hợp nhất | Ba lớp đều `true` |
 | `node tests/dsh-compat.mjs --strict` | Đạt trên DSH 0.2.0-rc.2. Agent loop thật chạy 2 generation với 1 completion API call khi continuation chỉ thay câu trả lời. Consent và quality review hook cũng đạt. Phản hồi Jev/model/UI là fixture, không phải A/B thực. |
@@ -46,7 +46,10 @@ Audit credential trước đó đã thêm key còn thiếu vào shell khởi đ�
 
 ## Áp dụng cho tiến trình đang chạy
 
-Cấu hình trên đĩa và cấu hình hợp nhất đã đúng. Chưa khởi động lại tiến trình đang phục vụ cuộc hội thoại này, nên chưa xác nhận ba hook đã nạp trong tiến trình hiện tại.
+Cấu hình trên đĩa và cấu hình hợp nhất đã đúng. Đã khởi động lại DSH (boot cuối
+`2026-10-16T10:20:44Z`); log gate sau lần boot đó xác nhận mã mới đã nạp (`turn`
+137/137, `command` dài nhất 2.023 — trần audit 2.000 hoạt động). Riêng `step` mới
+thêm ở `97e1495` nằm SAU lần boot đó nên cần khởi động lại lần nữa mới thấy.
 
 Trong terminal đang chạy DSH, dừng `dsh web`, rồi chạy:
 
