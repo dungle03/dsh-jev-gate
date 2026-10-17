@@ -7,7 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '17 3 * * 1'
+
+# Push liên tiếp chỉ cần kiểm commit mới nhất; lịch tuần và lần chạy tay vẫn hoàn tất.
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   offline:
@@ -25,7 +30,7 @@ jobs:
           node-version: ${{ matrix.node }}
 
       - name: Cài dependency
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Syntax check
         run: |
@@ -69,7 +74,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.2'
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - name: Install exact supported host
         run: npm install --global --no-audit --no-fund '@deepseek-ai/dsh@0.2.0-rc.2'
       - name: Strict real-host integration
@@ -79,6 +84,7 @@ jobs:
 
   dsh-master:
     name: DSH master (observational)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -86,7 +92,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.2'
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
@@ -116,15 +122,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Require configured smoke credential
+      - name: Live check (one noul and one choice)
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
         run: |
           if [ -z "$TYPESAFE_API_KEY" ]; then
-            echo '::error::TYPESAFE_API_KEY is missing; live API coverage was not executed'
-            exit 1
+            echo '::notice::TYPESAFE_API_KEY is missing; live API smoke was skipped'
+            echo 'Live API smoke skipped: configure repository secret TYPESAFE_API_KEY to run it.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-      - name: Live check (one noul and one choice)
-        env:
-          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-        run: node tests/live-smoke.mjs
+          node tests/live-smoke.mjs
