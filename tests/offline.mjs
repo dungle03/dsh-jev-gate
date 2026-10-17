@@ -6725,6 +6725,26 @@ console.log('\n26. §6 — sửa nhỏ sau audit: xoay log, tách abort, retry 5
       firstRotated.i < lastLive.i && lastLive.i === 199,
       `first_rotated=${firstRotated.i} last_live=${lastLive.i}`);
   }
+  {
+    const { mkdirSync, rmSync, statSync, readFileSync } = await import('node:fs');
+    const logDir = tmpDir('jev-gate-rename-failure-');
+    const live = join(logDir, 'decisions.jsonl');
+    const rotated = `${live}.1`;
+    const record = (await import(PLUGIN)).makeRecorder(logDir, { maxBytes: 200 });
+    mkdirSync(rotated);
+    for (let i = 0; i < 3; i += 1) record({ type: 'rotate_probe', i, pad: 'x'.repeat(80) });
+    await sleepMs(200);
+    check('(a) rename thất bại: log còn nguyên và vẫn ghi tiếp',
+      statSync(live).size > 200, `bytes=${statSync(live).size}`);
+    rmSync(rotated, { recursive: true });
+    record({ type: 'rotate_probe', i: 3, pad: 'x'.repeat(80) });
+    record({ type: 'rotate_probe', i: 4, pad: 'x'.repeat(80) });
+    await sleepMs(200);
+    check('(a) hết lỗi rename: đạt lại trần thì xoay file thật, không kẹt byte giả',
+      statSync(rotated).isFile() && readFileSync(rotated, 'utf8').includes('"i":2')
+      && readFileSync(live, 'utf8').includes('"i":4'),
+      `live=${readFileSync(live, 'utf8').length} rotated=${statSync(rotated).size}`);
+  }
 
   // (b) Abort do CHÍNH TA không được ghi vào `jev_error` — nó không phải API hỏng.
   {
